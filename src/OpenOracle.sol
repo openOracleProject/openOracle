@@ -186,6 +186,10 @@ contract OpenOracle is ReentrancyGuard {
 
     event SettlementCallbackExecuted(uint256 indexed reportId, address indexed callbackContract, bool success);
 
+    event ReportInstanceCreated2(uint256 reportId, address protocolFeeRecipient);
+    event ReportDisputed2(uint256 reportId, uint256 multiplier, address protocolFeeRecipient);
+    event InitialReportSubmitted2(uint256 reportId, uint256 multiplier, address protocolFeeRecipient);
+
     constructor() ReentrancyGuard() {}
 
     /**
@@ -453,6 +457,9 @@ contract OpenOracle is ReentrancyGuard {
             stateHash,
             block.timestamp
         );
+
+        emit ReportInstanceCreated2(reportId, params.protocolFeeRecipient);
+
         return reportId;
     }
 
@@ -545,6 +552,9 @@ contract OpenOracle is ReentrancyGuard {
             stateHash,
             block.timestamp
         );
+
+        emit InitialReportSubmitted2(reportId, meta.multiplier, extra.protocolFeeRecipient);
+
     }
 
     /**
@@ -663,6 +673,9 @@ contract OpenOracle is ReentrancyGuard {
             stateHash,
             block.timestamp
         );
+
+        emit ReportDisputed2(reportId, meta.multiplier, extraData[reportId].protocolFeeRecipient);
+
     }
 
     function _preValidate(uint256 newAmount1, uint256 oldAmount1, uint256 multiplier, uint256 escalationHalt)
