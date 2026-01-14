@@ -4,10 +4,9 @@ openOracle is designed to be a trust-minimized way to get token prices that anyo
 
 At its most basic level the oracle works by having a reporter submit both a limit bid and ask at the same price. Anyone can swap against these orders minus a small fee. If nobody takes either order in a certain amount of time, it is evidence of a good price that can be used for settlement. 
 
-
 ## Deployments
 
-### Base
+### Optimism
 
 <table>
 <tr>
@@ -15,33 +14,20 @@ At its most basic level the oracle works by having a reporter submit both a limi
 <th>Deployment Address</th>
 </tr>
 <tr>
-<td><a href="https://basescan.org/address/0x7caE6CCBd545Ad08f0Ea1105A978FEBBE2d1a752#code">OpenOracle</a></td>
-<td><code>0x7caE6CCBd545Ad08f0Ea1105A978FEBBE2d1a752</code></td>
+<td><a href="https://optimistic.etherscan.io/address/0xf3CCE3274c32f1F344Ba48336D5EFF34dc6E145f#code">OpenOracle</a></td>
+<td><code>0xf3CCE3274c32f1F344Ba48336D5EFF34dc6E145f</code></td>
 </tr>
 <tr>
-<td><a href="https://basescan.org/address/0x95420A44715AA90e4CAa76b8A04604B750Da67ed#code">openOracleBatcher</a></td>
-<td><code>0x95420A44715AA90e4CAa76b8A04604B750Da67ed</code></td>
+<td><a href="https://optimistic.etherscan.io/address/0x6D5dCF8570572e106eF1602ef2152BC363dAeC8b#code">openOracleBatcher</a></td>
+<td><code>0x6D5dCF8570572e106eF1602ef2152BC363dAeC8b</code></td>
 </tr>
 <tr>
-<td><a href="https://basescan.org/address/0xf7962733301A79D58FBA1747E0C0CaF40833e948#code">OracleSwapFacility</a></td>
-<td><code>0xf7962733301A79D58FBA1747E0C0CaF40833e948</code></td>
+<td><a href="https://optimistic.etherscan.io/address/0x832aF47b9ca3336063871632cb36334a03B56601#code">OracleSwapFacility</a></td>
+<td><code>0x832aF47b9ca3336063871632cb36334a03B56601</code></td>
 </tr>
 <tr>
-<td><a href="https://basescan.org/address/0x4ccfb84f7EB35ee23c2e91f12e9CE4Ea2927d23C#code">openOracleDataProviderV3</a></td>
-<td><code>0x4ccfb84f7EB35ee23c2e91f12e9CE4Ea2927d23C</code></td>
-</tr>
-</table>
-
-### Ethereum L1
-
-<table>
-<tr>
-<th>Contract</th>
-<th>Deployment Address</th>
-</tr>
-<tr>
-<td><a href="https://etherscan.io/address/0x7caE6CCBd545Ad08f0Ea1105A978FEBBE2d1a752#code">OpenOracle</a></td>
-<td><code>0x7caE6CCBd545Ad08f0Ea1105A978FEBBE2d1a752</code></td>
+<td><a href="https://optimistic.etherscan.io/address/0x4f9041CCAea126119A1fe62F40A24e7556f1357b#code">openOracleDataProviderV3</a></td>
+<td><code>0x4f9041CCAea126119A1fe62F40A24e7556f1357b</code></td>
 </tr>
 </table>
 
