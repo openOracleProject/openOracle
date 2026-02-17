@@ -33,7 +33,7 @@ At its most basic level the oracle works by having a reporter submit both a limi
 
 ## Docs
 
-- [openOracle documentation](https://openprices.gitbook.io/openoracle-docs)
+- [openOracle documentation](https://docs.openoracle.org)
 
 ## Usage
 
