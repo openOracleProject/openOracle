@@ -374,7 +374,7 @@ contract OpenOracle is ReentrancyGuard {
         if (params.exactToken1Report == 0) revert exactToken1CannotBeZero();
         if (params.token1Address == params.token2Address) revert TokensCannotBeSame();
         if (params.settlementTime < params.disputeDelay) revert SettleVsDisputeDelayTiming();
-        
+
         if (msg.value < params.settlerReward) revert MsgValueTooLow();
         if (params.feePercentage + params.protocolFee > 1e7) revert FeesTooHigh();
         if (params.multiplier < MULTIPLIER_PRECISION) revert MultiplierTooLow();
@@ -390,7 +390,11 @@ contract OpenOracle is ReentrancyGuard {
         meta.multiplier = params.multiplier;
         meta.settlementTime = params.settlementTime;
 
-        if (msg.value > params.settlerReward) meta.fee = uint96(msg.value) - params.settlerReward;
+        uint96 reporterFee;
+        if (msg.value > params.settlerReward) {
+            reporterFee = uint96(msg.value) - params.settlerReward;
+            meta.fee = reporterFee;
+        }
 
         meta.escalationHalt = params.escalationHalt;
 
@@ -417,7 +421,7 @@ contract OpenOracle is ReentrancyGuard {
                 params.feePercentage,
                 params.protocolFee,
                 params.settlerReward,
-                meta.fee,
+                reporterFee,
                 params.trackDisputes,
                 params.multiplier,
                 params.escalationHalt,
@@ -500,6 +504,7 @@ contract OpenOracle is ReentrancyGuard {
         ReportMeta storage meta = reportMeta[reportId];
         ReportStatus storage status = reportStatus[reportId];
         extraReportData storage extra = extraData[reportId];
+        bool trackDisputes = extra.trackDisputes;
 
         if (reportId >= nextReportId) revert InvalidReportId();
         if (amount1 != meta.exactToken1Report) revert InvalidAmount1();
@@ -510,17 +515,19 @@ contract OpenOracle is ReentrancyGuard {
         _transferTokens(meta.token1, msg.sender, address(this), amount1);
         _transferTokens(meta.token2, msg.sender, address(this), amount2);
 
+        uint48 reportTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
         status.currentAmount1 = amount1;
         status.currentAmount2 = amount2;
         status.currentReporter = payable(reporter);
         status.initialReporter = payable(reporter);
-        status.reportTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
+        status.reportTimestamp = reportTimestamp;
         status.lastReportOppoTime = meta.timeType ? _getBlockNumber() : uint48(block.timestamp);
 
-        if (extra.trackDisputes) {
-            disputeHistory[reportId][0].amount1 = amount1;
-            disputeHistory[reportId][0].amount2 = amount2;
-            disputeHistory[reportId][0].reportTimestamp = status.reportTimestamp;
+        if (trackDisputes) {
+            disputeRecord storage initialRecord = disputeHistory[reportId][0];
+            initialRecord.amount1 = amount1;
+            initialRecord.amount2 = amount2;
+            initialRecord.reportTimestamp = reportTimestamp;
             extra.numReports = 1;
         }
 
@@ -539,7 +546,7 @@ contract OpenOracle is ReentrancyGuard {
             meta.timeType,
             extra.callbackContract,
             extra.callbackSelector,
-            extra.trackDisputes,
+            trackDisputes,
             extra.callbackGasLimit,
             stateHash,
             block.timestamp
@@ -603,45 +610,50 @@ contract OpenOracle is ReentrancyGuard {
         uint128 amt2Expected,
         bytes32 stateHash
     ) internal {
-        _preValidate(
-            newAmount1,
-            reportStatus[reportId].currentAmount1,
-            reportMeta[reportId].multiplier,
-            reportMeta[reportId].escalationHalt
-        );
-
         ReportMeta storage meta = reportMeta[reportId];
         ReportStatus storage status = reportStatus[reportId];
+        extraReportData storage extra = extraData[reportId];
+
+        _preValidate(
+            newAmount1,
+            status.currentAmount1,
+            meta.multiplier,
+            meta.escalationHalt
+        );
 
         _validateDispute(reportId, tokenToSwap, newAmount1, newAmount2, meta, status);
         if (status.currentAmount2 != amt2Expected) revert InvalidAmount2Expected();
-        if (stateHash != extraData[reportId].stateHash) revert InvalidStateHash();
+        if (stateHash != extra.stateHash) revert InvalidStateHash();
         if (disputer == address(0)) revert AddressCannotBeZero();
 
-        address protocolFeeRecipient = extraData[reportId].protocolFeeRecipient;
+        bool trackDisputes = extra.trackDisputes;
         if (tokenToSwap == meta.token1) {
-            _handleToken1Swap(meta, status, newAmount2, disputer, protocolFeeRecipient, newAmount1);
+            _handleToken1Swap(meta, status, newAmount2, disputer, extra.protocolFeeRecipient, newAmount1);
         } else if (tokenToSwap == meta.token2) {
-            _handleToken2Swap(meta, status, newAmount2, protocolFeeRecipient, newAmount1);
+            _handleToken2Swap(meta, status, newAmount2, extra.protocolFeeRecipient, newAmount1);
         } else {
             revert InvalidTokenToSwap();
         }
 
         // Update the report status after the dispute and swap
-        status.currentAmount1 = newAmount1;
-        status.currentAmount2 = newAmount2;
-        status.currentReporter = payable(disputer);
-        status.reportTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
-        status.disputeOccurred = true;
-        status.lastReportOppoTime = meta.timeType ? _getBlockNumber() : uint48(block.timestamp);
+        {
+            uint48 reportTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
+            status.currentAmount1 = newAmount1;
+            status.currentAmount2 = newAmount2;
+            status.currentReporter = payable(disputer);
+            status.reportTimestamp = reportTimestamp;
+            status.disputeOccurred = true;
+            status.lastReportOppoTime = meta.timeType ? _getBlockNumber() : uint48(block.timestamp);
 
-        if (extraData[reportId].trackDisputes) {
-            uint32 nextIndex = extraData[reportId].numReports;
-            disputeHistory[reportId][nextIndex].amount1 = newAmount1;
-            disputeHistory[reportId][nextIndex].amount2 = newAmount2;
-            disputeHistory[reportId][nextIndex].reportTimestamp = status.reportTimestamp;
-            disputeHistory[reportId][nextIndex].tokenToSwap = tokenToSwap;
-            extraData[reportId].numReports = nextIndex + 1;
+            if (trackDisputes) {
+                uint32 nextIndex = extra.numReports;
+                disputeRecord storage record = disputeHistory[reportId][nextIndex];
+                record.amount1 = newAmount1;
+                record.amount2 = newAmount2;
+                record.reportTimestamp = reportTimestamp;
+                record.tokenToSwap = tokenToSwap;
+                extra.numReports = nextIndex + 1;
+            }
         }
 
         emit ReportDisputed(
@@ -657,15 +669,15 @@ contract OpenOracle is ReentrancyGuard {
             meta.disputeDelay,
             meta.escalationHalt,
             meta.timeType,
-            extraData[reportId].callbackContract,
-            extraData[reportId].callbackSelector,
-            extraData[reportId].trackDisputes,
-            extraData[reportId].callbackGasLimit,
+            extra.callbackContract,
+            extra.callbackSelector,
+            trackDisputes,
+            extra.callbackGasLimit,
             stateHash,
             block.timestamp
         );
 
-        emit ReportDisputed2(reportId, meta.multiplier, extraData[reportId].protocolFeeRecipient, meta.settlerReward);
+        emit ReportDisputed2(reportId, meta.multiplier, extra.protocolFeeRecipient, meta.settlerReward);
 
     }
 
@@ -756,10 +768,12 @@ contract OpenOracle is ReentrancyGuard {
     ) internal {
         uint256 oldAmount1 = status.currentAmount1;
         uint256 oldAmount2 = status.currentAmount2;
+        address token1 = meta.token1;
+        address token2 = meta.token2;
         uint256 fee = (oldAmount1 * meta.feePercentage) / PERCENTAGE_PRECISION;
         uint256 protocolFee = (oldAmount1 * meta.protocolFee) / PERCENTAGE_PRECISION;
 
-        if (protocolFee > 0) protocolFees[protocolFeeRecipient][meta.token1] += protocolFee;
+        if (protocolFee > 0) protocolFees[protocolFeeRecipient][token1] += protocolFee;
 
         uint256 requiredToken1Contribution = newAmount1;
 
@@ -767,16 +781,16 @@ contract OpenOracle is ReentrancyGuard {
         uint256 netToken2Receive = newAmount2 < oldAmount2 ? oldAmount2 - newAmount2 : 0;
 
         if (netToken2Contribution > 0) {
-            IERC20(meta.token2).safeTransferFrom(msg.sender, address(this), netToken2Contribution);
+            IERC20(token2).safeTransferFrom(msg.sender, address(this), netToken2Contribution);
         }
 
         if (netToken2Receive > 0) {
-            IERC20(meta.token2).safeTransfer(disputer, netToken2Receive);
+            IERC20(token2).safeTransfer(disputer, netToken2Receive);
         }
 
-        IERC20(meta.token1).safeTransferFrom(msg.sender, address(this), requiredToken1Contribution + oldAmount1 + fee + protocolFee);
+        IERC20(token1).safeTransferFrom(msg.sender, address(this), requiredToken1Contribution + oldAmount1 + fee + protocolFee);
 
-        _transferTokens(meta.token1, address(this), status.currentReporter, 2 * oldAmount1 + fee);
+        _transferTokens(token1, address(this), status.currentReporter, 2 * oldAmount1 + fee);
     }
 
     /**
@@ -791,10 +805,12 @@ contract OpenOracle is ReentrancyGuard {
     ) internal {
         uint256 oldAmount1 = status.currentAmount1;
         uint256 oldAmount2 = status.currentAmount2;
+        address token1 = meta.token1;
+        address token2 = meta.token2;
         uint256 fee = (oldAmount2 * meta.feePercentage) / PERCENTAGE_PRECISION;
         uint256 protocolFee = (oldAmount2 * meta.protocolFee) / PERCENTAGE_PRECISION;
 
-        if (protocolFee > 0) protocolFees[protocolFeeRecipient][meta.token2] += protocolFee;
+        if (protocolFee > 0) protocolFees[protocolFeeRecipient][token2] += protocolFee;
 
         uint256 requiredToken1Contribution = newAmount1;
 
@@ -802,12 +818,12 @@ contract OpenOracle is ReentrancyGuard {
             requiredToken1Contribution > (oldAmount1) ? requiredToken1Contribution - (oldAmount1) : 0;
 
         if (netToken1Contribution > 0) {
-            IERC20(meta.token1).safeTransferFrom(msg.sender, address(this), netToken1Contribution);
+            IERC20(token1).safeTransferFrom(msg.sender, address(this), netToken1Contribution);
         }
 
-        IERC20(meta.token2).safeTransferFrom(msg.sender, address(this), newAmount2 + oldAmount2 + fee + protocolFee);
+        IERC20(token2).safeTransferFrom(msg.sender, address(this), newAmount2 + oldAmount2 + fee + protocolFee);
 
-        _transferTokens(meta.token2, address(this), status.currentReporter, 2 * oldAmount2 + fee);
+        _transferTokens(token2, address(this), status.currentReporter, 2 * oldAmount2 + fee);
     }
 
     /**
