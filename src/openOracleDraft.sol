@@ -851,11 +851,6 @@ contract OpenOracle is ReentrancyGuard {
      * @dev Gets the current block number (returns L1 block number for L1 deployment)
      */
     function _getBlockNumber() internal view returns (uint48) {
-        uint256 id;
-        assembly {
-            id := chainid()
-        }
-
         return uint48(block.number);
     }
 }
