@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../src/OpenOracle.sol";
+import "src/OpenOracle.sol";
 import "./utils/MockERC20.sol";
 
 // Shared base for tests that use OpenOracle with OZ-based MockERC20 tokens

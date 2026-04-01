@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./BaseTest.sol";
-import "../src/OpenOracle.sol";
+import "src/OpenOracle.sol";
 
 // Tests around escalationHalt cap and +1 behavior once at cap
 contract EscalationHaltCapTest is BaseTest {

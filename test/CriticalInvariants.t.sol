@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 import "forge-std/Vm.sol";
 
-import "../src/OpenOracle.sol";
+import "src/OpenOracle.sol";
 import "./utils/MockERC20.sol";
 
 // Callback that tracks execution and the gas observed in the callback context

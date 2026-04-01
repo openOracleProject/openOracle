@@ -2,8 +2,8 @@
 pragma solidity ^0.8.26;
 
 import "./BaseTest.sol";
-import "../src/OpenOracle.sol";
-import "../src/OpenOracleBatcher.sol";
+import "src/OpenOracle.sol";
+import "src/OpenOracleBatcher.sol";
 
 contract OpenOracleBatcherTest is BaseTest {
     openOracleBatcher batcher;

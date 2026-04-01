@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./BaseTest.sol";
-import "../src/OracleSwapFacility.sol";
+import "src/OracleSwapFacility.sol";
 
 contract TestCallback {
     uint256 public lastReportId;

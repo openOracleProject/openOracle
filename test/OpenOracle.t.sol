@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./BaseTest.sol";
-import "../src/OpenOracle.sol";
+import "src/OpenOracle.sol";
 
 contract OpenOracleTest is BaseTest {
     uint256 constant ORACLE_FEE = 0.01 ether;
