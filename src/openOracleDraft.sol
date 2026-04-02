@@ -155,8 +155,7 @@ contract OpenOracle is ReentrancyGuard {
         address indexed reporter,
         uint128 amount1,
         uint128 amount2,
-        uint48 reportTimestamp,
-        uint256 blockTimestamp
+        uint48 reportTimestamp
     );
 
     event ReportDisputed(
@@ -165,8 +164,7 @@ contract OpenOracle is ReentrancyGuard {
         address indexed tokenToSwap,
         uint128 newAmount1,
         uint128 newAmount2,
-        uint48 reportTimestamp,
-        uint256 blockTimestamp
+        uint48 reportTimestamp
     );
 
     event ReportSettled(uint256 indexed reportId, uint256 amount1, uint256 amount2, uint256 settlementTimestamp, uint256 blockTimestamp);
@@ -507,8 +505,7 @@ contract OpenOracle is ReentrancyGuard {
             reporter,
             amount1,
             amount2,
-            reportTimestamp,
-            block.timestamp
+            reportTimestamp
         );
 
     }
@@ -618,8 +615,7 @@ contract OpenOracle is ReentrancyGuard {
             tokenToSwap,
             newAmount1,
             newAmount2,
-            status.reportTimestamp,
-            block.timestamp
+            status.reportTimestamp
         );
 
     }
