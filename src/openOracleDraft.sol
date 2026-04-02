@@ -130,72 +130,48 @@ contract OpenOracle is ReentrancyGuard {
         uint256 indexed reportId,
         address indexed token1Address,
         address indexed token2Address,
-        uint256 feePercentage,
-        uint256 multiplier,
-        uint256 exactToken1Report,
-        uint256 ethFee,
         address creator,
-        uint256 settlementTime,
-        uint256 escalationHalt,
-        uint256 disputeDelay,
-        uint256 protocolFee,
-        uint256 settlerReward,
+        address protocolFeeRecipient,
+        uint128 exactToken1Report,
+        uint128 escalationHalt,
+        uint96 settlerReward,
+        uint96 fee,
+        uint96 ethFee,
+        uint48 settlementTime,
+        uint24 disputeDelay,
+        uint24 feePercentage,
+        uint24 protocolFee,
+        uint16 multiplier,
         bool timeType,
+        bool trackDisputes,
         address callbackContract,
         bytes4 callbackSelector,
-        bool trackDisputes,
-        uint256 callbackGasLimit,
+        uint32 callbackGasLimit,
         bytes32 stateHash,
         uint256 blockTimestamp
     );
 
     event InitialReportSubmitted(
         uint256 indexed reportId,
-        address reporter,
-        uint256 amount1,
-        uint256 amount2,
-        address indexed token1Address,
-        address indexed token2Address,
-        uint256 swapFee,
-        uint256 protocolFee,
-        uint256 settlementTime,
-        uint256 disputeDelay,
-        uint256 escalationHalt,
-        bool timeType,
-        address callbackContract,
-        bytes4 callbackSelector,
-        bool trackDisputes,
-        uint256 callbackGasLimit,
-        bytes32 stateHash,
+        address indexed reporter,
+        uint128 amount1,
+        uint128 amount2,
+        uint48 reportTimestamp,
         uint256 blockTimestamp
     );
 
     event ReportDisputed(
         uint256 indexed reportId,
-        address disputer,
-        uint256 newAmount1,
-        uint256 newAmount2,
-        address indexed token1Address,
-        address indexed token2Address,
-        uint256 swapFee,
-        uint256 protocolFee,
-        uint256 settlementTime,
-        uint256 disputeDelay,
-        uint256 escalationHalt,
-        bool timeType,
-        address callbackContract,
-        bytes4 callbackSelector,
-        bool trackDisputes,
-        uint256 callbackGasLimit,
-        bytes32 stateHash,
+        address indexed disputer,
+        address indexed tokenToSwap,
+        uint128 newAmount1,
+        uint128 newAmount2,
+        uint48 reportTimestamp,
         uint256 blockTimestamp
     );
 
     event ReportSettled(uint256 indexed reportId, uint256 amount1, uint256 amount2, uint256 settlementTimestamp, uint256 blockTimestamp);
     event SettlementCallbackExecuted(uint256 indexed reportId, address indexed callbackContract, bool success);
-    event ReportInstanceCreated2(uint256 reportId, address protocolFeeRecipient);
-    event ReportDisputed2(uint256 reportId, uint256 multiplier, address protocolFeeRecipient, uint256 settlerReward);
-    event InitialReportSubmitted2(uint256 reportId, uint256 multiplier, address protocolFeeRecipient, uint256 settlerReward);
 
     constructor() ReentrancyGuard() {}
 
@@ -433,26 +409,26 @@ contract OpenOracle is ReentrancyGuard {
             reportId,
             params.token1Address,
             params.token2Address,
-            params.feePercentage,
-            params.multiplier,
-            params.exactToken1Report,
-            msg.value,
             msg.sender,
-            params.settlementTime,
+            params.protocolFeeRecipient,
+            params.exactToken1Report,
             params.escalationHalt,
-            params.disputeDelay,
-            params.protocolFee,
             params.settlerReward,
+            reporterFee,
+            uint96(msg.value),
+            params.settlementTime,
+            params.disputeDelay,
+            params.feePercentage,
+            params.protocolFee,
+            params.multiplier,
             params.timeType,
+            params.trackDisputes,
             params.callbackContract,
             params.callbackSelector,
-            params.trackDisputes,
             params.callbackGasLimit,
             stateHash,
             block.timestamp
         );
-
-        emit ReportInstanceCreated2(reportId, params.protocolFeeRecipient);
 
         return reportId;
     }
@@ -533,23 +509,9 @@ contract OpenOracle is ReentrancyGuard {
             reporter,
             amount1,
             amount2,
-            meta.token1,
-            meta.token2,
-            meta.feePercentage,
-            meta.protocolFee,
-            meta.settlementTime,
-            meta.disputeDelay,
-            meta.escalationHalt,
-            meta.timeType,
-            extra.callbackContract,
-            extra.callbackSelector,
-            trackDisputes,
-            extra.callbackGasLimit,
-            stateHash,
+            reportTimestamp,
             block.timestamp
         );
-
-        emit InitialReportSubmitted2(reportId, meta.multiplier, extra.protocolFeeRecipient, meta.settlerReward);
 
     }
 
@@ -655,25 +617,12 @@ contract OpenOracle is ReentrancyGuard {
         emit ReportDisputed(
             reportId,
             disputer,
+            tokenToSwap,
             newAmount1,
             newAmount2,
-            meta.token1,
-            meta.token2,
-            meta.feePercentage,
-            meta.protocolFee,
-            meta.settlementTime,
-            meta.disputeDelay,
-            meta.escalationHalt,
-            meta.timeType,
-            extra.callbackContract,
-            extra.callbackSelector,
-            trackDisputes,
-            extra.callbackGasLimit,
-            stateHash,
+            status.reportTimestamp,
             block.timestamp
         );
-
-        emit ReportDisputed2(reportId, meta.multiplier, extra.protocolFeeRecipient, meta.settlerReward);
 
     }
 
