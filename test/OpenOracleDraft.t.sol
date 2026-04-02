@@ -333,11 +333,11 @@ contract OpenOracleDraftTest is BaseTestDraft {
         assertEq(token2.balanceOf(address(oracle)), 0, "Oracle should have no token2");
 
         (uint256 settledAmount1, uint256 settledAmount2) = oracle.getSettlementData(reportId);
-        (, , , , uint48 settlementTimestamp, , , , bool isDistributed) = oracle.reportStatus(reportId);
+        (, , , , uint48 settlementTimestamp, , ) = oracle.reportStatus(reportId);
 
         assertEq(settledAmount1, 1.1e18, "Settled token1 amount should match final report");
         assertEq(settledAmount2, 2100e18, "Settled token2 amount should match final report");
-        assertTrue(isDistributed, "Report should be marked settled");
+        assertTrue(settlementTimestamp != 0, "Report should be marked settled");
         assertEq(uint256(settlementTimestamp), block.timestamp, "Settlement timestamp should match");
     }
 }

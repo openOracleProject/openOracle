@@ -104,8 +104,6 @@ contract OpenOracle is ReentrancyGuard {
         uint48 settlementTimestamp;
         address payable initialReporter;
         uint48 lastReportOppoTime;
-        bool disputeOccurred;
-        bool isDistributed;
     }
 
     struct CreateReportParams {
@@ -234,7 +232,7 @@ contract OpenOracle is ReentrancyGuard {
         ReportStatus storage status = reportStatus[reportId];
         ReportMeta storage meta = reportMeta[reportId];
 
-        if (status.isDistributed) {
+        if (status.settlementTimestamp != 0) {
             revert AlreadySettled();
         }
 
@@ -253,7 +251,6 @@ contract OpenOracle is ReentrancyGuard {
         uint256 settlerReward = meta.settlerReward;
         uint256 reporterReward = meta.fee;
 
-        status.isDistributed = true;
         status.settlementTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
         emit ReportSettled(reportId, status.currentAmount1, status.currentAmount2, status.settlementTimestamp, block.timestamp);
 
@@ -293,7 +290,7 @@ contract OpenOracle is ReentrancyGuard {
      */
     function getSettlementData(uint256 reportId) external view returns (uint256 price, uint256 settlementTimestamp) {
         ReportStatus storage status = reportStatus[reportId];
-        if (!status.isDistributed) revert ReportNotSettled();
+        if (status.settlementTimestamp == 0) revert ReportNotSettled();
         return (status.currentAmount1, status.currentAmount2);
     }
 
@@ -642,7 +639,6 @@ contract OpenOracle is ReentrancyGuard {
             status.currentAmount2 = newAmount2;
             status.currentReporter = payable(disputer);
             status.reportTimestamp = reportTimestamp;
-            status.disputeOccurred = true;
             status.lastReportOppoTime = meta.timeType ? _getBlockNumber() : uint48(block.timestamp);
 
             if (trackDisputes) {
@@ -728,7 +724,7 @@ contract OpenOracle is ReentrancyGuard {
                 revert DisputeTooLate();
             }
         }
-        if (status.isDistributed) revert AlreadySettled();
+        if (status.settlementTimestamp != 0) revert AlreadySettled();
         if (tokenToSwap != meta.token1 && tokenToSwap != meta.token2) revert InvalidTokenToSwap();
         if (meta.timeType) {
             if (block.timestamp < status.reportTimestamp + meta.disputeDelay) {
