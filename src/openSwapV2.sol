@@ -1,0 +1,697 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {IOpenOracle} from "./interfaces/IOpenOracle.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
+import {oracleFeeReceiver} from "./oracleFeeReceiver.sol";
+
+/**
+ * @title openSwap
+ * @notice Uses openOracle for swap execution price
+           Different from simpleSwapper since there's no choice about whether to fulfill
+           simpleSwapper flow is deposit sellToken -> oracle game ends in price -> anyone has choice to swap against that price
+           openSwap flow is deposit sellToken -> someone matches with enough buyToken -> oracle game ends in price -> swap executed against price
+           This swapping method may open up oracle price manipulation opportunities. We try to cover manipulation strategies here:
+                      https://docs.openoracle.org/openoracle/attack-vectors#manipulation-without-a-swap-fee
+           Biasing the mean settled oracle price seems doable but tough, as the attacker needs to solve a multiplayer DP to optimally bias.
+           In general, this is a very complex game and we probably need to play it in the real world to be sure about the economics.
+ * @author OpenOracle Team
+ * @custom:version 0.1.6
+ * @custom:documentation https://docs.openoracle.org/
+ */
+
+contract openSwapV2Permit is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    IOpenOracle public immutable oracle;
+    address public immutable WETH = 0x4200000000000000000000000000000000000006;
+
+    error InvalidInput(string);
+
+    constructor(address oracle_) {
+        oracle = IOpenOracle(oracle_);
+    }
+
+    mapping(address => bool) private _oracleApproved;                                                                                                                                                   
+
+    mapping (uint256 => Swap) public swaps;
+    uint256 public nextSwapId = 1;
+
+    mapping (uint256 => uint256) public reportIdToSwapId;
+    mapping (address => mapping(address => uint256)) public tempHolding;
+
+    struct Swap {
+        uint128 sellAmt; // amount of sellToken the swapper is selling
+        uint128 minOut; // minimum tokens to swapper of buyToken when finished aside from full refunds
+        uint128 minFulfillLiquidity; // minimum amount of buyToken the matcher must put in the contract
+        uint128 reportId; // oracle game reportId
+        address buyToken; // address for token swapper wants
+        uint48 expiration; // timestamp at which swapper's swap can no longer be matched
+        uint48 start; // timestamp at which order is matched
+        address sellToken; // address for token swapper is selling
+        uint96 gasCompensation; // swapper pays matcher this amount of wei to call match
+        address swapper; // msg.sender of swapper
+        uint24 fulfillmentFee; // 1000 = 0.01%, fee paid to matcher
+        address matcher; // msg.sender of matcher
+        address feeRecipient; // contract holding protocol fees from oracle game
+        bool active; // true means swap created
+        bool matched; // true means swap matched by matcher
+        bool finished; // true means swap finished
+        bool cancelled; // true means swap cancelled by swapper
+        OracleParams oracleParams;
+        SlippageParams slippageParams;
+        FulfillFeeParams fulfillFeeParams;
+    }
+
+    struct OracleParams {
+        uint128 initialLiquidity; // oracle game initial liquidity in sellToken
+        uint128 escalationHalt; // amount of sellToken at which oracle game stops escalating
+        uint96 settlerReward; // settler reward in oracle game. settle function executes the swap.
+        uint48 settlementTime; // round length of oracle game. if timeType true, in seconds, if false, blocks
+        uint24 maxGameTime; // if oracle game takes longer than this time in seconds, refund available. does not respect timeType, i.e., is ALWAYS in seconds
+        uint24 disputeDelay; // disputes must wait this long after the last report to fire in the oracle game. if timeType true, in seconds, if false, blocks
+        uint24 protocolFee; // 1000 = 0.01%, percentage levied of each swap in oracle game for protocolFeeRecipient's benefit.
+        uint16 multiplier; // oracle game multiplier, 110 = 1.1x
+        uint16 blocksPerSecond; // network's blocks per second. 500 means 0.5 blocks per second versus wall clock
+        bool timeType; // true means oracle game is played in seconds, false for blocks
+    }
+
+    struct SlippageParams {
+        uint232 priceTolerated; // one of two max slippage inputs. current price at time of swap, formatted as priceTolerated = 225073570923495617630012810 implies (1e30 / priceTolerated) = $4442.99 for WETH/USDC trading (sellToken WETH or ETH and buyToken USDC)
+                                //should match oracle game price calculation (respecting PRICE_PRECISION semantics)
+        uint24 toleranceRange; // 100000 = 1%, max slippage against priceTolerated
+    }
+
+    struct FulfillFeeParams {
+        uint48 startFulfillFeeIncrease; // timestamp at which order is created
+        uint24 maxFee; // 1000 = 0.01%, max fulfillment fee you can pay
+        uint24 startingFee; // 1000 = 0.01%, starting fee level
+        uint24 roundLength; // round length in seconds
+        uint16 growthRate; // 15000 = 1.5x per round
+        uint16 maxRounds; // max rounds of increase
+    }
+
+    struct PermitParams {
+        uint256 value;
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
+    event SwapCreated(uint256 indexed swapId, address indexed swapper, uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity, uint48 expiration, uint232 priceTolerated, uint24 toleranceRange, FulfillFeeParams fulfillFeeParams, OracleParams oracleParams, uint96 gasCompensation);
+    event SwapCancelled(uint256 swapId);
+    event SingleFee(uint256 swapId, uint24 fulfillmentFee);
+    event SwapRefunded(uint256 swapId, address indexed swapper, address indexed matcher);
+    event SwapExecuted(address indexed swapper, address indexed matcher, uint256 swapId, uint128 sellTokenAmt, uint128 buyTokenAmt);
+    event SwapMatched(uint256 swapId, uint24 fulfillmentFee, address indexed matcher, uint256 reportId, address indexed swapper);
+    event FeesTransferred(address indexed swapper, address indexed matcher, address buyToken, address sellToken, uint128 feesBuyToken, uint128 feesSellToken, address feeRecipientContract);
+
+    event SlippageBailout(uint256 swapId);
+    event ImpliedBlocksPerSecondBailout(uint256 swapId);
+
+    /**
+     * @notice Creates a swap, sending sellAmt of sellToken into the contract.
+     * @param sellAmt Amount of sellToken to sell
+     * @param sellToken Token address to sell
+     * @param minOut Minimum amount of buyToken to receive
+     * @param buyToken Token address to buy
+     * @param minFulfillLiquidity Matcher must supply this amount of buyToken. Should include a buffer above market price to prevent refunds.
+     * @param expiration Number of seconds after this transaction lands in a block when swap can no longer be matched.
+     * @param gasCompensation Gas compensation for matcher
+     * @param oracleParams Oracle game parameters: see OracleParams for comments
+     * @param slippageParams Slippage parameters: see SlippageParams for comments
+     * @param fulfillFeeParams Fulfillment fee parameters: see FulfillFeeParams for comments
+     * @param permit Permit params for ERC20Permit
+     * @return swapId The final settled price
+     */
+    function swap(uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity, uint48 expiration, uint96 gasCompensation, OracleParams memory oracleParams, SlippageParams memory slippageParams, FulfillFeeParams memory fulfillFeeParams, PermitParams memory permit) external payable nonReentrant returns(uint256 swapId) {
+
+        if (permit.deadline != 0){
+            try IERC20Permit(sellToken).permit(
+                msg.sender,
+                address(this),
+                permit.value,
+                permit.deadline,
+                permit.v,
+                permit.r,
+                permit.s
+            ) {} catch {}
+        }
+
+        uint256 settlerReward = oracleParams.settlerReward;
+        uint256 extraEth;
+
+        extraEth = gasCompensation + settlerReward;
+
+        if (sellToken != address(0) && msg.value != extraEth) revert InvalidInput("msg.value wrong");
+        if (sellToken == address(0) && msg.value != sellAmt + extraEth) revert InvalidInput("msg.value vs sellAmt mismatch");
+
+        if (sellToken == buyToken) revert InvalidInput("sellToken = buyToken");
+        if (sellToken == WETH && buyToken == address(0) || sellToken == address(0) && buyToken == WETH) revert InvalidInput("sellToken = buyToken");
+
+        if (sellAmt == 0 || minOut == 0 || minFulfillLiquidity == 0) revert InvalidInput("zero amounts");
+        if (fulfillFeeParams.maxFee >= 1e7) revert InvalidInput("fulfillmentFee");
+
+        if (slippageParams.priceTolerated == 0 || slippageParams.toleranceRange == 0 || slippageParams.toleranceRange > 1e7) revert InvalidInput("slippage");
+
+        if (oracleParams.settlerReward < 100
+            || oracleParams.settlementTime == 0 
+            || oracleParams.initialLiquidity == 0
+            || oracleParams.blocksPerSecond == 0
+            || oracleParams.disputeDelay >= oracleParams.settlementTime
+            || oracleParams.escalationHalt < oracleParams.initialLiquidity
+            || oracleParams.settlementTime > 4 * 60 * 60
+            || oracleParams.protocolFee >= 1e7
+            || oracleParams.maxGameTime < oracleParams.settlementTime * 20
+            || oracleParams.maxGameTime > 604800
+            ) revert InvalidInput("oracleParams");
+
+        if (fulfillFeeParams.maxFee == 0
+            || fulfillFeeParams.startingFee == 0
+            || fulfillFeeParams.growthRate == 0
+            || fulfillFeeParams.maxRounds == 0
+            || fulfillFeeParams.roundLength == 0
+            || fulfillFeeParams.maxFee < fulfillFeeParams.startingFee
+            || fulfillFeeParams.maxFee > 1e7
+            ) revert InvalidInput("fulfillFeeParams");
+
+        swapId = nextSwapId++;
+        Swap storage s = swaps[swapId];
+
+        s.swapper = msg.sender;
+        s.sellAmt = sellAmt;
+        s.sellToken = sellToken;
+        s.minOut = minOut;
+        s.buyToken = buyToken;
+        s.minFulfillLiquidity =  minFulfillLiquidity;
+        s.expiration = uint48(block.timestamp) + expiration;
+        s.active = true;
+        s.oracleParams = oracleParams;
+        s.slippageParams = slippageParams;
+        s.gasCompensation = gasCompensation;
+        s.fulfillFeeParams = fulfillFeeParams;
+        s.fulfillFeeParams.startFulfillFeeIncrease = uint48(block.timestamp);
+
+        if (sellToken != address(0)) {
+            IERC20(sellToken).safeTransferFrom(msg.sender, address(this), sellAmt);
+        }
+
+        emit SwapCreated(swapId, s.swapper, sellAmt, sellToken, minOut, buyToken, minFulfillLiquidity, s.expiration, slippageParams.priceTolerated, slippageParams.toleranceRange, s.fulfillFeeParams, s.oracleParams, gasCompensation);
+
+    }
+
+    /**
+     * @notice Matcher matches swap and submits oracle initial report, sending tokens into contract
+     * @param swapId Unique identifier of swapping instance
+     * @param amount2 Oracle game amount2
+     * @param paramHashExpected Hash of Swap struct expected. Helps protect against adversarial RPCs
+                                Checks against keccak256(abi.encode(swaps[swapId]))
+    */
+    function matchSwap(uint256 swapId, uint128 amount2, bytes32 paramHashExpected) external payable nonReentrant {
+        Swap storage s = swaps[swapId];
+        FulfillFeeParams memory f = s.fulfillFeeParams;
+        OracleParams memory o = s.oracleParams;
+
+        if (paramHashExpected != keccak256(abi.encode(s))) revert InvalidInput("params");
+
+        if (s.buyToken != address(0) && msg.value != 0) revert InvalidInput("msg.value must be 0");
+        if (s.buyToken == address(0) && msg.value != s.minFulfillLiquidity) revert InvalidInput("msg.value");
+
+        if (s.cancelled) revert InvalidInput("swap cancelled");
+        if (s.matched) revert InvalidInput("swap matched");
+        if (!s.active) revert InvalidInput("swap not active");
+        if (s.finished) revert InvalidInput("finished");
+        if (block.timestamp > s.expiration) revert InvalidInput("expired");
+
+        s.matched = true;
+        s.matcher = msg.sender;
+        s.start = uint48(block.timestamp);
+        s.fulfillmentFee = uint24(calcFee(f.maxFee, f.startingFee, f.growthRate, f.maxRounds, f.startFulfillFeeIncrease, f.roundLength));
+
+        payEth(msg.sender, s.gasCompensation);
+
+        if(s.buyToken != address(0)) {
+            IERC20(s.buyToken).safeTransferFrom(msg.sender, address(this), s.minFulfillLiquidity + amount2);
+        } else {
+            IERC20(WETH).safeTransferFrom(msg.sender, address(this), amount2);
+        }
+
+        if (s.sellToken != address(0)) {
+            IERC20(s.sellToken).safeTransferFrom(msg.sender, address(this), o.initialLiquidity);
+        } else {
+            IERC20(WETH).safeTransferFrom(msg.sender, address(this), o.initialLiquidity);
+        }
+
+        if (s.oracleParams.protocolFee > 0) {
+            address sellToken;
+            address buyToken;
+
+            s.sellToken == address(0) ? sellToken = WETH : sellToken = s.sellToken;
+            s.buyToken == address(0) ? buyToken = WETH : buyToken = s.buyToken;
+            oracleFeeReceiver feeReceiver = new oracleFeeReceiver(address(this), swapId, address(oracle), sellToken, buyToken);
+            s.feeRecipient = address(feeReceiver);
+        }
+
+        uint256 reportId = oracleGame(s);
+
+        if(s.buyToken != address(0)) {
+            _ensureOracleApproval(s.buyToken);
+        } else {
+            _ensureOracleApproval(WETH);
+        }
+
+        if (s.sellToken != address(0)) {
+            _ensureOracleApproval(s.sellToken);
+        } else {
+            _ensureOracleApproval(WETH);
+        }
+
+        oracle.submitInitialReport(
+            reportId,
+            o.initialLiquidity,
+            amount2,
+            oracle.extraData(reportId).stateHash,
+            msg.sender
+        );
+
+        s.reportId = uint128(reportId);
+        reportIdToSwapId[reportId] = swapId;
+
+        emit SwapMatched(swapId, s.fulfillmentFee, s.matcher, reportId, s.swapper);
+
+    }
+
+    /**
+     * @notice Swapper cancels swap, receiving tokens back.
+               Must be called prior to match.
+               Allows anyone to call 30 seconds after swap expiration, pays them 20% of gas compensation.
+     * @param swapId Unique identifier of swapping instance
+    */
+    function cancelSwap(uint256 swapId) external nonReentrant {
+        Swap storage s = swaps[swapId];
+        OracleParams memory o = s.oracleParams;
+
+        address caller;
+        uint256 callerPiece;
+        uint256 swapperPiece;
+
+        if (block.timestamp <= s.expiration + 30){
+            if (msg.sender != s.swapper) revert InvalidInput("not swapper");
+            callerPiece = 0;
+            swapperPiece = s.gasCompensation;
+        } else {
+            if (msg.sender != s.swapper){
+                caller = msg.sender;
+                callerPiece = s.gasCompensation / 5;
+                swapperPiece = s.gasCompensation - callerPiece;
+            } else {
+                swapperPiece = s.gasCompensation;
+            }
+        }
+
+        if (s.matched) revert InvalidInput("already matched");
+        if (!s.active) revert InvalidInput("not active");
+        if (s.cancelled) revert InvalidInput("cancelled");
+        if (s.finished) revert InvalidInput("finished");
+
+        s.cancelled = true;
+        if (s.sellToken != address(0)) {
+            IERC20(s.sellToken).safeTransfer(s.swapper, s.sellAmt);
+            payEth(s.swapper, swapperPiece + o.settlerReward);
+            if (caller == msg.sender) payEth(caller, callerPiece);
+        } else {
+            payEth(s.swapper, s.sellAmt + swapperPiece + o.settlerReward);
+            if (caller == msg.sender) payEth(caller, callerPiece);
+        }
+
+        emit SwapCancelled(swapId);
+    }
+
+    function oracleGame(Swap memory s) internal returns (uint256 reportId) {
+        OracleParams memory o = s.oracleParams;
+        address token1;
+        address token2;
+
+        if (s.sellToken == address(0)){
+            token1 = WETH;
+            token2 = s.buyToken;
+        } else if (s.buyToken == address(0)) {
+            token1 = s.sellToken;
+            token2 = WETH;
+        } else {
+            token1 = s.sellToken;
+            token2 = s.buyToken;
+        }
+
+        IOpenOracle.CreateReportParams memory params = IOpenOracle.CreateReportParams({
+            exactToken1Report: o.initialLiquidity,
+            escalationHalt: o.escalationHalt,
+            settlerReward: o.settlerReward,
+            token1Address: token1,
+            settlementTime: o.settlementTime,
+            disputeDelay: o.disputeDelay,
+            protocolFee: o.protocolFee,
+            token2Address: token2,
+            callbackGasLimit: 1000000,
+            feePercentage: 0,
+            multiplier: o.multiplier,
+            timeType: o.timeType,
+            trackDisputes: false,
+            callbackContract: address(this),
+            callbackSelector: this.onSettle.selector,
+            protocolFeeRecipient: s.feeRecipient
+        });
+
+        /* ------------ create report instance ------------ */
+        reportId = oracle.createReportInstance{value: o.settlerReward}(params);
+        return reportId;
+
+    }
+
+    /* -------- oracle callback -------- */
+    function onSettle(uint256 id, uint256 price, uint256, address, address)
+        external
+        payable
+        nonReentrant
+    {
+        if (msg.sender != address(oracle)) revert InvalidInput("invalid sender");
+        uint256 swapId = reportIdToSwapId[id];
+        Swap storage s = swaps[swapId];
+        if (id != s.reportId) revert InvalidInput("wrong reportId");
+        if (s.finished) revert InvalidInput("finished");
+        s.finished = true;
+
+        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
+        uint256 oracleAmount1 = rs.currentAmount1;
+        uint256 oracleAmount2 = rs.currentAmount2;
+        uint256 fulfillAmt = (s.sellAmt * oracleAmount2) / oracleAmount1;
+        fulfillAmt -= fulfillAmt * s.fulfillmentFee / 1e7;
+        bool slippageOk = toleranceCheck(price, s.slippageParams.priceTolerated, s.slippageParams.toleranceRange);
+        bool blocksPerSecondOk = impliedBlocksPerSecond(s.oracleParams.timeType, rs.reportTimestamp, rs.lastReportOppoTime, s.oracleParams.blocksPerSecond);
+
+        if (fulfillAmt > s.minFulfillLiquidity || fulfillAmt < s.minOut || !slippageOk) emit SlippageBailout(swapId);
+        if (!blocksPerSecondOk) emit ImpliedBlocksPerSecondBailout(swapId);
+
+        if (fulfillAmt > s.minFulfillLiquidity || fulfillAmt < s.minOut || !slippageOk || !blocksPerSecondOk) {
+            refund(s.sellToken, s.sellAmt, s.swapper, s.buyToken, s.minFulfillLiquidity, s.matcher);
+            emit SwapRefunded(swapId, s.swapper, s.matcher);
+        } else {
+            //complete swap
+            if (s.buyToken != address(0)){
+                _transferTokens(s.buyToken, address(this), s.swapper, fulfillAmt);
+                _transferTokens(s.buyToken, address(this), s.matcher, s.minFulfillLiquidity - fulfillAmt);
+                if (s.sellToken != address(0)) {
+                    _transferTokens(s.sellToken, address(this), s.matcher, s.sellAmt);
+                } else {
+                    payEth(s.matcher, s.sellAmt);
+                }
+            } else {
+                payEth(s.swapper, fulfillAmt);
+                payEth(s.matcher, s.minFulfillLiquidity - fulfillAmt);
+                _transferTokens(s.sellToken, address(this), s.matcher, s.sellAmt);
+            }
+
+            emit SwapExecuted(s.swapper, s.matcher, swapId, s.sellAmt, uint128(fulfillAmt));
+
+        }
+
+        if (s.oracleParams.protocolFee > 0) {
+            grabOracleGameFees(s);
+        }
+
+    }
+
+    /**
+     * @notice Lets users bail out of a swapId and both swapper and matcher receive tokens back.
+               Anyone-can-call.
+               Two bail out conditions:
+                    1. reportId distributed but swapId not finished
+                    2. maxGameTime has passed since oracle game started 
+     * @param swapId Unique identifier of swapping instance
+    */
+    function bailOut(uint256 swapId) external nonReentrant {
+        Swap storage s = swaps[swapId];
+        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(s.reportId);
+
+        if (s.finished) revert InvalidInput("finished");
+        if (!s.active) revert InvalidInput("not active");
+        if (!s.matched) revert InvalidInput("not matched");
+        if (s.cancelled) revert InvalidInput("cancelled");
+        if (s.reportId == 0) revert InvalidInput("doesnt exist");
+
+        bool isGameTooLong = block.timestamp - s.start > s.oracleParams.maxGameTime;
+
+        if ((rs.settlementTimestamp != 0) && !s.finished || isGameTooLong){
+            s.finished = true;
+
+            refund(s.sellToken, s.sellAmt, s.swapper, s.buyToken, s.minFulfillLiquidity, s.matcher);
+            emit SwapRefunded(swapId, s.swapper, s.matcher);
+        }
+
+        if (!s.finished) revert InvalidInput("can't bail out yet");
+
+    }
+
+    /**
+     * @notice Anyone can distribute protocol fees from a given feeRecipient contract.
+               Eventual oracle game callback should always clear these tokens out anyways.
+     * @param swapId Unique identification number of swapping instance
+     */
+    function grabOracleGameFeesAny(uint256 swapId) external nonReentrant {
+        Swap storage s = swaps[swapId];
+        address feeRecipient = s.feeRecipient;
+        if (s.feeRecipient == address(0)) revert InvalidInput("no fee recipient");
+        if (oracleFeeReceiver(feeRecipient).gameId() != swapId) revert InvalidInput("feeRecipient not for swapId");
+        if (s.oracleParams.protocolFee == 0) revert InvalidInput("0 protocol fee");
+        if (!s.matched) revert InvalidInput("not matched");
+
+        grabOracleGameFees(s);
+    }
+
+    /**
+     * @notice Withdraws temp holdings for a specific token
+     * @param tokenToGet The token address to withdraw tokens for
+     */
+    function getTempHolding(address tokenToGet, address _to) external nonReentrant {
+        uint256 amount = tempHolding[_to][tokenToGet];
+        if (amount > 0) {
+            tempHolding[_to][tokenToGet] = 0;
+            _transferTokens(tokenToGet, address(this), _to, amount);
+        }
+    }
+
+    function payEth(address _to, uint256 _amount) internal {
+        (bool ok,) = payable(_to).call{value: _amount, gas: 40000}("");
+        if (!ok) {
+            IWETH(WETH).deposit{value: _amount}();
+            IERC20(WETH).safeTransfer(_to, _amount);
+        }
+    }
+
+    /**
+     * @dev Internal function to handle token transfers.                
+     */
+    function _transferTokens(address token, address from, address to, uint256 amount) internal {
+        if (amount == 0) return; // Gas optimization: skip zero transfers
+
+        if (from == address(this)) {
+
+            (bool success, bytes memory returndata) = token.call(
+                    abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+                );
+
+            if (success && ((returndata.length > 0 && abi.decode(returndata, (bool))) || 
+                (returndata.length == 0 && address(token).code.length > 0))) {
+               return;
+            }
+
+            tempHolding[to][token] += amount;
+
+        } else {
+            IERC20(token).safeTransferFrom(from, to, amount);
+        }
+    }
+
+    function refund(address sellToken, uint256 sellAmt, address swapper, address buyToken, uint256 buyAmt, address matcher) internal {
+        if (sellToken != address(0)){
+            _transferTokens(sellToken, address(this), swapper, sellAmt);
+            if (buyToken != address(0)){
+                _transferTokens(buyToken, address(this), matcher, buyAmt);
+            } else {
+                payEth(matcher, buyAmt);
+            }
+        } else {
+            payEth(swapper, sellAmt);
+            _transferTokens(buyToken, address(this), matcher, buyAmt);
+        }
+
+    }
+
+    function calcFee(uint256 maxFee, uint256 startingFee, uint256 growthRate, uint256 maxRounds, uint256 startFulfillFeeIncrease, uint256 roundLength) internal view returns (uint256) {
+        uint256 timeDelta = block.timestamp - startFulfillFeeIncrease;
+        
+        timeDelta = timeDelta / roundLength;
+        if (timeDelta > maxRounds) {
+            timeDelta = maxRounds;
+        }
+
+        uint256 currentFee = startingFee;
+
+        for (uint256 i = 0; i < timeDelta; i++) {
+            currentFee = (currentFee * growthRate) / 10000;
+            if (currentFee >= maxFee) {
+                return maxFee;
+            }
+        }
+        
+        return currentFee;
+    }
+
+    function toleranceCheck(uint256 price, uint256 priceTolerated, uint24 toleranceRange)
+        internal
+        pure
+        returns (bool)
+    {
+        uint256 tr = uint256(toleranceRange);
+        uint256 upper = (priceTolerated * (1e7 + tr)) / 1e7;
+        uint256 lower = (priceTolerated * 1e7) / (1e7 + tr);
+
+        return price >= lower && price <= upper;
+
+    }
+
+    function impliedBlocksPerSecond(bool timeType, uint48 _time, uint48 _timeOppo, uint48 blocksPerSecond) internal view returns (bool) {
+        uint48 _timeChangeTrue;
+        uint48 _timeChangeBlock;
+        uint48 expectedBlocks;
+        uint48 _blocksPerSecond = blocksPerSecond;
+
+        if (timeType) {
+            _timeChangeTrue = uint48(block.timestamp) - _time;
+            _timeChangeBlock = uint48(block.number) - _timeOppo;
+        } else {
+            _timeChangeTrue = uint48(block.timestamp) - _timeOppo;
+            _timeChangeBlock = uint48(block.number) - _time;
+        }
+
+        expectedBlocks = _timeChangeTrue * _blocksPerSecond;
+
+        if (
+            1000 * _timeChangeBlock > expectedBlocks + 2 * _blocksPerSecond
+                || 1000 * _timeChangeBlock + 2 * _blocksPerSecond < expectedBlocks
+        ) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+    function grabOracleGameFees(Swap storage s) internal {
+        address feeRecipient = s.feeRecipient;
+        oracleFeeReceiver feeReceiver = oracleFeeReceiver(feeRecipient);
+        address sellToken;
+        address buyToken;
+
+        s.sellToken == address(0) ? sellToken = WETH : sellToken = s.sellToken; 
+        s.buyToken == address(0) ? buyToken = WETH : buyToken = s.buyToken; 
+
+        try feeReceiver.collect() {} catch{}
+
+        uint256 sellBalanceStart = IERC20(sellToken).balanceOf(address(this));
+        try feeReceiver.sweep(sellToken) {} catch{}
+        uint256 sellBalanceEnd = IERC20(sellToken).balanceOf(address(this));
+        uint256 feesSellToken = sellBalanceEnd > sellBalanceStart ? sellBalanceEnd - sellBalanceStart : 0;
+
+        uint256 buyBalanceStart = IERC20(buyToken).balanceOf(address(this));
+        try feeReceiver.sweep(buyToken) {} catch{}
+        uint256 buyBalanceEnd = IERC20(buyToken).balanceOf(address(this));
+        uint256 feesBuyToken = buyBalanceEnd > buyBalanceStart ? buyBalanceEnd - buyBalanceStart : 0;
+
+        uint256 swapperSellFeePiece = feesSellToken / 2;
+        uint256 matcherSellFeePiece = feesSellToken - swapperSellFeePiece;
+
+        _transferTokens(sellToken, address(this), s.swapper, swapperSellFeePiece);
+        _transferTokens(sellToken, address(this), s.matcher, matcherSellFeePiece);
+
+        uint256 swapperBuyFeePiece = feesBuyToken / 2;
+        uint256 matcherBuyFeePiece = feesBuyToken - swapperBuyFeePiece;
+
+        _transferTokens(buyToken, address(this), s.swapper, swapperBuyFeePiece);
+        _transferTokens(buyToken, address(this), s.matcher, matcherBuyFeePiece);
+
+        emit FeesTransferred(s.swapper, s.matcher, buyToken, sellToken, uint128(feesBuyToken), uint128(feesSellToken), s.feeRecipient);
+
+    }
+
+    function _ensureOracleApproval(address token) internal {                                                                                                                                            
+        if (!_oracleApproved[token]) {                                                                                                                                                                  
+            IERC20(token).approve(address(oracle), type(uint256).max);                                                                                                                                  
+            _oracleApproved[token] = true;                                                                                                                                                              
+        }                                                                                                                                                                                               
+    }
+
+    /* -------- VIEW FUNCTIONS -------- */
+
+    /**
+     * @notice Returns the full Swap struct for a given swapId
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getSwap(uint256 swapId) external view returns (Swap memory) {
+        return swaps[swapId];
+    }
+
+    /**
+     * @notice Returns oracle parameters for a given swapId
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getOracleParams(uint256 swapId) external view returns (OracleParams memory) {
+        return swaps[swapId].oracleParams;
+    }
+
+    /**
+     * @notice Returns slippage parameters for a given swapId
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getSlippageParams(uint256 swapId) external view returns (SlippageParams memory) {
+        return swaps[swapId].slippageParams;
+    }
+
+    /**
+     * @notice Returns fulfillment fee parameters for a given swapId
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getFulfillmentFeeParams(uint256 swapId) external view returns (FulfillFeeParams memory) {
+        return swaps[swapId].fulfillFeeParams;
+    }
+
+    /**
+     * @notice Returns the current fulfillment fee for a given swapId based on time elapsed
+     * @dev Returns 0 if swap is already matched, otherwise calculates current fee
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getCurrentFulfillmentFee(uint256 swapId) external view returns (uint256) {
+        Swap storage s = swaps[swapId];
+
+        if (s.matched) {
+            return 0;
+        }
+
+        FulfillFeeParams memory f = s.fulfillFeeParams;
+        return calcFee(f.maxFee, f.startingFee, f.growthRate, f.maxRounds, f.startFulfillFeeIncrease, f.roundLength);
+    }
+
+    /**
+     * @notice Returns the keccak256 hash of a Swap struct for optional matcher verification
+     * @dev Risky if trusting an RPC - a malicious RPC can return false data. Use your own node or construct yourself with expected parameters for protection.
+     * @param swapId Unique identifier of swapping instance
+     */
+    function getSwapHash(uint256 swapId) external view returns (bytes32) {
+        return keccak256(abi.encode(swaps[swapId]));
+    }
+
+}
