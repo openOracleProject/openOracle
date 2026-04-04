@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 interface IOpenOracle {
     struct disputeRecord {
-        uint256 amount1;
-        uint256 amount2;
+        uint128 amount1;
+        uint128 amount2;
         address tokenToSwap;
         uint48 reportTimestamp;
     }
@@ -17,14 +17,13 @@ interface IOpenOracle {
         bytes4 callbackSelector;
         address protocolFeeRecipient;
         bool trackDisputes;
-        bool keepFee;
     }
 
     struct ReportMeta {
-        uint256 exactToken1Report;
-        uint256 escalationHalt;
-        uint256 fee;
-        uint256 settlerReward;
+        uint128 exactToken1Report;
+        uint128 escalationHalt;
+        uint96 fee;
+        uint96 settlerReward;
         address token1;
         uint48 settlementTime;
         address token2;
@@ -36,22 +35,19 @@ interface IOpenOracle {
     }
 
     struct ReportStatus {
-        uint256 currentAmount1;
-        uint256 currentAmount2;
-        uint256 price;
+        uint128 currentAmount1;
+        uint128 currentAmount2;
         address payable currentReporter;
         uint48 reportTimestamp;
         uint48 settlementTimestamp;
         address payable initialReporter;
         uint48 lastReportOppoTime;
-        bool disputeOccurred;
-        bool isDistributed;
     }
 
     struct CreateReportParams {
-        uint256 exactToken1Report;
-        uint256 escalationHalt;
-        uint256 settlerReward;
+        uint128 exactToken1Report;
+        uint128 escalationHalt;
+        uint96 settlerReward;
         address token1Address;
         uint48 settlementTime;
         uint24 disputeDelay;
@@ -62,7 +58,6 @@ interface IOpenOracle {
         uint16 multiplier;
         bool timeType;
         bool trackDisputes;
-        bool keepFee;
         address callbackContract;
         bytes4 callbackSelector;
         address protocolFeeRecipient;
@@ -70,11 +65,17 @@ interface IOpenOracle {
 
     function createReportInstance(CreateReportParams calldata params) external payable returns (uint256 reportId);
 
-    /* initial report overload with reporter */
     function submitInitialReport(
         uint256 reportId,
-        uint256 amount1,
-        uint256 amount2,
+        uint128 amount1,
+        uint128 amount2,
+        bytes32 stateHash
+    ) external;
+
+    function submitInitialReport(
+        uint256 reportId,
+        uint128 amount1,
+        uint128 amount2,
         bytes32 stateHash,
         address reporter
     ) external;
@@ -82,10 +83,19 @@ interface IOpenOracle {
     function disputeAndSwap(
         uint256 reportId,
         address tokenToSwap,
-        uint256 newAmount1,
-        uint256 newAmount2,
+        uint128 newAmount1,
+        uint128 newAmount2,
+        uint128 amt2Expected,
+        bytes32 stateHash
+    ) external;
+
+    function disputeAndSwap(
+        uint256 reportId,
+        address tokenToSwap,
+        uint128 newAmount1,
+        uint128 newAmount2,
         address disputer,
-        uint256 amt2Expected,
+        uint128 amt2Expected,
         bytes32 stateHash
     ) external;
 
@@ -93,7 +103,11 @@ interface IOpenOracle {
         address tokenToGet
     ) external;
 
-    function settle(uint256 id) external returns (uint256 price, uint256 settlementTimestamp);
+    function getETHProtocolFees() external returns (uint256);
+
+    function settle(uint256 id) external;
+
+    function getSettlementData(uint256 id) external view returns (uint256 price, uint256 settlementTimestamp);
 
     function nextReportId() external view returns (uint256);
 
