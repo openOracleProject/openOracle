@@ -4,6 +4,22 @@ pragma solidity ^0.8.26;
 import "./BaseTest.sol";
 import "src/OpenOracle.sol";
 
+contract RejectingReceiver {
+    bool internal rejectEth = true;
+
+    receive() external payable {
+        require(!rejectEth, "rejecting ETH");
+    }
+
+    function setRejectEth(bool shouldReject) external {
+        rejectEth = shouldReject;
+    }
+
+    function claimETHProtocolFees(OpenOracle oracle) external returns (uint256) {
+        return oracle.getETHProtocolFees();
+    }
+}
+
 contract OpenOracleTest is BaseTest {
     uint256 constant ORACLE_FEE = 0.01 ether;
     uint256 constant SETTLER_REWARD = 0.001 ether;
@@ -150,6 +166,65 @@ contract OpenOracleTest is BaseTest {
         assertEq(charlie.balance, 10 ether + SETTLER_REWARD, "Charlie should have received settler reward");
     }
 
+    // Accrues ETH rewards for a reporter that rejects ETH and allows later withdrawal
+    function testGetETHProtocolFeesWhenReporterRejectsETH() public {
+        RejectingReceiver rejectingReceiver = new RejectingReceiver();
+
+        vm.prank(alice);
+        uint256 reportId = oracle.createReportInstance{
+            value: ORACLE_FEE
+        }(
+            OpenOracle.CreateReportParams({
+                token1Address: address(token1),
+                token2Address: address(token2),
+                exactToken1Report: uint128(1e18),
+                feePercentage: uint24(3000),
+                multiplier: uint16(110),
+                settlementTime: uint48(300),
+                escalationHalt: uint128(10e18),
+                disputeDelay: uint24(5),
+                protocolFee: uint24(1000),
+                settlerReward: uint96(SETTLER_REWARD),
+                timeType: true,
+                callbackContract: address(0),
+                callbackSelector: bytes4(0),
+                trackDisputes: false,
+                callbackGasLimit: uint32(0),
+                protocolFeeRecipient: protocolFeeRecipient
+            })
+        );
+
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        vm.prank(bob);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash, address(rejectingReceiver));
+
+        vm.warp(block.timestamp + 300);
+
+        vm.prank(charlie);
+        oracle.settle(reportId);
+
+        uint256 expectedETHFee = ORACLE_FEE - SETTLER_REWARD;
+
+        assertEq(charlie.balance, 10 ether + SETTLER_REWARD, "Charlie should have received settler reward");
+        assertEq(
+            oracle.accruedProtocolFees(address(rejectingReceiver)), expectedETHFee, "ETH protocol fee incorrect"
+        );
+
+        uint256 receiverETHBefore = address(rejectingReceiver).balance;
+
+        rejectingReceiver.setRejectEth(false);
+        uint256 withdrawnETH = rejectingReceiver.claimETHProtocolFees(oracle);
+
+        assertEq(withdrawnETH, expectedETHFee, "Withdrawn ETH amount incorrect");
+        assertEq(
+            address(rejectingReceiver).balance,
+            receiverETHBefore + expectedETHFee,
+            "ETH balance after withdrawal incorrect"
+        );
+        assertEq(oracle.accruedProtocolFees(address(rejectingReceiver)), 0, "ETH protocol fees not reset");
+    }
+
     // Withdrawing token protocol fees when none accrued does nothing
     function testGetProtocolFeesWithZeroBalance() public {
         // Test withdrawing when no fees have accrued
@@ -224,9 +299,6 @@ contract OpenOracleTest is BaseTest {
 
     // Full lifecycle: create → initial report → dispute → settle
     function testOracleLifecycle() public {
-        // Track initial balances
-        uint256 aliceToken1Before = token1.balanceOf(alice);
-        uint256 aliceToken2Before = token2.balanceOf(alice);
         uint256 aliceETHBefore = alice.balance;
 
         uint256 bobToken1Before = token1.balanceOf(bob);
@@ -283,7 +355,6 @@ contract OpenOracleTest is BaseTest {
         uint256 aliceToken1BeforeDispute = token1.balanceOf(alice);
         uint256 aliceToken2BeforeDispute = token2.balanceOf(alice);
         uint256 bobToken1BeforeDispute = token1.balanceOf(bob);
-        uint256 bobToken2BeforeDispute = token2.balanceOf(bob);
 
         // Dispute and swap
         vm.prank(alice);
