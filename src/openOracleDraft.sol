@@ -223,31 +223,39 @@ contract OpenOracle is ReentrancyGuard {
 
         uint256 settlerReward = meta.settlerReward;
         uint256 reporterReward = meta.fee;
+        uint128 currentAmount1 = status.currentAmount1;
+        uint128 currentAmount2 = status.currentAmount2;
+        address payable currentReporter = status.currentReporter;
+        address token1 = meta.token1;
+        address token2 = meta.token2;
 
         status.settlementTimestamp = meta.timeType ? uint48(block.timestamp) : _getBlockNumber();
-        emit ReportSettled(reportId, status.currentAmount1, status.currentAmount2, status.settlementTimestamp, block.timestamp);
+        emit ReportSettled(reportId, currentAmount1, currentAmount2, status.settlementTimestamp, block.timestamp);
 
         extraReportData storage extra = extraData[reportId];
+        address callbackContract = extra.callbackContract;
+        bytes4 callbackSelector = extra.callbackSelector;
+        uint32 callbackGasLimit = extra.callbackGasLimit;
 
-        _transferTokens(meta.token1, address(this), status.currentReporter, status.currentAmount1);
-        _transferTokens(meta.token2, address(this), status.currentReporter, status.currentAmount2);
+        _transferTokens(token1, address(this), currentReporter, currentAmount1);
+        _transferTokens(token2, address(this), currentReporter, currentAmount2);
 
-        if (extra.callbackContract != address(0) && extra.callbackSelector != bytes4(0)) {
+        if (callbackContract != address(0) && callbackSelector != bytes4(0)) {
             // Prepare callback data
             bytes memory callbackData = abi.encodeWithSelector(
-                extra.callbackSelector, reportId, status.settlementTimestamp, meta.token1, meta.token2
+                callbackSelector, reportId, (currentAmount1 * PRICE_PRECISION) / currentAmount2, status.settlementTimestamp, token1, token2
             );
 
             // Execute callback with gas limit. Revert if not enough gas supplied to attempt callback fully.
             // Using low-level call to handle failures gracefully
 
-            (bool success,) = extra.callbackContract.call{gas: extra.callbackGasLimit}(callbackData);
-            if (gasleft() < extra.callbackGasLimit / 63) {
+            (bool success,) = callbackContract.call{gas: callbackGasLimit}(callbackData);
+            if (gasleft() < callbackGasLimit / 63) {
                 revert InvalidGasLimit();
             }
 
             // Emit event regardless of bool success
-            emit SettlementCallbackExecuted(reportId, extra.callbackContract, success);
+            emit SettlementCallbackExecuted(reportId, callbackContract, success);
         }
 
         // other external calls below (check-effect-interaction pattern)
@@ -264,7 +272,7 @@ contract OpenOracle is ReentrancyGuard {
     function getSettlementData(uint256 reportId) external view returns (uint256 price, uint256 settlementTimestamp) {
         ReportStatus storage status = reportStatus[reportId];
         if (status.settlementTimestamp == 0) revert ReportNotSettled();
-        return (status.currentAmount1, status.currentAmount2);
+        return ((status.currentAmount1 * PRICE_PRECISION) / status.currentAmount2, status.settlementTimestamp);
     }
 
     /**
