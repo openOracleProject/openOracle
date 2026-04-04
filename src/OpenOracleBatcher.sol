@@ -23,10 +23,10 @@ contract openOracleBatcher is ReentrancyGuard {
     }
 
     struct oracleParams {
-        uint256 exactToken1Report;
-        uint256 escalationHalt;
-        uint256 fee;
-        uint256 settlerReward;
+        uint128 exactToken1Report;
+        uint128 escalationHalt;
+        uint96 fee;
+        uint96 settlerReward;
         address token1;
         uint48 settlementTime;
         address token2;
@@ -35,11 +35,10 @@ contract openOracleBatcher is ReentrancyGuard {
         uint24 protocolFee;
         uint16 multiplier;
         uint24 disputeDelay;//reportMeta end
-        uint256 currentAmount1;
-        uint256 currentAmount2;//reportStatus end
+        uint128 currentAmount1;
+        uint128 currentAmount2;//reportStatus end
         uint32 callbackGasLimit;
         address protocolFeeRecipient;
-        bool keepFee; //extraData end
     }
 
     // converts adversarial RPC into just a revert on-chain
@@ -56,7 +55,6 @@ contract openOracleBatcher is ReentrancyGuard {
         //oracle instance sanity checks
         if (isInitialReport) {
             if (p.exactToken1Report != meta.exactToken1Report) return false;
-            if (p.keepFee != extra.keepFee) return false;
         }
 
         if (p.escalationHalt != meta.escalationHalt) return false;
@@ -81,20 +79,11 @@ contract openOracleBatcher is ReentrancyGuard {
 
     }
 
-    function keepFeeCheck(uint256 reportId, bool keepFee) internal view returns (bool) {
-        IOpenOracle.extraReportData memory extra = oracle.extraData(reportId);
-
-        if (!extra.keepFee) return false;
-        if (!keepFee) return false;
-
-        return true;
-
-    }
 
     struct InitialReportData {
         uint256 reportId;
-        uint256 amount1;
-        uint256 amount2;
+        uint128 amount1;
+        uint128 amount2;
         bytes32 stateHash;
     }
 
@@ -122,7 +111,6 @@ contract openOracleBatcher is ReentrancyGuard {
         if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound) revert ActionSafetyFailure("timestamp");
         if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
         if (reports.length != 1) revert ActionSafetyFailure("too many reports");
-        if (!keepFeeCheck(reports[0].reportId, p.keepFee)) revert ActionSafetyFailure("keepFee false");
         if (!validate(reports[0].reportId, p, true)) revert ActionSafetyFailure("params dont match");
 
         _submitInitialReports(reports, batchAmount1, batchAmount2);
@@ -229,9 +217,9 @@ contract openOracleBatcher is ReentrancyGuard {
     struct DisputeData {
         uint256 reportId;
         address tokenToSwap;
-        uint256 newAmount1;
-        uint256 newAmount2;
-        uint256 amt2Expected;
+        uint128 newAmount1;
+        uint128 newAmount2;
+        uint128 amt2Expected;
         bytes32 stateHash;
     }
 
