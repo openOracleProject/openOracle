@@ -34,6 +34,7 @@ contract OpenOracle is ReentrancyGuard {
     error exactToken1CannotBeZero();
     error SettleVsDisputeDelayTiming();
     error MsgValueTooLow();
+    error MsgValueTooHigh();
     error FeesTooHigh();
     error MultiplierTooLow();
     error ReportAlreadySubmitted();
@@ -370,6 +371,7 @@ contract OpenOracle is ReentrancyGuard {
 
         uint96 reporterFee;
         if (msg.value > params.settlerReward) {
+            if (msg.value > type(uint96).max) revert MsgValueTooHigh();
             reporterFee = uint96(msg.value) - params.settlerReward;
             meta.fee = reporterFee;
         }
