@@ -52,7 +52,6 @@ contract OracleSwapFacility is ReentrancyGuard {
             bytes4(0),
             false,
             0,
-            false,
             101,
             0,
             amount1
@@ -72,7 +71,6 @@ contract OracleSwapFacility is ReentrancyGuard {
         bytes4 callbackSelector,
         bool trackDisputes,
         uint256 callbackGasLimit,
-        bool keepFee,
         uint256 multiplier,
         uint256 disputeDelay,
         uint256 escalationHalt
@@ -89,7 +87,6 @@ contract OracleSwapFacility is ReentrancyGuard {
             callbackSelector,
             trackDisputes,
             callbackGasLimit,
-            keepFee,
             multiplier,
             disputeDelay,
             escalationHalt
@@ -112,7 +109,6 @@ contract OracleSwapFacility is ReentrancyGuard {
         bytes4 callbackSelector,
         bool trackDisputes,
         uint256 callbackGasLimit,
-        bool keepFee,
         uint256 multiplier,
         uint256 disputeDelay,
         uint256 escalationHalt
@@ -126,9 +122,9 @@ contract OracleSwapFacility is ReentrancyGuard {
         IERC20(token2).safeTransferFrom(msg.sender, address(this), amount2);
 
         IOpenOracle.CreateReportParams memory params = IOpenOracle.CreateReportParams({
-            exactToken1Report: amount1,
-            escalationHalt: escalationHalt,
-            settlerReward: msg.value - 1,
+            exactToken1Report: uint128(amount1),
+            escalationHalt: uint128(escalationHalt),
+            settlerReward: uint96(msg.value),
             token1Address: token1,
             settlementTime: uint48(settlementTime),
             disputeDelay: uint24(disputeDelay),
@@ -139,7 +135,6 @@ contract OracleSwapFacility is ReentrancyGuard {
             multiplier: uint16(multiplier),
             timeType: timeType,
             trackDisputes: trackDisputes,
-            keepFee: keepFee,
             callbackContract: callbackContract,
             callbackSelector: callbackSelector,
             protocolFeeRecipient: address(0)
@@ -155,7 +150,7 @@ contract OracleSwapFacility is ReentrancyGuard {
         bytes32 stateHash = oracle.extraData(reportId).stateHash;
 
         /* ------------ file the initial report ----------- */
-        oracle.submitInitialReport(reportId, amount1, amount2, stateHash, msg.sender);
+        oracle.submitInitialReport(reportId, uint128(amount1), uint128(amount2), stateHash, msg.sender);
 
         emit SwapReportOpened(reportId, msg.sender, token1, token2, amount1, amount2, msg.value);
     }
