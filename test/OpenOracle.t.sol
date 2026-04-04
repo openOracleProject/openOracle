@@ -27,30 +27,29 @@ contract OpenOracleTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000), // 10 bps
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: false,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
         // Get state hash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // Wait for dispute delay
         vm.warp(block.timestamp + 6);
@@ -60,9 +59,9 @@ contract OpenOracleTest is BaseTest {
         oracle.disputeAndSwap(
             reportId,
             address(token1), // swap token1
-            1.1e18, // new amount1 (1.1x)
-            2100e18, // new amount2
-            2000e18, // expected amount2
+            uint128(1.1e18), // new amount1 (1.1x)
+            uint128(2100e18), // new amount2
+            uint128(2000e18), // expected amount2
             stateHash
         );
 
@@ -94,9 +93,9 @@ contract OpenOracleTest is BaseTest {
         oracle.settle(reportId);
     }
 
-    // Accrues ETH protocol fees when keepFee=false and withdraws them
+    // Accrues ETH protocol fees and withdraws them
     function testGetETHProtocolFees() public {
-        // Create report with keepFee false to accumulate ETH protocol fees on settlement
+        // Create report to accumulate ETH protocol fees on settlement
         vm.prank(alice);
         uint256 reportId = oracle.createReportInstance{
             value: ORACLE_FEE
@@ -104,37 +103,36 @@ contract OpenOracleTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: false, // Important: keepFee must be false for ETH protocol fees
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
         // Get state hash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // Wait for dispute delay
         vm.warp(block.timestamp + 6);
 
         // Dispute to trigger ETH fee accumulation
         vm.prank(alice);
-        oracle.disputeAndSwap(reportId, address(token1), 1.1e18, 2100e18, 2000e18, stateHash);
+        oracle.disputeAndSwap(reportId, address(token1), uint128(1.1e18), uint128(2100e18), uint128(2000e18), stateHash);
 
         // Wait for settlement
         vm.warp(block.timestamp + 300);
@@ -143,23 +141,13 @@ contract OpenOracleTest is BaseTest {
         vm.prank(charlie);
         oracle.settle(reportId);
 
-        // Calculate expected ETH fee (reporter reward when dispute occurred and keepFee is false)
-        uint256 expectedETHFee = ORACLE_FEE - SETTLER_REWARD; // Oracle fee minus settler reward
+        // In draft oracle, reporter always gets the fee directly via _sendEth.
+        // Bob (initialReporter) can receive ETH, so fee goes directly to him.
+        uint256 expectedETHFee = ORACLE_FEE - SETTLER_REWARD;
+        assertEq(bob.balance, 10 ether + expectedETHFee, "Bob should have received reporter ETH fee");
 
-        // Check ETH protocol fees accrued
-        assertEq(oracle.accruedProtocolFees(protocolFeeRecipient), expectedETHFee, "ETH protocol fee incorrect");
-
-        // Test withdrawal of ETH protocol fees
-        uint256 recipientETHBefore = protocolFeeRecipient.balance;
-
-        vm.prank(protocolFeeRecipient);
-        uint256 withdrawnETH = oracle.getETHProtocolFees();
-
-        assertEq(withdrawnETH, expectedETHFee, "Withdrawn ETH amount incorrect");
-        assertEq(
-            protocolFeeRecipient.balance, recipientETHBefore + expectedETHFee, "ETH balance after withdrawal incorrect"
-        );
-        assertEq(oracle.accruedProtocolFees(protocolFeeRecipient), 0, "ETH protocol fees not reset");
+        // Settler (charlie) should have received settler reward
+        assertEq(charlie.balance, 10 ether + SETTLER_REWARD, "Charlie should have received settler reward");
     }
 
     // Withdrawing token protocol fees when none accrued does nothing
@@ -189,33 +177,32 @@ contract OpenOracleTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: false,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 6);
 
         vm.prank(alice);
-        oracle.disputeAndSwap(reportId, address(token1), 1.1e18, 2100e18, 2000e18, stateHash);
+        oracle.disputeAndSwap(reportId, address(token1), uint128(1.1e18), uint128(2100e18), uint128(2000e18), stateHash);
 
         // Try to withdraw as non-recipient (should do nothing since alice has no accrued fees)
         uint256 aliceBalanceBefore = token1.balanceOf(alice);
@@ -255,20 +242,19 @@ contract OpenOracleTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
@@ -278,11 +264,11 @@ contract OpenOracleTest is BaseTest {
         assertEq(address(oracle).balance, ORACLE_FEE, "Oracle should have received fee");
 
         // Get state hash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // Check Bob's tokens were transferred to oracle
         assertEq(token1.balanceOf(bob), bobToken1Before - 1e18, "Bob should have sent 1 token1");
@@ -304,9 +290,9 @@ contract OpenOracleTest is BaseTest {
         oracle.disputeAndSwap(
             reportId,
             address(token1), // swap token1
-            1.1e18, // new amount1 (1.1x)
-            2100e18, // new amount2
-            2000e18, // expected amount2
+            uint128(1.1e18), // new amount1 (1.1x)
+            uint128(2100e18), // new amount2
+            uint128(2000e18), // expected amount2
             stateHash
         );
 
@@ -338,7 +324,8 @@ contract OpenOracleTest is BaseTest {
 
         // Settle
         vm.prank(charlie);
-        (uint256 price, uint256 settlementTimestamp) = oracle.settle(reportId);
+        oracle.settle(reportId);
+        (uint256 price, uint256 settlementTimestamp) = oracle.getSettlementData(reportId);
 
         // Check settlement effects:
         // Charlie gets settler reward

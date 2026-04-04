@@ -64,7 +64,6 @@ contract SwapFacilityTest is BaseTest {
             callbackContract.onOracleSettle.selector, // callback selector
             true, // trackDisputes
             300000, // callback gas limit
-            true, // keepFee
             101, // multiplier (default 101%)
             0, // disputeDelay
             amount1 // escalationHalt (set to amount1)
@@ -93,8 +92,8 @@ contract SwapFacilityTest is BaseTest {
         token1.approve(address(oracle), 100e18);
         token2.approve(address(oracle), 100e18);
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(1);
-        oracle.disputeAndSwap(1, address(token1), newAmount1, newAmount2, amount2, stateHash);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(1);
+        oracle.disputeAndSwap(1, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(amount2), stateHash);
 
         vm.stopPrank();
 
@@ -158,8 +157,8 @@ contract SwapFacilityTest is BaseTest {
         token1.approve(address(oracle), 100e18);
         token2.approve(address(oracle), 100e18);
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(1);
-        oracle.disputeAndSwap(1, address(token1), newAmount1, newAmount2, amount2, stateHash);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(1);
+        oracle.disputeAndSwap(1, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(amount2), stateHash);
 
         vm.stopPrank();
 

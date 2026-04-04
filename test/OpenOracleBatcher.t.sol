@@ -42,20 +42,19 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
@@ -63,14 +62,14 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report using batcher (by bob)
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0].reportId = reportId;
-        reports[0].amount1 = 1e18;
-        reports[0].amount2 = 2000e18;
+        reports[0].amount1 = uint128(1e18);
+        reports[0].amount2 = uint128(2000e18);
         reports[0].stateHash = stateHash;
 
         vm.prank(bob);
@@ -84,16 +83,17 @@ contract OpenOracleBatcherTest is BaseTest {
         oracle.disputeAndSwap(
             reportId,
             address(token1),
-            1.1e18, // 1.1x multiplier
-            2100e18,
-            2000e18, // amt2Expected
+            uint128(1.1e18), // 1.1x multiplier
+            uint128(2100e18),
+            uint128(2000e18), // amt2Expected
             stateHash
         );
         console.log("Dispute submitted");
 
         // 5. Settle
         vm.warp(block.timestamp + 300);
-        (uint256 finalPrice, uint256 settlementTime) = oracle.settle(reportId);
+        oracle.settle(reportId);
+        (uint256 finalPrice, uint256 settlementTime) = oracle.getSettlementData(reportId);
         console.log("Settled at price:", finalPrice / 1e18);
         console.log("Settlement time:", settlementTime);
 
@@ -112,20 +112,19 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
@@ -133,12 +132,12 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
         console.log("Initial report submitted");
 
         // 4. Wait and dispute using batcher
@@ -148,9 +147,9 @@ contract OpenOracleBatcherTest is BaseTest {
         openOracleBatcher.DisputeData[] memory disputes = new openOracleBatcher.DisputeData[](1);
         disputes[0].reportId = reportId;
         disputes[0].tokenToSwap = address(token1);
-        disputes[0].newAmount1 = 1.1e18; // 1.1x multiplier
-        disputes[0].newAmount2 = 2100e18;
-        disputes[0].amt2Expected = 2000e18;
+        disputes[0].newAmount1 = uint128(1.1e18); // 1.1x multiplier
+        disputes[0].newAmount2 = uint128(2100e18);
+        disputes[0].amt2Expected = uint128(2000e18);
         disputes[0].stateHash = stateHash;
 
         // Calculate batch amounts needed for dispute
@@ -165,7 +164,8 @@ contract OpenOracleBatcherTest is BaseTest {
 
         // 5. Settle
         vm.warp(block.timestamp + 300);
-        (uint256 finalPrice, uint256 settlementTime) = oracle.settle(reportId);
+        oracle.settle(reportId);
+        (uint256 finalPrice, uint256 settlementTime) = oracle.getSettlementData(reportId);
         console.log("Settled at price:", finalPrice / 1e18);
         console.log("Settlement time:", settlementTime);
 
@@ -184,20 +184,19 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
@@ -205,12 +204,12 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
         console.log("Initial report submitted");
 
         // 4. Wait and dispute
@@ -220,9 +219,9 @@ contract OpenOracleBatcherTest is BaseTest {
         oracle.disputeAndSwap(
             reportId,
             address(token1),
-            1.1e18, // 1.1x multiplier
-            2100e18,
-            2000e18, // amt2Expected
+            uint128(1.1e18), // 1.1x multiplier
+            uint128(2100e18),
+            uint128(2000e18), // amt2Expected
             stateHash
         );
         console.log("Dispute submitted");
@@ -250,10 +249,11 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Batcher ETH after:", batcherBalanceAfter);
         console.log("ETH gained:", callerBalanceAfter - callerBalanceBefore);
 
-        // Verify settlement
+        // Verify settlement using getSettlementData
         IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
-        assertTrue(status.isDistributed);
-        console.log("Settled at price:", status.price / 1e18);
+        assertTrue(status.settlementTimestamp != 0);
+        (uint256 settledPrice,) = oracle.getSettlementData(reportId);
+        console.log("Settled at price:", settledPrice / 1e18);
         console.log("Settlement time:", status.settlementTimestamp);
 
         console.log("[PASS] Batcher settle lifecycle completed!");
@@ -286,8 +286,7 @@ contract OpenOracleBatcherTest is BaseTest {
             currentAmount1: status.currentAmount1,
             currentAmount2: status.currentAmount2,
             callbackGasLimit: extra.callbackGasLimit,
-            protocolFeeRecipient: extra.protocolFeeRecipient,
-            keepFee: extra.keepFee
+            protocolFeeRecipient: extra.protocolFeeRecipient
         });
 
         stateHash = extra.stateHash;
@@ -303,20 +302,19 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: true, // Must be true for safe function
                 protocolFeeRecipient: alice
             })
         );
@@ -331,8 +329,8 @@ contract OpenOracleBatcherTest is BaseTest {
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -350,9 +348,9 @@ contract OpenOracleBatcherTest is BaseTest {
         );
 
         // Verify
-        (uint256 currentAmount1, uint256 currentAmount2,,,,,,,,) = oracle.reportStatus(reportId);
-        assertEq(currentAmount1, 1e18);
-        assertEq(currentAmount2, 2000e18);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertEq(status.currentAmount1, uint128(1e18));
+        assertEq(status.currentAmount2, uint128(2000e18));
         console.log("[PASS] submitInitialReportSafe completed!");
     }
 
@@ -365,32 +363,31 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: true,
                 protocolFeeRecipient: alice
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Build WRONG oracleParams (wrong exactToken1Report)
         openOracleBatcher.oracleParams memory p = openOracleBatcher.oracleParams({
-            exactToken1Report: 999e18, // WRONG!
-            escalationHalt: 10e18,
-            fee: 0.01 ether - 0.001 ether,
-            settlerReward: 0.001 ether,
+            exactToken1Report: uint128(999e18), // WRONG!
+            escalationHalt: uint128(10e18),
+            fee: uint96(0.01 ether - 0.001 ether),
+            settlerReward: uint96(0.001 ether),
             token1: address(token1),
             settlementTime: 300,
             token2: address(token2),
@@ -402,15 +399,14 @@ contract OpenOracleBatcherTest is BaseTest {
             currentAmount1: 0,
             currentAmount2: 0,
             callbackGasLimit: 0,
-            protocolFeeRecipient: alice,
-            keepFee: true
+            protocolFeeRecipient: alice
         });
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -430,31 +426,30 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -469,8 +464,8 @@ contract OpenOracleBatcherTest is BaseTest {
             10
         );
 
-        (uint256 currentAmount1,,,,,,,,,) = oracle.reportStatus(reportId);
-        assertEq(currentAmount1, 1e18);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertEq(status.currentAmount1, uint128(1e18));
         console.log("[PASS] submitInitialReportsNoValidation completed!");
     }
 
@@ -483,31 +478,30 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -533,35 +527,34 @@ contract OpenOracleBatcherTest is BaseTest {
     function testDisputeReportSafe() public {
         console.log("=== Testing disputeReportSafe ===");
 
-        // 1. Create report with keepFee = true
+        // 1. Create report
         vm.prank(alice);
         uint256 reportId = oracle.createReportInstance{value: 0.01 ether}(
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: true,
                 protocolFeeRecipient: alice
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // 2. Submit initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // 3. Wait for dispute delay
         vm.warp(block.timestamp + 6);
@@ -574,9 +567,9 @@ contract OpenOracleBatcherTest is BaseTest {
         disputes[0] = openOracleBatcher.DisputeData({
             reportId: reportId,
             tokenToSwap: address(token1),
-            newAmount1: 1.1e18,
-            newAmount2: 2100e18,
-            amt2Expected: 2000e18,
+            newAmount1: uint128(1.1e18),
+            newAmount2: uint128(2100e18),
+            amt2Expected: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -596,9 +589,10 @@ contract OpenOracleBatcherTest is BaseTest {
             10
         );
 
-        (uint256 newAmount1,,,,,,,, bool disputeOccurred,) = oracle.reportStatus(reportId);
-        assertEq(newAmount1, 1.1e18);
-        assertTrue(disputeOccurred);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertEq(status.currentAmount1, uint128(1.1e18));
+        // dispute occurred is evidenced by currentReporter changing and lastReportOppoTime being set
+        assertTrue(status.lastReportOppoTime != 0);
         console.log("[PASS] disputeReportSafe completed!");
     }
 
@@ -611,28 +605,27 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 6);
 
@@ -640,9 +633,9 @@ contract OpenOracleBatcherTest is BaseTest {
         disputes[0] = openOracleBatcher.DisputeData({
             reportId: reportId,
             tokenToSwap: address(token1),
-            newAmount1: 1.1e18,
-            newAmount2: 2100e18,
-            amt2Expected: 2000e18,
+            newAmount1: uint128(1.1e18),
+            newAmount2: uint128(2100e18),
+            amt2Expected: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -661,8 +654,8 @@ contract OpenOracleBatcherTest is BaseTest {
             10
         );
 
-        (uint256 currentAmount1,,,,,,,,,) = oracle.reportStatus(reportId);
-        assertEq(currentAmount1, 1.1e18);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertEq(status.currentAmount1, uint128(1.1e18));
         console.log("[PASS] disputeReportsNoValidation completed!");
     }
 
@@ -675,28 +668,27 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 301);
 
@@ -719,8 +711,8 @@ contract OpenOracleBatcherTest is BaseTest {
         uint256 balanceAfter = address(this).balance;
         assertTrue(balanceAfter > balanceBefore, "Should receive settler reward");
 
-        (,,,,,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-        assertTrue(isDistributed);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertTrue(status.settlementTimestamp != 0);
         console.log("[PASS] safeSettleReports completed!");
     }
 
@@ -733,28 +725,27 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 301);
 
@@ -767,8 +758,8 @@ contract OpenOracleBatcherTest is BaseTest {
         batcher.safeSettleReports(settles, block.timestamp, block.number, 10, 10);
 
         // Should NOT be settled because stateHash didn't match
-        (,,,,,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-        assertFalse(isDistributed);
+        IOpenOracle.ReportStatus memory status = IOpenOracle(address(oracle)).reportStatus(reportId);
+        assertFalse(status.settlementTimestamp != 0);
         console.log("[PASS] safeSettleReports correctly skips wrong stateHash!");
     }
 
@@ -783,25 +774,24 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Record balances BEFORE
         uint256 bobToken1Before = token1.balanceOf(bob);
@@ -814,8 +804,8 @@ contract OpenOracleBatcherTest is BaseTest {
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -861,29 +851,28 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: oldAmount1,
+                exactToken1Report: uint128(oldAmount1),
                 feePercentage: feePercentage,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: protocolFeeRate,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, oldAmount1, oldAmount2, stateHash);
+        oracle.submitInitialReport(reportId, uint128(oldAmount1), uint128(oldAmount2), stateHash);
 
         vm.warp(block.timestamp + 6);
 
@@ -911,9 +900,9 @@ contract OpenOracleBatcherTest is BaseTest {
         disputes[0] = openOracleBatcher.DisputeData({
             reportId: reportId,
             tokenToSwap: address(token1),
-            newAmount1: newAmount1,
-            newAmount2: newAmount2,
-            amt2Expected: oldAmount2,
+            newAmount1: uint128(newAmount1),
+            newAmount2: uint128(newAmount2),
+            amt2Expected: uint128(oldAmount2),
             stateHash: stateHash
         });
 
@@ -950,25 +939,24 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         uint256 bobToken1Before = token1.balanceOf(bob);
         uint256 bobToken2Before = token2.balanceOf(bob);
@@ -976,8 +964,8 @@ contract OpenOracleBatcherTest is BaseTest {
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -1010,28 +998,27 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.005 ether, // 0.005 ETH settler reward
+                settlerReward: uint96(0.005 ether), // 0.005 ETH settler reward
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 301);
 
@@ -1072,32 +1059,31 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report via batcher (offering 1 token1 for 2000 token2)
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -1112,9 +1098,9 @@ contract OpenOracleBatcherTest is BaseTest {
         disputes[0] = openOracleBatcher.DisputeData({
             reportId: reportId,
             tokenToSwap: address(token1),
-            newAmount1: 1.1e18,
-            newAmount2: 2100e18,
-            amt2Expected: 2000e18,
+            newAmount1: uint128(1.1e18),
+            newAmount2: uint128(2100e18),
+            amt2Expected: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -1163,20 +1149,19 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: true,
                 protocolFeeRecipient: alice
             })
         );
@@ -1191,8 +1176,8 @@ contract OpenOracleBatcherTest is BaseTest {
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 
@@ -1234,31 +1219,30 @@ contract OpenOracleBatcherTest is BaseTest {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: 3000,
                 multiplier: 110,
                 settlementTime: 300,
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: 5,
                 protocolFee: 1000,
-                settlerReward: 0.001 ether,
+                settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
-                keepFee: false,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
             reportId: reportId,
-            amount1: 1e18,
-            amount2: 2000e18,
+            amount1: uint128(1e18),
+            amount2: uint128(2000e18),
             stateHash: stateHash
         });
 

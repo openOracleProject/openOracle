@@ -76,20 +76,19 @@ contract InvariantHandler {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(60),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(0),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(callback),
                 callbackSelector: TestCallback.onOracleSettle.selector,
                 trackDisputes: false,
                 callbackGasLimit: CALLBACK_GAS_LIMIT,
-                keepFee: true,
                 protocolFeeRecipient: address(this)
             })
         );
@@ -103,12 +102,12 @@ contract InvariantHandler {
         if (reportId == 0) return;
 
         // Only submit if not already submitted
-        (uint256 currentAmount1,,,,,,,,,) = oracle.reportStatus(reportId);
+        (uint256 currentAmount1,,,,,,) = oracle.reportStatus(reportId);
         if (currentAmount1 != 0) return;
 
         // Read meta + state hash
         (uint256 exactToken1Report, , , , , , , , , , , ) = oracle.reportMeta(reportId);
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Provide a simple amount2 (arbitrary positive)
         uint256 amount2 = 1e18;
@@ -116,7 +115,7 @@ contract InvariantHandler {
         // Ensure we have tokens to contribute if needed
         _ensureBalances(2e18, 2e21);
 
-        oracle.submitInitialReport(reportId, exactToken1Report, amount2, stateHash);
+        oracle.submitInitialReport(reportId, uint128(exactToken1Report), uint128(amount2), stateHash);
     }
 
     // Dispute the latest report by increasing token1 amount according to escalation rules
@@ -132,13 +131,10 @@ contract InvariantHandler {
             uint256 oldAmount1,
             uint256 oldAmount2,
             ,
-            ,
             uint48 reportTimestamp,
             ,
             ,
-            ,
-            ,
-            
+
         ) = oracle.reportStatus(reportId);
 
         if (oldAmount1 == 0) return; // no initial report yet
@@ -166,9 +162,9 @@ contract InvariantHandler {
         // Ensure we have sufficient balances to perform dispute contributions
         _ensureBalances(newAmount1 + oldAmount1, newAmount2 + oldAmount2);
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
         // Always swap token1 in this handler for simplicity
-        try oracle.disputeAndSwap(reportId, address(token1), newAmount1, newAmount2, oldAmount2, stateHash) {
+        try oracle.disputeAndSwap(reportId, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(oldAmount2), stateHash) {
             // ok
         } catch {
             // ignore reverts; fuzzer will try different sequences
@@ -182,8 +178,7 @@ contract InvariantHandler {
         if (reportId == 0) return;
 
         // Only attempt after settlement time; skip if already distributed
-        (,,,, uint48 reportTimestamp,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-        if (isDistributed) return;
+        (,, , uint48 reportTimestamp,,,) = oracle.reportStatus(reportId);
         (, , , , , uint48 settlementTime, , , , , , ) = oracle.reportMeta(reportId);
         if (reportTimestamp == 0) return; // no initial report yet
 
@@ -193,7 +188,7 @@ contract InvariantHandler {
 
         // Fuzz gas between 60k and ~600k
         uint256 gasAmt = 60_000 + (gasSeed % 600_000);
-        try oracle.settle{gas: gasAmt}(reportId) returns (uint256, uint256) {
+        try oracle.settle{gas: gasAmt}(reportId) {
             hasSettled[reportId] = true;
         } catch {
             // ignore reverts; invariants will validate atomicity
@@ -208,7 +203,7 @@ contract InvariantHandler {
         if (reportId == 0) return;
 
         // Only attempt after settlement time; warp forward a bit if needed
-        (,,,, uint48 reportTimestamp,,,,,) = oracle.reportStatus(reportId);
+        (,, , uint48 reportTimestamp,,,) = oracle.reportStatus(reportId);
         (, , , , , uint48 settlementTime, , , , , , ) = oracle.reportMeta(reportId);
         if (reportTimestamp == 0) return;
         if (block.timestamp < uint256(reportTimestamp) + uint256(settlementTime)) {
@@ -216,12 +211,12 @@ contract InvariantHandler {
         }
 
         // Compose a very low gas amount relative to configured callbackGasLimit
-        (, , , uint32 cbGasLimit, , , , ) = oracle.extraData(reportId);
+        (, , , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
         uint256 lowGas = cbGasLimit / 4; // intentionally small
         if (lowGas > 50_000) lowGas = 50_000; // cap at 50k to ensure it's clearly too low
         if (lowGas < 30_000) lowGas = 30_000; // baseline minimal gas
 
-        try oracle.settle{gas: lowGas}(reportId) returns (uint256, uint256) {
+        try oracle.settle{gas: lowGas}(reportId) {
             // Record that a low-gas settle succeeded and how much gas the callback saw
             lowGasSettled[reportId] = true;
             ( , uint256 gasReceived, , ) = callback.executions(reportId);
@@ -292,19 +287,17 @@ contract CriticalInvariantsTest is StdInvariant, Test {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
             // Load extra + status
-            (, address cb, , uint32 cbGasLimit, , , , ) = oracle.extraData(reportId);
+            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
             (
                 ,
                 ,
                 ,
                 ,
+                uint48 settlementTimestamp,
                 ,
-                ,
-                ,
-                ,
-                ,
-                bool isDistributed
+
             ) = oracle.reportStatus(reportId);
+            bool isDistributed = settlementTimestamp != 0;
 
             if (cb != address(0) && isDistributed) {
                 (bool called, uint256 gasReceived, ,) = callback.executions(reportId);
@@ -323,8 +316,8 @@ contract CriticalInvariantsTest is StdInvariant, Test {
             if (reportId == 0) continue;
             (bool called, , ,) = callback.executions(reportId);
             if (called) {
-                (,,,,,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-                assertTrue(isDistributed, "callback called while distribution=false");
+                (,,,, uint48 settlementTimestamp,,) = oracle.reportStatus(reportId);
+                assertTrue(settlementTimestamp != 0, "callback called while distribution=false");
             }
         }
     }
@@ -346,9 +339,9 @@ contract CriticalInvariantsTest is StdInvariant, Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
-            (, address cb, , uint32 cbGasLimit, , , , ) = oracle.extraData(reportId);
-            (,,,,,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-            if (cb != address(0) && isDistributed) {
+            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+            (,,,, uint48 settlementTimestamp2,,) = oracle.reportStatus(reportId);
+            if (cb != address(0) && settlementTimestamp2 != 0) {
                 (bool called, uint256 gasReceived, ,) = callback.executions(reportId);
                 if (called && cbGasLimit > 0) {
                     // Require at least a small fraction of the configured limit to have been available inside the callback
@@ -367,9 +360,9 @@ contract CriticalInvariantsTest is StdInvariant, Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
-            (, address cb, , uint32 cbGasLimit, , , , ) = oracle.extraData(reportId);
-            (,,,,,,,,, bool isDistributed) = oracle.reportStatus(reportId);
-            if (cb != address(0) && isDistributed) {
+            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+            (,,,, uint48 settlementTimestamp3,,) = oracle.reportStatus(reportId);
+            if (cb != address(0) && settlementTimestamp3 != 0) {
                 (bool called, uint256 gasReceived, ,) = callback.executions(reportId);
                 if (called && cbGasLimit > 0) {
                     assertLe(gasReceived, uint256(cbGasLimit), "callback gas exceeded limit");
@@ -385,8 +378,8 @@ contract CriticalInvariantsTest is StdInvariant, Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
-            (,,,,,,, , , bool isDistributed) = oracle.reportStatus(reportId);
-            if (isDistributed) {
+            (,,,, uint48 settlementTimestamp4,,) = oracle.reportStatus(reportId);
+            if (settlementTimestamp4 != 0) {
                 bool settled = handler.hasSettled(reportId);
                 assertTrue(settled, "isDistributed set without handler-settle");
             }

@@ -98,29 +98,28 @@ contract BlacklistTrollingTest is Test {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: true,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // Wait for dispute delay
         vm.warp(block.timestamp + 6);
@@ -136,9 +135,9 @@ contract BlacklistTrollingTest is Test {
         oracle.disputeAndSwap(
             reportId,
             address(token1),
-            1.1e18,      // newAmount1
-            2100e18,     // newAmount2 > oldAmount2, no refund to disputer
-            2000e18,     // amt2Expected
+            uint128(1.1e18),      // newAmount1
+            uint128(2100e18),     // newAmount2 > oldAmount2, no refund to disputer
+            uint128(2000e18),     // amt2Expected
             stateHash
         );
 
@@ -156,12 +155,13 @@ contract BlacklistTrollingTest is Test {
         vm.warp(block.timestamp + 300);
 
         vm.prank(charlie);
-        (uint256 price,) = oracle.settle(reportId);
+        oracle.settle(reportId);
 
         // Price = amount1 * 1e18 / amount2 = 1.1e18 * 1e18 / 2100e18
         uint256 finalAmount1 = 11e17;
         uint256 finalAmount2 = 2100e18;
         uint256 expectedPrice = (finalAmount1 * 1e18) / finalAmount2;
+        (uint256 price,) = oracle.getSettlementData(reportId);
         assertEq(price, expectedPrice, "Price incorrect after settlement");
 
         // Bob can claim his funds via protocolFees once unblacklisted
@@ -187,29 +187,28 @@ contract BlacklistTrollingTest is Test {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: true,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 6);
 
@@ -223,9 +222,9 @@ contract BlacklistTrollingTest is Test {
         oracle.disputeAndSwap(
             reportId,
             address(token2),
-            1.1e18,      // newAmount1
-            2100e18,     // newAmount2
-            2000e18,     // amt2Expected
+            uint128(1.1e18),      // newAmount1
+            uint128(2100e18),     // newAmount2
+            uint128(2000e18),     // amt2Expected
             stateHash
         );
 
@@ -242,12 +241,13 @@ contract BlacklistTrollingTest is Test {
         vm.warp(block.timestamp + 300);
 
         vm.prank(charlie);
-        (uint256 price,) = oracle.settle(reportId);
+        oracle.settle(reportId);
 
         // Price = amount1 * 1e18 / amount2 = 1.1e18 * 1e18 / 2100e18
         uint256 finalAmount1 = 11e17;
         uint256 finalAmount2 = 2100e18;
         uint256 expectedPrice = (finalAmount1 * 1e18) / finalAmount2;
+        (uint256 price,) = oracle.getSettlementData(reportId);
         assertEq(price, expectedPrice, "Price incorrect after settlement");
     }
 
@@ -261,29 +261,28 @@ contract BlacklistTrollingTest is Test {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: true,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report (he will be current reporter at settle time)
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         // Wait for settlement time
         vm.warp(block.timestamp + 301);
@@ -298,7 +297,8 @@ contract BlacklistTrollingTest is Test {
 
         // Settle should succeed - funds go to protocolFees
         vm.prank(charlie);
-        (uint256 price, uint256 settlementTimestamp) = oracle.settle(reportId);
+        oracle.settle(reportId);
+        (uint256 price, uint256 settlementTimestamp) = oracle.getSettlementData(reportId);
 
         // Bob's balances should NOT have changed (tokens went to protocolFees)
         assertEq(token1.balanceOf(bob), bobToken1Before, "Bob token1 should not change");
@@ -334,28 +334,27 @@ contract BlacklistTrollingTest is Test {
             OpenOracle.CreateReportParams({
                 token1Address: address(token1),
                 token2Address: address(token2),
-                exactToken1Report: 1e18,
+                exactToken1Report: uint128(1e18),
                 feePercentage: uint24(3000),
                 multiplier: uint16(110),
                 settlementTime: uint48(300),
-                escalationHalt: 10e18,
+                escalationHalt: uint128(10e18),
                 disputeDelay: uint24(5),
                 protocolFee: uint24(1000),
-                settlerReward: SETTLER_REWARD,
+                settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
                 callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
-                keepFee: true,
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
-        oracle.submitInitialReport(reportId, 1e18, 2000e18, stateHash);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
 
         vm.warp(block.timestamp + 301);
 
