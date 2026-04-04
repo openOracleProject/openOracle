@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import {OpenOracle as OpenOracleDraft} from "src/openOracleDraft.sol";
+import {OpenOracle as OpenOracleDraft} from "src/OpenOracle.sol";
 import "./utils/MockERC20.sol";
 
 contract RejectingReceiver {
