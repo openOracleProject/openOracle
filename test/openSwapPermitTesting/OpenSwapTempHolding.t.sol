@@ -54,7 +54,7 @@ contract OpenSwapTempHoldingTest is Test {
     address internal settler = address(0x4);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -110,10 +110,11 @@ contract OpenSwapTempHoldingTest is Test {
     }
 
     function _createSwap() internal returns (uint256 swapId) {
+        _lastSwapCreationTime = uint48(block.timestamp);
         vm.startPrank(swapper);
 
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -131,7 +132,6 @@ contract OpenSwapTempHoldingTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -159,6 +159,27 @@ contract OpenSwapTempHoldingTest is Test {
         vm.stopPrank();
     }
 
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
+    // Stores the block.timestamp at the time of the most recent _createSwap() call
+    uint48 internal _lastSwapCreationTime;
+
     function _matchSwap(uint256 swapId) internal {
         _matchSwap(swapId, 2000e18);
     }
@@ -166,7 +187,33 @@ contract OpenSwapTempHoldingTest is Test {
     function _matchSwap(uint256 swapId, uint256 amount2) internal {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _defaultPreimage());
+        vm.stopPrank();
+    }
+
+    // preimageWithTimestamp returns a preimage with the specified swap creation timestamp
+    function _preimageWithTimestamp(uint48 swapCreationTime) internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: swapCreationTime,
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
+    function _matchSwapWithCreationTime(uint256 swapId, uint256 amount2, uint48 swapCreationTime) internal {
+        vm.startPrank(matcher);
+        bytes32 swapHash = swapContract.getSwapHash(swapId);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _preimageWithTimestamp(swapCreationTime));
         vm.stopPrank();
     }
 
@@ -298,18 +345,18 @@ contract OpenSwapTempHoldingTest is Test {
     // ============ Multiple Accumulation Tests ============
 
     function testTempHolding_MultipleSwapsAccumulate() public {
-        // First swap
-        uint256 swapId1 = _createSwap();
-        _matchSwap(swapId1);
+        // First swap (at initial timestamp=1)
+        uint256 swapId1 = _createSwap(); // _lastSwapCreationTime = 1
+        _matchSwapWithCreationTime(swapId1, 2000e18, _lastSwapCreationTime);
         buyToken.setBlacklisted(swapper, true);
-        _settle(swapId1);
+        _settle(swapId1); // warps time to ~302
 
         uint256 expectedFulfill1 = _calcFulfillAmt(INITIAL_LIQUIDITY, 2000e18);
         assertEq(swapContract.tempHolding(swapper, address(buyToken)), expectedFulfill1, "First swap in tempHolding");
 
-        // Second swap
-        uint256 swapId2 = _createSwap();
-        _matchSwap(swapId2, 2100e18);
+        // Second swap (at warped timestamp ~302); _createSwap stores new timestamp
+        uint256 swapId2 = _createSwap(); // _lastSwapCreationTime = 302
+        _matchSwapWithCreationTime(swapId2, 2100e18, _lastSwapCreationTime);
         _settle(swapId2);
 
         uint256 expectedFulfill2 = _calcFulfillAmt(INITIAL_LIQUIDITY, 2100e18);
@@ -364,7 +411,7 @@ contract OpenSwapTempHoldingTest is Test {
         // Create swap with blacklist sellToken
         vm.startPrank(swapper);
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -380,7 +427,6 @@ contract OpenSwapTempHoldingTest is Test {
             toleranceRange: 1e7 - 1
         });
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,

@@ -36,7 +36,7 @@ contract OpenSwapFulfillLiquidityTest is Test {
     address internal settler = address(0x4);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -95,7 +95,7 @@ contract OpenSwapFulfillLiquidityTest is Test {
         vm.startPrank(swapper);
 
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -113,7 +113,6 @@ contract OpenSwapFulfillLiquidityTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -141,6 +140,24 @@ contract OpenSwapFulfillLiquidityTest is Test {
         vm.stopPrank();
     }
 
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
     function _matchSwap(uint256 swapId) internal {
         _matchSwap(swapId, 2000e18);
     }
@@ -148,7 +165,7 @@ contract OpenSwapFulfillLiquidityTest is Test {
     function _matchSwap(uint256 swapId, uint256 amount2) internal {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _defaultPreimage());
         vm.stopPrank();
     }
 
@@ -341,7 +358,7 @@ contract OpenSwapFulfillLiquidityTest is Test {
         // Create swap with high minOut
         vm.startPrank(swapper);
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -357,7 +374,6 @@ contract OpenSwapFulfillLiquidityTest is Test {
             toleranceRange: 1e7 - 1
         });
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -366,11 +382,11 @@ contract OpenSwapFulfillLiquidityTest is Test {
         });
         uint256 ethToSend = GAS_COMPENSATION + SETTLER_REWARD;
 
-        // minOut = 25500e18 which is > minFulfillLiquidity but fulfillAmt will exceed it
+        // minOut = 1e18 (low enough to pass creation-time check); fulfillAmt will still exceed minFulfillLiquidity causing refund
         uint256 swapId = swapContract.swap{value: ethToSend}(
             SELL_AMT,
             address(sellToken),
-            uint128(25500e18), // High minOut
+            uint128(1e18), // Low minOut to pass creation-time validation
             address(buyToken),
             MIN_FULFILL_LIQUIDITY,
             uint48(block.timestamp + 1 hours),

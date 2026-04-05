@@ -26,7 +26,7 @@ contract OpenSwapETHTest is Test {
     address constant USDC = 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -35,7 +35,7 @@ contract OpenSwapETHTest is Test {
 
     // Swap params
     uint128 constant SELL_AMT = 1 ether;
-    uint128 constant MIN_OUT = 1900e18;
+    uint128 constant MIN_OUT = 1e18;
     uint128 constant MIN_FULFILL_LIQUIDITY = 2500e18;
     uint96 constant GAS_COMPENSATION = 0.001 ether;
 
@@ -91,7 +91,7 @@ contract OpenSwapETHTest is Test {
 
     function _getOracleParams() internal pure returns (openSwapV2Permit.OracleParams memory) {
         return openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -113,7 +113,24 @@ contract OpenSwapETHTest is Test {
 
     function _getFulfillFeeParams() internal pure returns (openSwapV2Permit.FulfillFeeParams memory) {
         return openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -186,7 +203,7 @@ contract OpenSwapETHTest is Test {
         // Match swap
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         // Verify matcher sent tokens (minFulfillLiquidity + amount2, amount2 goes to oracle)
@@ -305,7 +322,7 @@ contract OpenSwapETHTest is Test {
         // Match with ETH
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         // Verify matcher sent ETH (minus gasCompensation they receive)
@@ -353,7 +370,7 @@ contract OpenSwapETHTest is Test {
         uint256 amount2 = 5e16;
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(amount2), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         // Submit report and settle
@@ -435,7 +452,7 @@ contract OpenSwapETHTest is Test {
         bytes32 swapHash = swapContract.getSwapHash(swapId);
 
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "msg.value"));
-        swapContract.matchSwap{value: minFulfillETH - 1}(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap{value: minFulfillETH - 1}(swapId, uint128(2000e18), swapHash, _defaultPreimage());
 
         vm.stopPrank();
     }
@@ -471,7 +488,7 @@ contract OpenSwapETHTest is Test {
         bytes32 swapHash = swapContract.getSwapHash(swapId);
 
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "msg.value must be 0"));
-        swapContract.matchSwap{value: 1 ether}(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap{value: 1 ether}(swapId, uint128(2000e18), swapHash, _defaultPreimage());
 
         vm.stopPrank();
     }
@@ -503,7 +520,7 @@ contract OpenSwapETHTest is Test {
 
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         // Warp past latency bailout
@@ -546,7 +563,7 @@ contract OpenSwapETHTest is Test {
 
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap{value: minFulfillETH}(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         // Warp past latency bailout

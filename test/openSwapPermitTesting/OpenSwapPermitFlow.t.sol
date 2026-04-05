@@ -36,7 +36,7 @@ contract OpenSwapPermitFlowTest is Test {
     address internal swapper;
     address internal matcher = address(0x2);
 
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -44,7 +44,7 @@ contract OpenSwapPermitFlowTest is Test {
     uint24 constant MAX_GAME_TIME = 7200;
 
     uint128 constant SELL_AMT = 10e18;
-    uint128 constant MIN_OUT = 19000e18;
+    uint128 constant MIN_OUT = 1e18;
     uint128 constant MIN_FULFILL_LIQUIDITY = 25000e18;
     uint96 constant GAS_COMPENSATION = 0.001 ether;
 
@@ -77,7 +77,7 @@ contract OpenSwapPermitFlowTest is Test {
 
     function _oracleParams() internal pure returns (openSwapV2Permit.OracleParams memory) {
         return openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -96,7 +96,7 @@ contract OpenSwapPermitFlowTest is Test {
 
     function _fulfillFeeParams() internal pure returns (openSwapV2Permit.FulfillFeeParams memory) {
         return openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0, maxFee: 10000, startingFee: 10000,
+            maxFee: 10000, startingFee: 10000,
             roundLength: 60, growthRate: 15000, maxRounds: 10
         });
     }

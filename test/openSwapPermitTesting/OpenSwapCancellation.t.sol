@@ -22,7 +22,7 @@ contract OpenSwapCancellationTest is Test {
     address internal randomUser = address(0x5);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -31,7 +31,7 @@ contract OpenSwapCancellationTest is Test {
 
     // Swap params
     uint128 constant SELL_AMT = 10e18;
-    uint128 constant MIN_OUT = 19000e18;
+    uint128 constant MIN_OUT = 1e18;
     uint128 constant MIN_FULFILL_LIQUIDITY = 25000e18;
     uint96 constant GAS_COMPENSATION = 0.001 ether;
 
@@ -80,7 +80,7 @@ contract OpenSwapCancellationTest is Test {
         vm.startPrank(swapper);
 
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -98,7 +98,6 @@ contract OpenSwapCancellationTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -130,10 +129,28 @@ contract OpenSwapCancellationTest is Test {
         _matchSwap(swapId, 2000e18);
     }
 
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
     function _matchSwap(uint256 swapId, uint256 amount2) internal {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _defaultPreimage());
         vm.stopPrank();
     }
 

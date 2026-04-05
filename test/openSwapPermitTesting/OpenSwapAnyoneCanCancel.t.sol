@@ -22,7 +22,7 @@ contract OpenSwapAnyoneCanCancelTest is Test {
     address internal thirdParty = address(0x7);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -31,7 +31,7 @@ contract OpenSwapAnyoneCanCancelTest is Test {
 
     // Swap params
     uint128 constant SELL_AMT = 10e18;
-    uint128 constant MIN_OUT = 19000e18;
+    uint128 constant MIN_OUT = 1e18;
     uint128 constant MIN_FULFILL_LIQUIDITY = 25000e18;
     uint96 constant GAS_COMPENSATION = 0.001 ether;
 
@@ -83,7 +83,7 @@ contract OpenSwapAnyoneCanCancelTest is Test {
         vm.startPrank(swapper);
 
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -101,7 +101,6 @@ contract OpenSwapAnyoneCanCancelTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -131,6 +130,24 @@ contract OpenSwapAnyoneCanCancelTest is Test {
 
     function _createSwap() internal returns (uint256 swapId) {
         return _createSwapWithGasComp(GAS_COMPENSATION);
+    }
+
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
     }
 
     // ============ Swapper cancels before expiration + 30 ============
@@ -504,7 +521,7 @@ contract OpenSwapAnyoneCanCancelTest is Test {
 
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
 
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);

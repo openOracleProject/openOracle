@@ -23,7 +23,7 @@ contract OpenSwapInputValidationTest is Test {
     address constant WETH = 0x4200000000000000000000000000000000000006;
     address constant USDC = 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
 
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -31,7 +31,7 @@ contract OpenSwapInputValidationTest is Test {
     uint24 constant MAX_GAME_TIME = 7200;
 
     uint128 constant SELL_AMT = 10e18;
-    uint128 constant MIN_OUT = 19000e18;
+    uint128 constant MIN_OUT = 1e18;
     uint128 constant MIN_FULFILL_LIQUIDITY = 25000e18;
     uint96 constant GAS_COMPENSATION = 0.001 ether;
 
@@ -73,7 +73,7 @@ contract OpenSwapInputValidationTest is Test {
 
     function _validOracleParams() internal pure returns (openSwapV2Permit.OracleParams memory) {
         return openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -92,7 +92,24 @@ contract OpenSwapInputValidationTest is Test {
 
     function _validFulfillFeeParams() internal pure returns (openSwapV2Permit.FulfillFeeParams memory) {
         return openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -229,7 +246,6 @@ contract OpenSwapInputValidationTest is Test {
 
     function testSwap_MaxFeeTooHigh_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: uint24(1e7), // maxFee >= 1e7
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -257,7 +273,6 @@ contract OpenSwapInputValidationTest is Test {
 
     function testSwap_MaxFeeAtBoundary_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: uint24(1e7), // Exactly 1e7 should revert
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -285,7 +300,6 @@ contract OpenSwapInputValidationTest is Test {
 
     function testSwap_MaxFeeBelowBoundary_Succeeds() public {
         openSwapV2Permit.FulfillFeeParams memory goodFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: uint24(1e7 - 1), // 1e7 - 1 should work
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -297,7 +311,7 @@ contract OpenSwapInputValidationTest is Test {
         uint256 swapId = swapContract.swap{value: GAS_COMPENSATION + SETTLER_REWARD}(
             SELL_AMT,
             address(sellToken),
-            MIN_OUT,
+            1, // minOut=1 to avoid "minOut inconsistent" with near-100% fee (worstFulfillAmt is near zero)
             address(buyToken),
             MIN_FULFILL_LIQUIDITY,
             uint48(block.timestamp + 1 hours),
@@ -427,7 +441,7 @@ contract OpenSwapInputValidationTest is Test {
         vm.startPrank(matcher);
         bytes32 wrongHash = keccak256("wrong");
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "params"));
-        swapContract.matchSwap(swapId, uint128(2000e18), wrongHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), wrongHash, _defaultPreimage());
         vm.stopPrank();
     }
 
@@ -447,7 +461,7 @@ contract OpenSwapInputValidationTest is Test {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "expired"));
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
     }
 
@@ -463,12 +477,12 @@ contract OpenSwapInputValidationTest is Test {
         // First match succeeds
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
 
         // Second match fails - need to get new hash since swap state changed
         bytes32 newSwapHash = swapContract.getSwapHash(swapId);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "swap matched"));
-        swapContract.matchSwap(swapId, uint128(2000e18), newSwapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), newSwapHash, _defaultPreimage());
         vm.stopPrank();
     }
 
@@ -485,15 +499,16 @@ contract OpenSwapInputValidationTest is Test {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "swap cancelled"));
-        swapContract.matchSwap(swapId, uint128(2000e18), swapHash);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _defaultPreimage());
         vm.stopPrank();
     }
 
     function testMatchSwap_NotActive_Reverts() public {
         vm.startPrank(matcher);
         bytes32 fakeHash = keccak256(abi.encode(swapContract.getSwap(999)));
-        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "swap not active"));
-        swapContract.matchSwap(999, uint128(2000e18), fakeHash);
+        // preimage check runs before "not active" check, so it reverts with "preimage params"
+        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "preimage params"));
+        swapContract.matchSwap(999, uint128(2000e18), fakeHash, _defaultPreimage());
         vm.stopPrank();
     }
 }

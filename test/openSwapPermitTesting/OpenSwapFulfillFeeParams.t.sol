@@ -40,7 +40,7 @@ contract OpenSwapFulfillFeeParamsTest is Test {
     address internal settler = address(0x4);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -90,7 +90,7 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function _getOracleParams() internal pure returns (openSwapV2Permit.OracleParams memory) {
         return openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -111,7 +111,33 @@ contract OpenSwapFulfillFeeParamsTest is Test {
     }
 
 
+    function _matchSwap(uint256 swapId) internal {
+        _matchSwap(swapId, 2000e18);
+    }
+
+    function _buildPreimage(openSwapV2Permit.FulfillFeeParams memory feeParams) internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: feeParams.maxFee,
+            startingFee: feeParams.startingFee,
+            roundLength: feeParams.roundLength,
+            growthRate: feeParams.growthRate,
+            maxRounds: feeParams.maxRounds
+        });
+    }
+
+    // Track the last fee params used for swap creation so _matchSwap can build the correct preimage
+    openSwapV2Permit.FulfillFeeParams internal _lastFeeParams;
+
     function _createSwapWithFeeParams(openSwapV2Permit.FulfillFeeParams memory feeParams) internal returns (uint256 swapId) {
+        _lastFeeParams = feeParams;
         vm.startPrank(swapper);
 
         uint256 ethToSend = GAS_COMPENSATION + SETTLER_REWARD;
@@ -133,14 +159,10 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         vm.stopPrank();
     }
 
-    function _matchSwap(uint256 swapId) internal {
-        _matchSwap(swapId, 2000e18);
-    }
-
     function _matchSwap(uint256 swapId, uint256 amount2) internal {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _buildPreimage(_lastFeeParams));
         vm.stopPrank();
     }
 
@@ -148,7 +170,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_MaxFeeZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 0,
             startingFee: 10000,
             roundLength: 60,
@@ -168,7 +189,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_StartingFeeZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 10000,
             startingFee: 0,
             roundLength: 60,
@@ -188,7 +208,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_GrowthRateZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 10000,
             startingFee: 10000,
             roundLength: 60,
@@ -208,7 +227,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_MaxRoundsZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 10000,
             startingFee: 10000,
             roundLength: 60,
@@ -228,7 +246,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_RoundLengthZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 10000,
             startingFee: 10000,
             roundLength: 0,
@@ -248,7 +265,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_MaxFeeLessThanStartingFee_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 5000,
             startingFee: 10000, // startingFee > maxFee
             roundLength: 60,
@@ -268,7 +284,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFeeParams_MaxFeeAbove1e7_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: uint24(1e7 + 1),
             startingFee: 10000,
             roundLength: 60,
@@ -290,7 +305,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_ImmediateMatch_UsesStartingFee() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000, // 0.1%
             roundLength: 60,
@@ -309,7 +323,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_AfterOneRound_Increases() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000, // 0.1%
             roundLength: 60,
@@ -332,7 +345,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_AfterTwoRounds_IncreasesExponentially() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,
@@ -355,7 +367,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_CappedAtMaxFee() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 20000, // Cap at 20000
             startingFee: 10000,
             roundLength: 60,
@@ -377,7 +388,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_CappedAtMaxRounds() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 1000000, // Very high cap
             startingFee: 10000,
             roundLength: 60,
@@ -400,7 +410,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_PartialRoundNotCounted() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,
@@ -424,7 +433,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testGetCurrentFulfillmentFee_BeforeMatch() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,
@@ -434,7 +442,7 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
         uint256 swapId = _createSwapWithFeeParams(feeParams);
 
-        uint256 fee = swapContract.getCurrentFulfillmentFee(swapId);
+        uint256 fee = swapContract.getCurrentFulfillmentFee(swapId, _buildPreimage(_lastFeeParams));
         assertEq(fee, 10000, "Should return starting fee right after creation");
     }
 
@@ -445,7 +453,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         vm.roll(block.number + 500);
 
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,
@@ -455,21 +462,37 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
         uint256 swapId = _createSwapWithFeeParams(feeParams);
 
+        // Build preimage with startFulfillFeeIncrease matching swap creation time
+        openSwapV2Permit.MatcherPreimage memory preimage = openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(startTime),
+            maxFee: feeParams.maxFee,
+            startingFee: feeParams.startingFee,
+            roundLength: feeParams.roundLength,
+            growthRate: feeParams.growthRate,
+            maxRounds: feeParams.maxRounds
+        });
+
         // Check at different times using absolute timestamps
-        assertEq(swapContract.getCurrentFulfillmentFee(swapId), 10000, "Fee at t=0");
+        assertEq(swapContract.getCurrentFulfillmentFee(swapId, preimage), 10000, "Fee at t=0");
 
         vm.warp(startTime + 60);
         vm.roll(block.number + 30);
-        assertEq(swapContract.getCurrentFulfillmentFee(swapId), 15000, "Fee at t=60");
+        assertEq(swapContract.getCurrentFulfillmentFee(swapId, preimage), 15000, "Fee at t=60");
 
         vm.warp(startTime + 120);
         vm.roll(block.number + 30);
-        assertEq(swapContract.getCurrentFulfillmentFee(swapId), 22500, "Fee at t=120");
+        assertEq(swapContract.getCurrentFulfillmentFee(swapId, preimage), 22500, "Fee at t=120");
     }
 
     function testGetCurrentFulfillmentFee_ReturnsZeroIfMatched() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,
@@ -480,58 +503,14 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         uint256 swapId = _createSwapWithFeeParams(feeParams);
         _matchSwap(swapId);
 
-        uint256 fee = swapContract.getCurrentFulfillmentFee(swapId);
+        uint256 fee = swapContract.getCurrentFulfillmentFee(swapId, _buildPreimage(_lastFeeParams));
         assertEq(fee, 0, "Should return 0 after match");
-    }
-
-    // ============ getFulfillmentFeeParams Tests ============
-
-    function testGetFulfillmentFeeParams_ReturnsCorrectParams() public {
-        openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
-            maxFee: 50000,
-            startingFee: 5000,
-            roundLength: 120,
-            growthRate: 20000,
-            maxRounds: 5
-        });
-
-        uint256 swapId = _createSwapWithFeeParams(feeParams);
-
-        openSwapV2Permit.FulfillFeeParams memory retrieved = swapContract.getFulfillmentFeeParams(swapId);
-
-        // startFulfillFeeIncrease is set by contract to block.timestamp
-        assertEq(retrieved.maxFee, 50000, "maxFee should match");
-        assertEq(retrieved.startingFee, 5000, "startingFee should match");
-        assertEq(retrieved.roundLength, 120, "roundLength should match");
-        assertEq(retrieved.growthRate, 20000, "growthRate should match");
-        assertEq(retrieved.maxRounds, 5, "maxRounds should match");
-    }
-
-    function testGetFulfillmentFeeParams_StartTimestampSetCorrectly() public {
-        uint256 startTime = block.timestamp;
-
-        openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
-            maxFee: 50000,
-            startingFee: 5000,
-            roundLength: 120,
-            growthRate: 20000,
-            maxRounds: 5
-        });
-
-        uint256 swapId = _createSwapWithFeeParams(feeParams);
-
-        openSwapV2Permit.FulfillFeeParams memory retrieved = swapContract.getFulfillmentFeeParams(swapId);
-
-        assertEq(retrieved.startFulfillFeeIncrease, startTime, "startFulfillFeeIncrease should be block.timestamp at creation");
     }
 
     // ============ Fee Applied to Fulfill Amount Tests ============
 
     function testFulfillFee_AppliedCorrectlyOnSettle() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000, // 0.1%
             roundLength: 60,
@@ -565,7 +544,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
     function testFulfillFee_HigherFeeReducesFulfillAmount() public {
         // Create two swaps with different fees
         openSwapV2Permit.FulfillFeeParams memory lowFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 10000, // 0.1%
             startingFee: 10000,
             roundLength: 60,
@@ -574,7 +552,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory highFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000, // 1%
             startingFee: 100000,
             roundLength: 60,
@@ -585,8 +562,15 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         uint256 swapId1 = _createSwapWithFeeParams(lowFeeParams);
         uint256 swapId2 = _createSwapWithFeeParams(highFeeParams);
 
-        _matchSwap(swapId1);
-        _matchSwap(swapId2);
+        // Match swap1 with its lowFeeParams preimage
+        vm.startPrank(matcher);
+        swapContract.matchSwap(swapId1, uint128(2000e18), swapContract.getSwapHash(swapId1), _buildPreimage(lowFeeParams));
+        vm.stopPrank();
+
+        // Match swap2 with its highFeeParams preimage
+        vm.startPrank(matcher);
+        swapContract.matchSwap(swapId2, uint128(2000e18), swapContract.getSwapHash(swapId2), _buildPreimage(highFeeParams));
+        vm.stopPrank();
 
         openSwapV2Permit.Swap memory s1 = swapContract.getSwap(swapId1);
         openSwapV2Permit.Swap memory s2 = swapContract.getSwap(swapId2);
@@ -603,7 +587,6 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function testFulfillFee_LockedAtMatchTime() public {
         openSwapV2Permit.FulfillFeeParams memory feeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: 100000,
             startingFee: 10000,
             roundLength: 60,

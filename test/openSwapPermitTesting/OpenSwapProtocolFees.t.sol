@@ -33,7 +33,7 @@ contract OpenSwapProtocolFeesTest is Test {
     address internal randomUser = address(0x5);
 
     // Oracle params
-    uint96 constant SETTLER_REWARD = 0.001 ether;
+    uint88 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -98,7 +98,7 @@ contract OpenSwapProtocolFeesTest is Test {
         vm.startPrank(swapper);
 
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
-            settlerReward: SETTLER_REWARD,
+            settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlementTime: SETTLEMENT_TIME,
@@ -116,7 +116,6 @@ contract OpenSwapProtocolFeesTest is Test {
         });
 
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
-            startFulfillFeeIncrease: 0,
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -144,6 +143,28 @@ contract OpenSwapProtocolFeesTest is Test {
         vm.stopPrank();
     }
 
+    function _defaultPreimage() internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return _preimageWithProtocolFee(PROTOCOL_FEE);
+    }
+
+    function _preimageWithProtocolFee(uint24 protocolFee) internal pure returns (openSwapV2Permit.MatcherPreimage memory) {
+        return openSwapV2Permit.MatcherPreimage({
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: protocolFee,
+            multiplier: uint16(110),
+            timeType: true,
+            startFulfillFeeIncrease: uint48(1),
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+    }
+
     function _matchSwap(uint256 swapId) internal {
         _matchSwap(swapId, 2000e18);
     }
@@ -151,7 +172,14 @@ contract OpenSwapProtocolFeesTest is Test {
     function _matchSwap(uint256 swapId, uint256 amount2) internal {
         vm.startPrank(matcher);
         bytes32 swapHash = swapContract.getSwapHash(swapId);
-        swapContract.matchSwap(swapId, uint128(amount2), swapHash);
+        swapContract.matchSwap(swapId, uint128(amount2), swapHash, _defaultPreimage());
+        vm.stopPrank();
+    }
+
+    function _matchSwapWithProtocolFee(uint256 swapId, uint24 protocolFee) internal {
+        vm.startPrank(matcher);
+        bytes32 swapHash = swapContract.getSwapHash(swapId);
+        swapContract.matchSwap(swapId, uint128(2000e18), swapHash, _preimageWithProtocolFee(protocolFee));
         vm.stopPrank();
     }
 
@@ -179,7 +207,7 @@ contract OpenSwapProtocolFeesTest is Test {
 
     function testProtocolFees_FeeReceiverNotDeployedWhenProtocolFeeZero() public {
         uint256 swapId = _createSwapWithProtocolFee(0);
-        _matchSwap(swapId);
+        _matchSwapWithProtocolFee(swapId, 0);
 
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
         assertEq(s.feeRecipient, address(0), "feeRecipient should be zero when protocolFee is 0");
@@ -284,7 +312,7 @@ contract OpenSwapProtocolFeesTest is Test {
 
     function testProtocolFees_GrabOracleGameFeesAny_RevertsIfZeroProtocolFee() public {
         uint256 swapId = _createSwapWithProtocolFee(0);
-        _matchSwap(swapId);
+        _matchSwapWithProtocolFee(swapId, 0);
 
         // feeRecipient is address(0) when protocolFee is 0
         // Calling gameId() on address(0) will revert
