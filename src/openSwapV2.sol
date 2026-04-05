@@ -266,11 +266,15 @@ contract openSwapV2Permit is ReentrancyGuard {
         //caching
         address buyToken = s.buyToken;
         address sellToken = s.sellToken;
+        bool buyTokenIsEth = buyToken == address(0);
+        bool sellTokenIsEth = sellToken == address(0);
+        address buyTokenOracleFormat = buyTokenIsEth ? WETH : buyToken;
+        address sellTokenOracleFormat = sellTokenIsEth ? WETH : sellToken;
         uint128 minFulfillLiquidity = s.minFulfillLiquidity;
         uint128 initialLiquidity = preimage.initialLiquidity;
 
-        if (buyToken != address(0) && msg.value != 0) revert InvalidInput("msg.value must be 0");
-        if (buyToken == address(0) && msg.value != minFulfillLiquidity) revert InvalidInput("msg.value");
+        if (!buyTokenIsEth && msg.value != 0) revert InvalidInput("msg.value must be 0");
+        if (buyTokenIsEth && msg.value != minFulfillLiquidity) revert InvalidInput("msg.value");
 
         if (s.cancelled) revert InvalidInput("swap cancelled");
         if (s.matched) revert InvalidInput("swap matched");
@@ -281,31 +285,22 @@ contract openSwapV2Permit is ReentrancyGuard {
         if (paramHashExpected != keccak256(abi.encode(s))) revert InvalidInput("params");
         if (s.oracleAndFeeParamHash != keccak256(abi.encode(preimage))) revert InvalidInput("preimage params");
 
+        address matcher = msg.sender;
+        uint24 fulfillmentFee =
+            uint24(calcFee(preimage.maxFee, preimage.startingFee, preimage.growthRate, preimage.maxRounds, preimage.startFulfillFeeIncrease, preimage.roundLength));
+
         s.matched = true;
-        s.matcher = msg.sender;
+        s.matcher = matcher;
         s.start = uint48(block.timestamp);
-        s.fulfillmentFee = uint24(calcFee(preimage.maxFee, preimage.startingFee, preimage.growthRate, preimage.maxRounds, preimage.startFulfillFeeIncrease, preimage.roundLength));
+        s.fulfillmentFee = fulfillmentFee;
 
-        payEth(msg.sender, s.gasCompensation);
+        payEth(matcher, s.gasCompensation);
 
-        if(buyToken != address(0)) {
-            IERC20(buyToken).safeTransferFrom(msg.sender, address(this), minFulfillLiquidity + amount2);
-        } else {
-            IERC20(WETH).safeTransferFrom(msg.sender, address(this), amount2);
-        }
-
-        if (sellToken != address(0)) {
-            IERC20(sellToken).safeTransferFrom(msg.sender, address(this), initialLiquidity);
-        } else {
-            IERC20(WETH).safeTransferFrom(msg.sender, address(this), initialLiquidity);
-        }
+        uint256 buyTokenTransferAmt = buyTokenIsEth ? amount2 : minFulfillLiquidity + amount2;
+        IERC20(buyTokenOracleFormat).safeTransferFrom(matcher, address(this), buyTokenTransferAmt);
+        IERC20(sellTokenOracleFormat).safeTransferFrom(matcher, address(this), initialLiquidity);
 
         if (preimage.protocolFee > 0) {
-            address sellTokenOracleFormat;
-            address buyTokenOracleFormat;
-
-            sellToken == address(0) ? sellTokenOracleFormat = WETH : sellTokenOracleFormat = sellToken;
-            buyToken == address(0) ? buyTokenOracleFormat = WETH : buyTokenOracleFormat = buyToken;
             address feeReceiver = Clones.clone(feeReceiverImpl);
             oracleFeeReceiver(feeReceiver).initialize(address(this), uint128(swapId), address(oracle), sellTokenOracleFormat, buyTokenOracleFormat);
             s.feeRecipient = feeReceiver;
@@ -313,30 +308,21 @@ contract openSwapV2Permit is ReentrancyGuard {
 
         uint256 reportId = oracleGame(s, preimage);
 
-        if(buyToken != address(0)) {
-            _ensureOracleApproval(buyToken);
-        } else {
-            _ensureOracleApproval(WETH);
-        }
-
-        if (sellToken != address(0)) {
-            _ensureOracleApproval(sellToken);
-        } else {
-            _ensureOracleApproval(WETH);
-        }
+        _ensureOracleApproval(buyTokenOracleFormat);
+        _ensureOracleApproval(sellTokenOracleFormat);
 
         oracle.submitInitialReport(
             reportId,
             initialLiquidity,
             amount2,
             oracle.extraData(reportId).stateHash,
-            msg.sender
+            matcher
         );
 
         s.reportId = uint128(reportId);
         reportIdToSwapId[reportId] = swapId;
 
-        emit SwapMatched(swapId, s.fulfillmentFee, s.matcher, reportId, s.swapper);
+        emit SwapMatched(swapId, fulfillmentFee, matcher, reportId, s.swapper);
 
     }
 
@@ -393,29 +379,18 @@ contract openSwapV2Permit is ReentrancyGuard {
     }
 
     function oracleGame(Swap storage s, MatcherPreimage memory o) internal returns (uint256 reportId) {
-        address token1;
-        address token2;
-
-        if (s.sellToken == address(0)){
-            token1 = WETH;
-            token2 = s.buyToken;
-        } else if (s.buyToken == address(0)) {
-            token1 = s.sellToken;
-            token2 = WETH;
-        } else {
-            token1 = s.sellToken;
-            token2 = s.buyToken;
-        }
+        address sellTokenOracleFormat = s.sellToken == address(0) ? WETH : s.sellToken;
+        address buyTokenOracleFormat = s.buyToken == address(0) ? WETH : s.buyToken;
 
         IOpenOracle.CreateReportParams memory params = IOpenOracle.CreateReportParams({
             exactToken1Report: o.initialLiquidity,
             escalationHalt: o.escalationHalt,
             settlerReward: s.settlerReward,
-            token1Address: token1,
+            token1Address: sellTokenOracleFormat,
             settlementTime: o.settlementTime,
             disputeDelay: o.disputeDelay,
             protocolFee: o.protocolFee,
-            token2Address: token2,
+            token2Address: buyTokenOracleFormat,
             callbackGasLimit: 1000000,
             feePercentage: 0,
             multiplier: o.multiplier,
@@ -464,11 +439,13 @@ contract openSwapV2Permit is ReentrancyGuard {
 
         bool slippageOk = toleranceCheck(price, sp.priceTolerated, sp.toleranceRange);
         bool blocksPerSecondOk = impliedBlocksPerSecond(timeType, rs.reportTimestamp, rs.lastReportOppoTime, s.blocksPerSecond);
+        bool slippageBailout = fulfillAmt > minFulfillLiquidity || !slippageOk;
+        bool shouldRefund = slippageBailout || !blocksPerSecondOk;
 
-        if (fulfillAmt > minFulfillLiquidity || !slippageOk) emit SlippageBailout(swapId);
+        if (slippageBailout) emit SlippageBailout(swapId);
         if (!blocksPerSecondOk) emit ImpliedBlocksPerSecondBailout(swapId);
 
-        if (fulfillAmt > minFulfillLiquidity || !slippageOk || !blocksPerSecondOk) {
+        if (shouldRefund) {
             refund(sellToken, sellAmt, swapper, buyToken, minFulfillLiquidity, matcher);
             emit SwapRefunded(swapId, swapper, matcher);
         } else {
@@ -665,11 +642,10 @@ contract openSwapV2Permit is ReentrancyGuard {
     function grabOracleGameFees(Swap storage s) internal {
         address feeRecipient = s.feeRecipient;
         oracleFeeReceiver feeReceiver = oracleFeeReceiver(feeRecipient);
-        address sellToken;
-        address buyToken;
-
-        s.sellToken == address(0) ? sellToken = WETH : sellToken = s.sellToken; 
-        s.buyToken == address(0) ? buyToken = WETH : buyToken = s.buyToken; 
+        address sellToken = s.sellToken == address(0) ? WETH : s.sellToken;
+        address buyToken = s.buyToken == address(0) ? WETH : s.buyToken;
+        address swapper = s.swapper;
+        address matcher = s.matcher;
 
         try feeReceiver.collect() {} catch{}
 
@@ -686,16 +662,16 @@ contract openSwapV2Permit is ReentrancyGuard {
         uint256 swapperSellFeePiece = feesSellToken / 2;
         uint256 matcherSellFeePiece = feesSellToken - swapperSellFeePiece;
 
-        _transferTokens(sellToken, address(this), s.swapper, swapperSellFeePiece);
-        _transferTokens(sellToken, address(this), s.matcher, matcherSellFeePiece);
+        _transferTokens(sellToken, address(this), swapper, swapperSellFeePiece);
+        _transferTokens(sellToken, address(this), matcher, matcherSellFeePiece);
 
         uint256 swapperBuyFeePiece = feesBuyToken / 2;
         uint256 matcherBuyFeePiece = feesBuyToken - swapperBuyFeePiece;
 
-        _transferTokens(buyToken, address(this), s.swapper, swapperBuyFeePiece);
-        _transferTokens(buyToken, address(this), s.matcher, matcherBuyFeePiece);
+        _transferTokens(buyToken, address(this), swapper, swapperBuyFeePiece);
+        _transferTokens(buyToken, address(this), matcher, matcherBuyFeePiece);
 
-        emit FeesTransferred(s.swapper, s.matcher, buyToken, sellToken, uint128(feesBuyToken), uint128(feesSellToken), s.feeRecipient);
+        emit FeesTransferred(swapper, matcher, buyToken, sellToken, uint128(feesBuyToken), uint128(feesSellToken), feeRecipient);
 
     }
 
