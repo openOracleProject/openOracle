@@ -506,8 +506,8 @@ contract OpenSwapInputValidationTest is Test {
     function testMatchSwap_NotActive_Reverts() public {
         vm.startPrank(matcher);
         bytes32 fakeHash = keccak256(abi.encode(swapContract.getSwap(999)));
-        // preimage check runs before "not active" check, so it reverts with "preimage params"
-        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "preimage params"));
+        // state checks run before hashing, so inactive swaps revert without paying for the hash checks
+        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "swap not active"));
         swapContract.matchSwap(999, uint128(2000e18), fakeHash, _defaultPreimage());
         vm.stopPrank();
     }

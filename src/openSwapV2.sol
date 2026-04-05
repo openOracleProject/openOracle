@@ -269,9 +269,6 @@ contract openSwapV2Permit is ReentrancyGuard {
         uint128 minFulfillLiquidity = s.minFulfillLiquidity;
         uint128 initialLiquidity = preimage.initialLiquidity;
 
-        if (paramHashExpected != keccak256(abi.encode(s))) revert InvalidInput("params");
-        if (s.oracleAndFeeParamHash != keccak256(abi.encode(preimage))) revert InvalidInput("preimage params");
-
         if (buyToken != address(0) && msg.value != 0) revert InvalidInput("msg.value must be 0");
         if (buyToken == address(0) && msg.value != minFulfillLiquidity) revert InvalidInput("msg.value");
 
@@ -280,6 +277,9 @@ contract openSwapV2Permit is ReentrancyGuard {
         if (!s.active) revert InvalidInput("swap not active");
         if (s.finished) revert InvalidInput("finished");
         if (block.timestamp > s.expiration) revert InvalidInput("expired");
+
+        if (paramHashExpected != keccak256(abi.encode(s))) revert InvalidInput("params");
+        if (s.oracleAndFeeParamHash != keccak256(abi.encode(preimage))) revert InvalidInput("preimage params");
 
         s.matched = true;
         s.matcher = msg.sender;
@@ -349,6 +349,11 @@ contract openSwapV2Permit is ReentrancyGuard {
     function cancelSwap(uint256 swapId) external nonReentrant {
         Swap storage s = swaps[swapId];
 
+        if (s.matched) revert InvalidInput("already matched");
+        if (!s.active) revert InvalidInput("not active");
+        if (s.cancelled) revert InvalidInput("cancelled");
+        if (s.finished) revert InvalidInput("finished");
+
         address caller;
         uint256 callerPiece;
         uint256 swapperPiece;
@@ -373,11 +378,6 @@ contract openSwapV2Permit is ReentrancyGuard {
                 swapperPiece = gasCompensation;
             }
         }
-
-        if (s.matched) revert InvalidInput("already matched");
-        if (!s.active) revert InvalidInput("not active");
-        if (s.cancelled) revert InvalidInput("cancelled");
-        if (s.finished) revert InvalidInput("finished");
 
         s.cancelled = true;
         if (sellToken != address(0)) {
@@ -507,13 +507,14 @@ contract openSwapV2Permit is ReentrancyGuard {
     */
     function bailOut(uint256 swapId) external nonReentrant {
         Swap storage s = swaps[swapId];
-        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(s.reportId);
 
         if (s.finished) revert InvalidInput("finished");
         if (!s.active) revert InvalidInput("not active");
         if (!s.matched) revert InvalidInput("not matched");
         if (s.cancelled) revert InvalidInput("cancelled");
         if (s.reportId == 0) revert InvalidInput("doesnt exist");
+
+        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(s.reportId);
 
         bool isGameTooLong = block.timestamp - s.start > s.maxGameTime;
 

@@ -216,7 +216,7 @@ contract OpenSwapCancellationTest is Test {
     function testCancelSwap_FailsIfNotActive() public {
         // SwapId 999 doesn't exist, so active = false
         vm.prank(swapper);
-        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "not swapper"));
+        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "not active"));
         swapContract.cancelSwap(999);
     }
 
