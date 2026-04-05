@@ -392,7 +392,7 @@ contract openSwapV2Permit is ReentrancyGuard {
         emit SwapCancelled(swapId);
     }
 
-    function oracleGame(Swap memory s, MatcherPreimage memory o) internal returns (uint256 reportId) {
+    function oracleGame(Swap storage s, MatcherPreimage memory o) internal returns (uint256 reportId) {
         address token1;
         address token2;
 
