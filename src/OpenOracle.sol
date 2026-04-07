@@ -21,22 +21,32 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 contract OpenOracle is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    // Custom errors for gas optimization
     error TokensCannotBeSame();
-    error NoReport();
+    error NoReportToDispute();
     error EthTransferFailed();
-    error InvalidAmount();
+    error InvalidAmount1();
+    error InvalidAmount2();
     error InvalidStateHash();
     error InvalidGasLimit();
-    error InvalidTiming();
+    error SettleTooEarly();
     error AlreadySettled();
-    error MsgValue();
+    error ExactToken1CannotBeZero();
+    error SettleVsDisputeDelayTiming();
+    error MsgValueTooLow();
+    error MsgValueTooHigh();
     error FeesTooHigh();
     error MultiplierTooLow();
     error ReportAlreadySubmitted();
     error InvalidReportId();
     error AddressCannotBeZero();
+    error InvalidAmount2Expected();
     error InvalidTokenToSwap();
+    error NoReportYet();
     error EscalationHalted();
+    error AmountsCannotBeZero();
+    error DisputeTooLate();
+    error DisputeTooEarly();
     error NewPriceInsideFeeBoundary();
     error ReportNotSettled();
 
@@ -199,12 +209,12 @@ contract OpenOracle is ReentrancyGuard {
         if (status.settlementTimestamp != 0) revert AlreadySettled();
 
         if (meta.timeType) {
-            if (block.timestamp < status.reportTimestamp + meta.settlementTime) revert InvalidTiming();
+            if (block.timestamp < status.reportTimestamp + meta.settlementTime) revert SettleTooEarly();
         } else {
-            if (_getBlockNumber() < status.reportTimestamp + meta.settlementTime) revert InvalidTiming();
+            if (_getBlockNumber() < status.reportTimestamp + meta.settlementTime) revert SettleTooEarly();
         }
 
-        if (status.reportTimestamp == 0) revert NoReport();
+        if (status.reportTimestamp == 0) revert NoReportYet();
 
         uint256 settlerReward = meta.settlerReward;
         uint256 reporterReward = meta.fee;
@@ -334,11 +344,11 @@ contract OpenOracle is ReentrancyGuard {
     }
 
     function _createReportInstance(CreateReportParams memory params) internal returns (uint256 reportId) {
-        if (params.exactToken1Report == 0) revert InvalidAmount();
+        if (params.exactToken1Report == 0) revert ExactToken1CannotBeZero();
         if (params.token1Address == params.token2Address) revert TokensCannotBeSame();
-        if (params.settlementTime < params.disputeDelay) revert InvalidTiming();
+        if (params.settlementTime < params.disputeDelay) revert SettleVsDisputeDelayTiming();
 
-        if (msg.value < params.settlerReward) revert MsgValue();
+        if (msg.value < params.settlerReward) revert MsgValueTooLow();
         if (params.feePercentage + params.protocolFee > 1e7) revert FeesTooHigh();
         if (params.multiplier < MULTIPLIER_PRECISION) revert MultiplierTooLow();
 
@@ -355,7 +365,7 @@ contract OpenOracle is ReentrancyGuard {
 
         uint96 reporterFee;
         if (msg.value > params.settlerReward) {
-            if (msg.value > type(uint96).max) revert MsgValue();
+            if (msg.value > type(uint96).max) revert MsgValueTooHigh();
             reporterFee = uint96(msg.value) - params.settlerReward;
             meta.fee = reporterFee;
         }
@@ -470,8 +480,8 @@ contract OpenOracle is ReentrancyGuard {
         bool trackDisputes = extra.trackDisputes;
 
         if (reportId >= nextReportId) revert InvalidReportId();
-        if (amount1 != meta.exactToken1Report) revert InvalidAmount();
-        if (amount2 == 0) revert InvalidAmount();
+        if (amount1 != meta.exactToken1Report) revert InvalidAmount1();
+        if (amount2 == 0) revert InvalidAmount2();
         if (extra.stateHash != stateHash) revert InvalidStateHash();
         if (reporter == address(0)) revert AddressCannotBeZero();
 
@@ -570,7 +580,7 @@ contract OpenOracle is ReentrancyGuard {
         );
 
         _validateDispute(reportId, tokenToSwap, newAmount1, newAmount2, meta, status);
-        if (status.currentAmount2 != amt2Expected) revert InvalidAmount();
+        if (status.currentAmount2 != amt2Expected) revert InvalidAmount2Expected();
         if (stateHash != extra.stateHash) revert InvalidStateHash();
         if (disputer == address(0)) revert AddressCannotBeZero();
 
@@ -633,7 +643,7 @@ contract OpenOracle is ReentrancyGuard {
             if (escalationHalt <= oldAmount1) {
                 revert EscalationHalted();
             } else {
-                revert InvalidAmount();
+                revert InvalidAmount1();
             }
         }
     }
@@ -650,19 +660,19 @@ contract OpenOracle is ReentrancyGuard {
         ReportStatus storage status
     ) internal view {
         if (reportId >= nextReportId) revert InvalidReportId();
-        if (newAmount1 == 0 || newAmount2 == 0) revert InvalidAmount();
-        if (status.currentReporter == address(0)) revert NoReport();
+        if (newAmount1 == 0 || newAmount2 == 0) revert AmountsCannotBeZero();
+        if (status.currentReporter == address(0)) revert NoReportToDispute();
         if (meta.timeType) {
-            if (block.timestamp > status.reportTimestamp + meta.settlementTime) revert InvalidTiming();
+            if (block.timestamp > status.reportTimestamp + meta.settlementTime) revert DisputeTooLate();
         } else {
-            if (_getBlockNumber() > status.reportTimestamp + meta.settlementTime) revert InvalidTiming();
+            if (_getBlockNumber() > status.reportTimestamp + meta.settlementTime) revert DisputeTooLate();
         }
         if (status.settlementTimestamp != 0) revert AlreadySettled();
         if (tokenToSwap != meta.token1 && tokenToSwap != meta.token2) revert InvalidTokenToSwap();
         if (meta.timeType) {
-            if (block.timestamp < status.reportTimestamp + meta.disputeDelay) revert InvalidTiming();
+            if (block.timestamp < status.reportTimestamp + meta.disputeDelay) revert DisputeTooEarly();
         } else {
-            if (_getBlockNumber() < status.reportTimestamp + meta.disputeDelay) revert InvalidTiming();
+            if (_getBlockNumber() < status.reportTimestamp + meta.disputeDelay) revert DisputeTooEarly();
         }
 
         uint256 feeSum = uint256(meta.feePercentage) + uint256(meta.protocolFee);

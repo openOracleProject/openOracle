@@ -293,6 +293,68 @@ contract OpenOracleTest is BaseTest {
         assertEq(token1.balanceOf(protocolFeeRecipient), recipientBalanceBefore + expectedFee, "Recipient should receive exact protocol fee");
     }
 
+    // Reverts when initial report amount1 does not match exactToken1Report
+    function testSubmitInitialReportRevertsWhenAmount1IsInvalid() public {
+        vm.prank(alice);
+        uint256 reportId = oracle.createReportInstance{value: ORACLE_FEE}(
+            OpenOracle.CreateReportParams({
+                token1Address: address(token1),
+                token2Address: address(token2),
+                exactToken1Report: uint128(1e18),
+                feePercentage: uint24(3000),
+                multiplier: uint16(110),
+                settlementTime: uint48(300),
+                escalationHalt: uint128(10e18),
+                disputeDelay: uint24(5),
+                protocolFee: uint24(1000),
+                settlerReward: uint96(SETTLER_REWARD),
+                timeType: true,
+                callbackContract: address(0),
+                callbackSelector: bytes4(0),
+                trackDisputes: false,
+                callbackGasLimit: uint32(0),
+                protocolFeeRecipient: protocolFeeRecipient
+            })
+        );
+
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        vm.prank(bob);
+        vm.expectRevert(OpenOracle.InvalidAmount1.selector);
+        oracle.submitInitialReport(reportId, uint128(1e18 + 1), uint128(2000e18), stateHash);
+    }
+
+    // Reverts when initial report amount2 is zero
+    function testSubmitInitialReportRevertsWhenAmount2IsZero() public {
+        vm.prank(alice);
+        uint256 reportId = oracle.createReportInstance{value: ORACLE_FEE}(
+            OpenOracle.CreateReportParams({
+                token1Address: address(token1),
+                token2Address: address(token2),
+                exactToken1Report: uint128(1e18),
+                feePercentage: uint24(3000),
+                multiplier: uint16(110),
+                settlementTime: uint48(300),
+                escalationHalt: uint128(10e18),
+                disputeDelay: uint24(5),
+                protocolFee: uint24(1000),
+                settlerReward: uint96(SETTLER_REWARD),
+                timeType: true,
+                callbackContract: address(0),
+                callbackSelector: bytes4(0),
+                trackDisputes: false,
+                callbackGasLimit: uint32(0),
+                protocolFeeRecipient: protocolFeeRecipient
+            })
+        );
+
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        vm.prank(bob);
+        vm.expectRevert(OpenOracle.InvalidAmount2.selector);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(0), stateHash);
+    }
+
     // ------------------------------------------------------------------------
     // Section: Oracle Lifecycle
     // ------------------------------------------------------------------------
