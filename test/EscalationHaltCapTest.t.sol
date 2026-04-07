@@ -230,7 +230,7 @@ contract EscalationHaltCapTest is BaseTest {
         token2.approve(address(oracle), 1000e18);
 
         // Expected: 5 * 1.5 = 7.5, but Bob tries with 7.6
-        vm.expectRevert(OpenOracle.InvalidAmount1.selector);
+        vm.expectRevert(OpenOracle.InvalidAmount.selector);
         oracle.disputeAndSwap(reportId, address(token1), uint128(76e17), uint128(6e18), uint128(initialAmount2), stateHash);
 
         // Try with correct amount (7.5e18)
@@ -244,7 +244,7 @@ contract EscalationHaltCapTest is BaseTest {
         token2.approve(address(oracle), 1000e18);
 
         // Should fail if trying with uncapped amount (11.25)
-        vm.expectRevert(OpenOracle.InvalidAmount1.selector);
+        vm.expectRevert(OpenOracle.InvalidAmount.selector);
         oracle.disputeAndSwap(reportId, address(token1), uint128(1125e16), uint128(7e18), uint128(6e18), stateHash);
 
         // Should succeed with capped amount (8)
