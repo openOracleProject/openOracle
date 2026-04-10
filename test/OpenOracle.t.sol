@@ -476,4 +476,90 @@ contract OpenOracleTest is BaseTest {
         assertGt(price, 0, "Price should be set");
         assertEq(settlementTimestamp, block.timestamp, "Settlement timestamp should match");
     }
+
+    // Reverts when trying to settle a report twice
+    function testSettleRevertsWhenReportIsAlreadySettled() public {
+        vm.prank(alice);
+        uint256 reportId = oracle.createReportInstance{value: ORACLE_FEE}(
+            OpenOracle.CreateReportParams({
+                token1Address: address(token1),
+                token2Address: address(token2),
+                exactToken1Report: uint128(1e18),
+                feePercentage: uint24(3000),
+                multiplier: uint16(110),
+                settlementTime: uint48(300),
+                escalationHalt: uint128(10e18),
+                disputeDelay: uint24(5),
+                protocolFee: uint24(1000),
+                settlerReward: uint96(SETTLER_REWARD),
+                timeType: true,
+                callbackContract: address(0),
+                callbackSelector: bytes4(0),
+                trackDisputes: false,
+                callbackGasLimit: uint32(0),
+                protocolFeeRecipient: address(0)
+            })
+        );
+
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        vm.prank(bob);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
+
+        vm.warp(block.timestamp + 300);
+
+        vm.prank(charlie);
+        oracle.settle(reportId);
+
+        vm.expectRevert(OpenOracle.AlreadySettled.selector);
+        vm.prank(alice);
+        oracle.settle(reportId);
+    }
+
+    // Logs gas for a second settle after re-cooling oracle storage to simulate a fresh transaction
+    function testGas_SettleRevertsWhenReportIsAlreadySettledWithColdSlots() public {
+        vm.prank(alice);
+        uint256 reportId = oracle.createReportInstance{value: ORACLE_FEE}(
+            OpenOracle.CreateReportParams({
+                token1Address: address(token1),
+                token2Address: address(token2),
+                exactToken1Report: uint128(1e18),
+                feePercentage: uint24(3000),
+                multiplier: uint16(110),
+                settlementTime: uint48(300),
+                escalationHalt: uint128(10e18),
+                disputeDelay: uint24(5),
+                protocolFee: uint24(1000),
+                settlerReward: uint96(SETTLER_REWARD),
+                timeType: true,
+                callbackContract: address(0),
+                callbackSelector: bytes4(0),
+                trackDisputes: false,
+                callbackGasLimit: uint32(0),
+                protocolFeeRecipient: address(0)
+            })
+        );
+
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        vm.prank(bob);
+        oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
+
+        vm.warp(block.timestamp + 300);
+
+        vm.prank(charlie);
+        oracle.settle(reportId);
+
+        // Reset the oracle's access list state so the second settle reads cold storage slots again.
+        vm.cool(address(oracle));
+
+        (bool ok, bytes memory revertData) = address(oracle).call(abi.encodeCall(OpenOracle.settle, (reportId)));
+        uint256 gasUsed = vm.snapshotGasLastCall("settleAlreadySettledColdSlots");
+
+        assertFalse(ok, "second settle should revert");
+        assertEq(revertData.length, 4, "unexpected revert data length");
+        assertEq(bytes4(revertData), OpenOracle.AlreadySettled.selector, "wrong revert selector");
+
+        emit log_named_uint("gas settle already settled cold slots", gasUsed);
+    }
 }
