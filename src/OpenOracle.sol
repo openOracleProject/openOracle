@@ -793,7 +793,6 @@ contract OpenOracle is ReentrancyGuard {
 
         (bool success,) = recipient.call{value: amount, gas: 40000}("");
         if (!success) {
-            //adding any reentrancy risk here?
             accruedProtocolFees[recipient] += amount;
         }
     }
