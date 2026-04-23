@@ -77,12 +77,12 @@ contract openLending is ReentrancyGuard {
     }
 
     struct LendingOffers {
-        uint128 amount; // amount offered.
         address lender; // lender address of this offer
         uint48 offerTime; // time of offer
         uint32 rate; // 1e8 = 10%, interest rate offered
         bool cancelled; // offer has been cancelled by prospective lender. must wait 60 seconds after offerTime
         bool chosen; // offer has been accepted by borrower
+        uint128 amount; // amount offered.
         bool allowAnyLiquidator; // lender allows anyone to liquidate the loan, splitting profits 50/50
     }
 
