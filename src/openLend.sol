@@ -36,32 +36,40 @@ contract openLending is ReentrancyGuard {
     struct LendingArrangement {
         uint128 supplyAmount; // amount supplied as collateral
         uint128 borrowAmount; // amount borrowed at time of loan origination
+
         uint128 amountDemanded; // amount demanded by borrower
         uint128 repaidDebt; // amount of debt repaid
-        uint24 refiOfferNonce; // unique identification number of refinancing round (one per new loan)
+
         address borrower; // borrower address
         uint48 term; // length of loan in seconds
         uint48 start; // timestamp loan began
+        uint24 refiOfferNonce; // unique identification number of refinancing round (one per new loan)
+
         address lender; // lender address
         uint48 offerNumber; // lender's offer number for original borrow request
         uint48 offerExpiration; // timestamp lenders must submit offers by, for original borrow request. NOTE: IS THIS EVEN NECESSARY?
+        uint32 rate; // 1e8 = 10%, annual interest rate
+        uint16 stake; // 100 = 1%. stake * supplyAmount is how much liquidator must wager openOracle resolves to liquidation.
+        bool allowAnyLiquidator; // lender allows anyone to liquidate the loan, splitting profits 50/50
+
         address liquidator; // liquidator address
         uint48 liquidationStart; // timestamp where the liquidation started
         uint48 gracePeriod; // extra time to repay debt / accept refinance offer if liquidation oracle game runs past maturity
-        address supplyToken; // supply token
-        uint48 refiOfferNumber; // lender's offer number for refi instance
-        uint32 rate; // 1e8 = 10%, annual interest rate
-        uint16 stake; // 100 = 1%. stake * supplyAmount is how much liquidator must wager openOracle resolves to liquidation.
-        address borrowToken; // borrow token
-        uint24 liquidationThreshold; // 8e6 = 80%. when accrued debt > liquidationThreshold * supplyAmount, liquidation is possible
         bool cancelled; // borrow request cancelled by borrower
         bool active; // offer accepted and loan is live
         bool inLiquidation; // loan is in liquidation (oracle game is running)
         bool finished; // loan has been liquidated or repaid
-        bool allowAnyLiquidator; // lender allows anyone to liquidate the loan, splitting profits 50/50
+
+        address supplyToken; // supply token
+        uint24 liquidationThreshold; // 8e6 = 80%. when accrued debt > liquidationThreshold * supplyAmount, liquidation is possible
+        uint48 refiOfferNumber; // lender's offer number for refi instance
+
+        address borrowToken; // borrow token
         address feeRecipient; // contract that receives protocol fees from oracle game
+
         RefiParams refiParams; // parameters for borrower's next refinance
         OracleParams oracleParams; // parameters for oracle game
+
         mapping(uint256 => LendingOffers) lendingOffers;
         mapping(uint256 => mapping(uint256 => RefiLendingOffers)) refiLendingOffers;
         mapping(uint256 => bool) refiNonceAccepted;
