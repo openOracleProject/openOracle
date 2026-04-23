@@ -200,7 +200,7 @@ contract openLending is ReentrancyGuard {
             revert InvalidInput("supply + stake too high");
         }
 
-        if (oracleParams.oracleGameFee > 10000) revert InvalidInput("oracle game fees too high");
+        if (oracleParams.oracleGameFee > 1e6) revert InvalidInput("oracle game fees too high");
         if (multiplier < 100 || multiplier > 1000) revert InvalidInput("oracle game multiplier out of bounds");
         if (oracleParams.disputeDelay >= settlementTime) revert InvalidInput("disputeDelay >= settlementTime");
 
