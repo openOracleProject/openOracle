@@ -2,21 +2,11 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/OpenOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./OpenLendingBase.t.sol";
 
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1_000_000_000e18);
-    }
-}
-
-contract CancellationTest is Test {
-    openLending internal lending;
-    OpenOracle internal oracle;
-    MockERC20 internal supplyToken;
-    MockERC20 internal borrowToken;
+contract CancellationTest is OpenLendingBaseTest {
+    event BorrowRequestCancelled(address indexed borrower, uint256 indexed lendingId);
+    event BorrowOfferCancelled(uint256 lendingId, uint256 offerNumber);
 
     address internal borrower = address(0x1);
     address internal lender1 = address(0x2);
@@ -37,30 +27,22 @@ contract CancellationTest is Test {
     uint256 constant OFFER_EXPIRATION = 1 hours;
 
     function setUp() public {
-        oracle = new OpenOracle();
-        lending = new openLending(IOpenOracle(address(oracle)));
+        _deployCore("Supply", "SUP", "Borrow", "BOR");
 
-        supplyToken = new MockERC20("Supply", "SUP");
-        borrowToken = new MockERC20("Borrow", "BOR");
+        address[] memory supplyAccounts = new address[](1);
+        supplyAccounts[0] = borrower;
+        _fundSupply(supplyAccounts, 1000e18);
 
-        // Fund accounts
-        supplyToken.transfer(borrower, 1000e18);
-        borrowToken.transfer(lender1, 1000e18);
-        borrowToken.transfer(lender2, 1000e18);
+        address[] memory borrowAccounts = new address[](2);
+        borrowAccounts[0] = lender1;
+        borrowAccounts[1] = lender2;
+        _fundBorrow(borrowAccounts, 1000e18);
 
-        // Deposit unrelated funds to contract
-        supplyToken.transfer(address(lending), UNRELATED_SUPPLY);
-        borrowToken.transfer(address(lending), UNRELATED_BORROW);
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
 
-        // Approvals
-        vm.prank(borrower);
-        supplyToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender1);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender2);
-        borrowToken.approve(address(lending), type(uint256).max);
+        _approveLendingSupply(borrower);
+        _approveLendingBorrow(lender1);
+        _approveLendingBorrow(lender2);
     }
 
     // Helper to create a borrow request
@@ -75,7 +57,7 @@ contract CancellationTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
     }
 
@@ -89,6 +71,8 @@ contract CancellationTest is Test {
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
         uint256 contractSupplyBefore = supplyToken.balanceOf(address(lending));
 
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit BorrowRequestCancelled(borrower, lendingId);
         vm.prank(borrower);
         lending.cancelBorrowRequest(lendingId);
 
@@ -108,14 +92,10 @@ contract CancellationTest is Test {
 
         // Unrelated funds untouched
         assertEq(
-            supplyToken.balanceOf(address(lending)),
-            UNRELATED_SUPPLY,
-            "Unrelated supply funds should be untouched"
+            supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY, "Unrelated supply funds should be untouched"
         );
         assertEq(
-            borrowToken.balanceOf(address(lending)),
-            UNRELATED_BORROW,
-            "Unrelated borrow funds should be untouched"
+            borrowToken.balanceOf(address(lending)), UNRELATED_BORROW, "Unrelated borrow funds should be untouched"
         );
 
         // Verify cancelled state
@@ -136,7 +116,7 @@ contract CancellationTest is Test {
 
         // Borrower tries to cancel - should fail because loan is active
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "lendingId active"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId active"));
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -149,7 +129,7 @@ contract CancellationTest is Test {
 
         // Second cancel fails
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "lendingId cancelled"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId cancelled"));
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -158,12 +138,12 @@ contract CancellationTest is Test {
 
         // Random user tries to cancel
         vm.prank(randomUser);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowRequest(lendingId);
 
         // Lender tries to cancel
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -215,6 +195,8 @@ contract CancellationTest is Test {
         // Wait 60 seconds (exactly when cancel becomes allowed)
         vm.warp(block.timestamp + 60);
 
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit BorrowOfferCancelled(lendingId, offerNumber);
         vm.prank(lender1);
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
@@ -239,9 +221,7 @@ contract CancellationTest is Test {
             "Unrelated supply + borrower collateral should be intact"
         );
         assertEq(
-            borrowToken.balanceOf(address(lending)),
-            UNRELATED_BORROW,
-            "Unrelated borrow funds should be untouched"
+            borrowToken.balanceOf(address(lending)), UNRELATED_BORROW, "Unrelated borrow funds should be untouched"
         );
 
         // Verify offer state
@@ -260,13 +240,13 @@ contract CancellationTest is Test {
 
         // Try to cancel immediately (before 60 seconds)
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "cancel too soon"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "cancel too soon"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
         // Try at 59 seconds (should still fail)
         vm.warp(offerTime + 59);
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "cancel too soon"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "cancel too soon"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
         // At exactly 60 seconds should succeed (60 < 60 is false)
@@ -290,7 +270,7 @@ contract CancellationTest is Test {
 
         // Lender tries to cancel - should fail because offer was chosen
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "chosen"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "chosen"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
     }
 
@@ -309,7 +289,7 @@ contract CancellationTest is Test {
         // Second cancel fails - amount is 0 after cancel, so "no borrow offer" error
         // (amount == 0 check comes before cancelled check in contract)
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "no borrow offer"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "no borrow offer"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
     }
 
@@ -323,17 +303,17 @@ contract CancellationTest is Test {
 
         // Random user tries to cancel
         vm.prank(randomUser);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
         // Different lender tries to cancel
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
         // Borrower tries to cancel
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
     }
 
@@ -344,7 +324,7 @@ contract CancellationTest is Test {
 
         // Try to cancel offer that doesn't exist
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "msg.sender"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "msg.sender"));
         lending.cancelBorrowOffer(lendingId, 999);
     }
 
@@ -370,7 +350,7 @@ contract CancellationTest is Test {
 
         // Lender1 cannot cancel (chosen)
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "chosen"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "chosen"));
         lending.cancelBorrowOffer(lendingId, offer1);
 
         // Lender2 CAN cancel (not chosen)
@@ -378,11 +358,7 @@ contract CancellationTest is Test {
         vm.prank(lender2);
         lending.cancelBorrowOffer(lendingId, offer2);
 
-        assertEq(
-            borrowToken.balanceOf(lender2),
-            lender2Before + BORROW_AMOUNT,
-            "Lender2 should get funds back"
-        );
+        assertEq(borrowToken.balanceOf(lender2), lender2Before + BORROW_AMOUNT, "Lender2 should get funds back");
     }
 
     function testLenderCancel_AfterBorrowerCancels() public {
@@ -423,7 +399,7 @@ contract CancellationTest is Test {
 
         // Lender tries to make offer on cancelled request
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "lendingId cancelled"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId cancelled"));
         lending.offerBorrow(lendingId, BORROW_AMOUNT, INTEREST_RATE, true);
     }
 
@@ -441,7 +417,7 @@ contract CancellationTest is Test {
 
         // Borrower tries to accept cancelled offer
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "offer cancelled"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "offer cancelled"));
         lending.acceptOffer(lendingId, offerNumber);
     }
 
@@ -456,7 +432,7 @@ contract CancellationTest is Test {
         // At 59 seconds after offer, should still fail
         vm.warp(offerTime + 59);
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "cancel too soon"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "cancel too soon"));
         lending.cancelBorrowOffer(lendingId, offerNumber);
 
         // At exactly 60 seconds, should succeed (condition is <)

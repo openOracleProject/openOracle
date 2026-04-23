@@ -2,29 +2,12 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/OpenOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./OpenLendingBase.t.sol";
 
-/**
- * @notice Same tests as HappyPathTest but on a loan that has been refinanced.
- *         Verifies that all standard operations work correctly post-refi.
- */
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1_000_000_000e18);
-    }
-}
-
-contract HappyPathRefinancingTest is Test {
-    openLending internal lending;
-    OpenOracle internal oracle;
-    MockERC20 internal supplyToken;
-    MockERC20 internal borrowToken;
-
+contract HappyPathRefinancingTest is OpenLendingBaseTest {
     address internal borrower = address(0x1);
-    address internal lender1 = address(0x2);  // Original lender
-    address internal lender2 = address(0x3);  // Refi lender
+    address internal lender1 = address(0x2); // Original lender
+    address internal lender2 = address(0x3); // Refi lender
     address internal settler = address(0x4);
 
     // Unrelated funds to verify no skimming
@@ -40,40 +23,28 @@ contract HappyPathRefinancingTest is Test {
     uint128 constant STAKE = 100; // 1%
 
     function setUp() public {
-        oracle = new OpenOracle();
-        lending = new openLending(IOpenOracle(address(oracle)));
+        _deployCore("Supply Token", "SUP", "Borrow Token", "BOR");
 
-        supplyToken = new MockERC20("Supply Token", "SUP");
-        borrowToken = new MockERC20("Borrow Token", "BOR");
+        address[] memory supplyAccounts = new address[](1);
+        supplyAccounts[0] = borrower;
+        _fundSupply(supplyAccounts, 10000e18);
 
-        // Fund accounts
-        supplyToken.transfer(borrower, 10000e18);
-        borrowToken.transfer(borrower, 10000e18);
-        borrowToken.transfer(lender1, 10000e18);
-        borrowToken.transfer(lender2, 10000e18);
+        address[] memory borrowAccounts = new address[](3);
+        borrowAccounts[0] = borrower;
+        borrowAccounts[1] = lender1;
+        borrowAccounts[2] = lender2;
+        _fundBorrow(borrowAccounts, 10000e18);
 
-        // Approvals
-        vm.prank(borrower);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(borrower);
-        borrowToken.approve(address(lending), type(uint256).max);
+        _approveLendingBoth(borrower);
+        _approveLendingBorrow(lender1);
+        _approveLendingBorrow(lender2);
 
-        vm.prank(lender1);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender2);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        // Seed unrelated funds
-        supplyToken.transfer(address(lending), UNRELATED_SUPPLY);
-        borrowToken.transfer(address(lending), UNRELATED_BORROW);
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
     }
 
     // Helper: Calculate interest at maturity
     function calculateOwedAtMaturity(uint256 principal, uint32 rate, uint48 term) internal pure returns (uint128) {
-        uint256 year = 365 days;
-        uint256 interest = (principal * uint256(term) * uint256(rate)) / (1e9 * year);
-        return uint128(principal + interest);
+        return _calculateOwedAtMaturity(principal, rate, term);
     }
 
     // Helper: Setup a loan and immediately refinance it
@@ -90,7 +61,7 @@ contract HappyPathRefinancingTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         // 2. Lender1 offers
@@ -117,10 +88,10 @@ contract HappyPathRefinancingTest is Test {
         (uint256 refiOfferNum, uint256 refiNonce) = lending.offerRefiBorrow(
             lendingId,
             INTEREST_RATE, // same rate
-            false,         // allowAnyLiquidator
-            0,             // repaidDebtExpected
-            0,             // extraDemandedExpected
-            0              // minSupplyPostRefi
+            false, // allowAnyLiquidator
+            0, // repaidDebtExpected
+            0, // extraDemandedExpected
+            0 // minSupplyPostRefi
         );
 
         // 8. Borrower accepts refi - lender1 gets paid, lender2 is now the lender
@@ -165,9 +136,7 @@ contract HappyPathRefinancingTest is Test {
 
         // Verify token movements
         assertEq(
-            borrowToken.balanceOf(borrower),
-            borrowerBorrowBefore - totalOwed,
-            "Borrower should have paid total owed"
+            borrowToken.balanceOf(borrower), borrowerBorrowBefore - totalOwed, "Borrower should have paid total owed"
         );
 
         assertEq(
@@ -177,9 +146,7 @@ contract HappyPathRefinancingTest is Test {
         );
 
         assertEq(
-            borrowToken.balanceOf(lender2),
-            lender2BorrowBefore + totalOwed,
-            "Lender2 should have received total owed"
+            borrowToken.balanceOf(lender2), lender2BorrowBefore + totalOwed, "Lender2 should have received total owed"
         );
 
         // Verify unrelated funds untouched
@@ -238,7 +205,7 @@ contract HappyPathRefinancingTest is Test {
     // TEST: Partial repay on refinanced loan, then late
     // =========================================================================
     function testRefiLoan_PartialRepayThenLate_LenderGetsCollateralAndPartialRepay() public {
-        (uint256 lendingId, uint256 refiBorrowAmount) = setupRefinancedLoan();
+        (uint256 lendingId,) = setupRefinancedLoan();
 
         openLending.LendingView memory loan = lending.getLending(lendingId);
         uint256 lender2SupplyBefore = supplyToken.balanceOf(lender2);
@@ -322,9 +289,7 @@ contract HappyPathRefinancingTest is Test {
 
         // Verify lender2 received full amount
         assertEq(
-            borrowToken.balanceOf(lender2),
-            lender2BorrowBefore + totalOwed,
-            "Lender2 should have received total owed"
+            borrowToken.balanceOf(lender2), lender2BorrowBefore + totalOwed, "Lender2 should have received total owed"
         );
 
         // Borrower got collateral back
@@ -338,13 +303,14 @@ contract HappyPathRefinancingTest is Test {
     // =========================================================================
     // TEST: Verify interest calculation correct on refinanced loan
     // =========================================================================
-    function testRefiLoan_InterestCalculation() public {
+    function testRefiLoan_InterestCalculation() public pure {
         // After refi, the borrow amount is what was owed to lender1
         uint256 originalOwed = calculateOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
         // Original: 50e18 at 10% for 30 days
         // interest = 50e18 * 30 days * 1e8 / (1e9 * 365 days) = 410958904109589 (approx 0.41e18)
-        uint256 expectedOriginalInterest = (BORROW_AMOUNT * uint256(LOAN_TERM) * uint256(INTEREST_RATE)) / (1e9 * 365 days);
+        uint256 expectedOriginalInterest =
+            (BORROW_AMOUNT * uint256(LOAN_TERM) * uint256(INTEREST_RATE)) / (1e9 * 365 days);
         assertEq(originalOwed, BORROW_AMOUNT + expectedOriginalInterest, "Original owed calculation");
 
         // After refi, new loan is for originalOwed amount
@@ -394,14 +360,7 @@ contract HappyPathRefinancingTest is Test {
         uint256 owedToLender2 = calculateOwedAtMaturity(refiBorrowAmount, INTEREST_RATE, LOAN_TERM);
 
         vm.prank(lender1);
-        (uint256 refi2Offer, uint256 refi2Nonce) = lending.offerRefiBorrow(
-            lendingId,
-            INTEREST_RATE,
-            false,
-            0,
-            0,
-            0
-        );
+        (uint256 refi2Offer, uint256 refi2Nonce) = lending.offerRefiBorrow(lendingId, INTEREST_RATE, false, 0, 0, 0);
 
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
 
@@ -410,9 +369,7 @@ contract HappyPathRefinancingTest is Test {
 
         // Verify lender2 got paid
         assertEq(
-            borrowToken.balanceOf(lender2),
-            lender2BorrowBefore + owedToLender2,
-            "Lender2 should receive owed amount"
+            borrowToken.balanceOf(lender2), lender2BorrowBefore + owedToLender2, "Lender2 should receive owed amount"
         );
 
         // Now loan is with lender1 again
@@ -435,16 +392,12 @@ contract HappyPathRefinancingTest is Test {
 
         // Lender1 got paid
         assertEq(
-            borrowToken.balanceOf(lender1),
-            lender1BorrowBefore + finalOwed,
-            "Lender1 should receive final payment"
+            borrowToken.balanceOf(lender1), lender1BorrowBefore + finalOwed, "Lender1 should receive final payment"
         );
 
         // Borrower got collateral
         assertEq(
-            supplyToken.balanceOf(borrower),
-            borrowerSupplyBefore + SUPPLY_AMOUNT,
-            "Borrower should receive collateral"
+            supplyToken.balanceOf(borrower), borrowerSupplyBefore + SUPPLY_AMOUNT, "Borrower should receive collateral"
         );
     }
 
@@ -463,7 +416,7 @@ contract HappyPathRefinancingTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         vm.prank(lender1);
@@ -482,14 +435,8 @@ contract HappyPathRefinancingTest is Test {
         uint256 owedToLender1 = calculateOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
         vm.prank(lender2);
-        (uint256 refiOffer, uint256 refiNonce) = lending.offerRefiBorrow(
-            lendingId,
-            INTEREST_RATE,
-            false,
-            0,
-            0,
-            SUPPLY_AMOUNT - supplyPulled
-        );
+        (uint256 refiOffer, uint256 refiNonce) =
+            lending.offerRefiBorrow(lendingId, INTEREST_RATE, false, 0, 0, SUPPLY_AMOUNT - supplyPulled);
 
         vm.prank(borrower);
         lending.acceptRefiOffer(lendingId, refiOffer, refiNonce);

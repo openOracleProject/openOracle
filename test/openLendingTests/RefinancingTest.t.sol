@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/OpenOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./OpenLendingBase.t.sol";
 
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1_000_000_000e18);
-    }
-}
-
-contract RefinancingTest is Test {
-    openLending internal lending;
-    OpenOracle internal oracle;
-    MockERC20 internal supplyToken;
-    MockERC20 internal borrowToken;
+contract RefinancingTest is OpenLendingBaseTest {
+    event RefiParamsUpdated(uint256 lendingId, uint256 extraBorrowDemanded, uint256 supplyPulled);
+    event RefiBorrowOffered(
+        address indexed lender, uint256 indexed lendingId, uint32 rate, uint256 refiNonce, uint256 refiOfferNumber
+    );
+    event RefiOfferAccepted(uint256 lendingId, uint256 refiOfferNumber, uint256 refiNonce);
+    event RefiBorrowOfferCancelled(uint256 lendingId, uint256 refiOfferNumber, uint256 refiNonce);
 
     address internal borrower = address(0x1);
     address internal lender1 = address(0x2);
@@ -47,52 +40,30 @@ contract RefinancingTest is Test {
     uint128 constant EXPECTED_INITIAL_LIQUIDITY = ORACLE_EXACT_TOKEN1; // 10 ether
 
     function setUp() public {
-        oracle = new OpenOracle();
-        lending = new openLending(IOpenOracle(address(oracle)));
+        _deployCore("Supply", "SUP", "Borrow", "BOR");
 
-        supplyToken = new MockERC20("Supply", "SUP");
-        borrowToken = new MockERC20("Borrow", "BOR");
+        address[] memory supplyAccounts = new address[](2);
+        supplyAccounts[0] = borrower;
+        supplyAccounts[1] = liquidator;
+        _fundSupply(supplyAccounts, 10000e18);
 
-        // Fund accounts
-        supplyToken.transfer(borrower, 10000e18);
-        borrowToken.transfer(borrower, 10000e18);
-        borrowToken.transfer(lender1, 10000e18);
-        borrowToken.transfer(lender2, 10000e18);
-        borrowToken.transfer(lender3, 10000e18);
-        supplyToken.transfer(liquidator, 10000e18);
-        borrowToken.transfer(liquidator, 10000e18);
+        address[] memory borrowAccounts = new address[](5);
+        borrowAccounts[0] = borrower;
+        borrowAccounts[1] = lender1;
+        borrowAccounts[2] = lender2;
+        borrowAccounts[3] = lender3;
+        borrowAccounts[4] = liquidator;
+        _fundBorrow(borrowAccounts, 10000e18);
 
-        // Deposit unrelated funds
-        supplyToken.transfer(address(lending), UNRELATED_SUPPLY);
-        borrowToken.transfer(address(lending), UNRELATED_BORROW);
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
 
-        // Approvals
-        vm.prank(borrower);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(borrower);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender1);
-        borrowToken.approve(address(lending), type(uint256).max);
-        vm.prank(lender2);
-        borrowToken.approve(address(lending), type(uint256).max);
-        vm.prank(lender3);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(liquidator);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(liquidator);
-        supplyToken.approve(address(oracle), type(uint256).max);
-        vm.prank(liquidator);
-        borrowToken.approve(address(lending), type(uint256).max);
-        vm.prank(liquidator);
-        borrowToken.approve(address(oracle), type(uint256).max);
-
-        // Lender2 needs oracle approval for refi offer submissions (oracle pulls tokens)
-        vm.prank(lender2);
-        supplyToken.approve(address(oracle), type(uint256).max);
-        vm.prank(lender2);
-        borrowToken.approve(address(oracle), type(uint256).max);
+        _approveLendingBoth(borrower);
+        _approveLendingBorrow(lender1);
+        _approveLendingBorrow(lender2);
+        _approveLendingBorrow(lender3);
+        _approveLendingBoth(liquidator);
+        _approveOracleBoth(liquidator);
+        _approveOracleBoth(lender2);
 
         vm.deal(liquidator, 10 ether);
     }
@@ -109,7 +80,7 @@ contract RefinancingTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         vm.prank(lender1);
@@ -121,9 +92,7 @@ contract RefinancingTest is Test {
 
     // Helper: Calculate total owed at maturity
     function totalOwedAtMaturity(uint256 amount, uint256 rate, uint256 term) internal pure returns (uint256) {
-        uint256 year = 365 days;
-        uint256 interest = amount * term * rate / (1e9 * year);
-        return amount + interest;
+        return _calculateOwedAtMaturity(amount, uint32(rate), uint48(term));
     }
 
     // =========================================================================
@@ -133,7 +102,6 @@ contract RefinancingTest is Test {
     function testRefi_BasicFlow() public {
         uint256 lendingId = setupActiveLoan();
 
-        openLending.LendingView memory loanBefore = lending.getLending(lendingId);
         uint256 lender1Before = borrowToken.balanceOf(lender1);
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
@@ -141,10 +109,14 @@ contract RefinancingTest is Test {
         uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
         // Borrower sets refi params (no extra demand, no supply pull)
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiParamsUpdated(lendingId, 0, 0);
         vm.prank(borrower);
         lending.changeRefiParams(lendingId, 0, 0);
 
         // Lender2 offers refi
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit RefiBorrowOffered(lender2, lendingId, INTEREST_RATE + 1e7, 1, 1);
         vm.prank(lender2);
         (uint256 refiOfferNum, uint256 refiNonce) = lending.offerRefiBorrow(
             lendingId,
@@ -152,13 +124,15 @@ contract RefinancingTest is Test {
             true,
             0, // repaidDebt
             0, // extraDemanded
-            0  // minSupplyPostRefi
+            0 // minSupplyPostRefi
         );
 
         assertEq(refiNonce, 1, "First refi nonce should be 1");
         assertEq(refiOfferNum, 1, "First refi offer should be 1");
 
         // Borrower accepts refi
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiOfferAccepted(lendingId, refiOfferNum, refiNonce);
         vm.prank(borrower);
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
 
@@ -197,14 +171,8 @@ contract RefinancingTest is Test {
 
         // Lender2 offers refi (must provide owedToLender1 + extraDemanded)
         vm.prank(lender2);
-        (uint256 refiOfferNum, uint256 refiNonce) = lending.offerRefiBorrow(
-            lendingId,
-            INTEREST_RATE,
-            true,
-            0,
-            extraDemanded,
-            0
-        );
+        (uint256 refiOfferNum, uint256 refiNonce) =
+            lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, extraDemanded, 0);
 
         vm.prank(borrower);
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
@@ -230,8 +198,6 @@ contract RefinancingTest is Test {
         // Set refi params with supply pull
         vm.prank(borrower);
         lending.changeRefiParams(lendingId, 0, supplyPulled);
-
-        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
         // Lender2 offers refi
         vm.prank(lender2);
@@ -269,6 +235,8 @@ contract RefinancingTest is Test {
         // --- REFI 1: lender1 -> lender2 ---
         uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiParamsUpdated(lendingId, 0, 0);
         vm.prank(borrower);
         lending.changeRefiParams(lendingId, 0, 0);
 
@@ -302,11 +270,7 @@ contract RefinancingTest is Test {
         lending.acceptRefiOffer(lendingId, refi2Offer, refi2Nonce);
 
         // Lender2 should have been paid
-        assertEq(
-            borrowToken.balanceOf(lender2),
-            lender2Before + owedToLender2,
-            "Lender2 should receive full owed"
-        );
+        assertEq(borrowToken.balanceOf(lender2), lender2Before + owedToLender2, "Lender2 should receive full owed");
 
         openLending.LendingView memory loanAfterRefi2 = lending.getLending(lendingId);
         assertEq(loanAfterRefi2.lender, lender3, "Lender should be lender3");
@@ -326,7 +290,7 @@ contract RefinancingTest is Test {
 
         // Try to offer refi without params set
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "refi params not set"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "refi params not set"));
         lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
     }
 
@@ -338,7 +302,7 @@ contract RefinancingTest is Test {
 
         // Try to set again
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "params already set"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "params already set"));
         lending.changeRefiParams(lendingId, 10e18, 0);
     }
 
@@ -347,8 +311,6 @@ contract RefinancingTest is Test {
 
         vm.prank(borrower);
         lending.changeRefiParams(lendingId, 5e18, 0);
-
-        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
 
         vm.prank(lender2);
         (uint256 refiOfferNum, uint256 refiNonce) = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 5e18, 0);
@@ -391,6 +353,8 @@ contract RefinancingTest is Test {
 
         vm.warp(block.timestamp + 60);
 
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiBorrowOfferCancelled(lendingId, refiOfferNum, refiNonce);
         vm.prank(lender2);
         lending.cancelRefiBorrowOffer(lendingId, refiNonce, refiOfferNum);
 
@@ -409,7 +373,7 @@ contract RefinancingTest is Test {
         vm.warp(block.timestamp + 59);
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "cancel too soon"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "cancel too soon"));
         lending.cancelRefiBorrowOffer(lendingId, refiNonce, refiOfferNum);
     }
 
@@ -428,7 +392,7 @@ contract RefinancingTest is Test {
         vm.warp(block.timestamp + 60);
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "chosen"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "chosen"));
         lending.cancelRefiBorrowOffer(lendingId, refiNonce, refiOfferNum);
     }
 
@@ -443,7 +407,7 @@ contract RefinancingTest is Test {
         (uint256 offer2, uint256 nonce1) = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
 
         vm.prank(lender3);
-        (uint256 offer3, ) = lending.offerRefiBorrow(lendingId, INTEREST_RATE + 1e7, true, 0, 0, 0);
+        (uint256 offer3,) = lending.offerRefiBorrow(lendingId, INTEREST_RATE + 1e7, true, 0, 0, 0);
 
         // Accept lender2's offer
         vm.prank(borrower);
@@ -482,7 +446,7 @@ contract RefinancingTest is Test {
 
         // Try to accept refi
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "lendingId finished"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId finished"));
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
     }
 
@@ -497,7 +461,7 @@ contract RefinancingTest is Test {
         (uint256 offer1, uint256 nonce) = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
 
         vm.prank(lender3);
-        (uint256 offer2, ) = lending.offerRefiBorrow(lendingId, INTEREST_RATE + 1e7, true, 0, 0, 0);
+        (uint256 offer2,) = lending.offerRefiBorrow(lendingId, INTEREST_RATE + 1e7, true, 0, 0, 0);
 
         // Accept first offer
         vm.prank(borrower);
@@ -505,7 +469,7 @@ contract RefinancingTest is Test {
 
         // Try to accept second offer with same nonce
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "refi nonce already accepted"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "refi nonce already accepted"));
         lending.acceptRefiOffer(lendingId, offer2, nonce);
     }
 
@@ -525,7 +489,7 @@ contract RefinancingTest is Test {
 
         // Now repaidDebt != 0, so the offer is stale
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "repaid debt changed"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "repaid debt changed"));
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
     }
 
@@ -557,7 +521,7 @@ contract RefinancingTest is Test {
 
         // Try to accept refi during liquidation
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "lendingId in liquidation"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId in liquidation"));
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
     }
 
@@ -574,7 +538,7 @@ contract RefinancingTest is Test {
         vm.warp(block.timestamp + LOAN_TERM + 1);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "expired"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "expired"));
         lending.acceptRefiOffer(lendingId, refiOfferNum, refiNonce);
     }
 
@@ -722,8 +686,6 @@ contract RefinancingTest is Test {
         vm.prank(lender3);
         (uint256 offer2, uint256 nonce2) = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
 
-        uint256 lender3InitialBorrow = borrowToken.balanceOf(lender3);
-
         vm.prank(borrower);
         lending.acceptRefiOffer(lendingId, offer2, nonce2);
 
@@ -768,7 +730,7 @@ contract RefinancingTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         // Multiple lenders offer

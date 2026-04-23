@@ -1,22 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/OpenOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./OpenLendingBase.t.sol";
 
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1_000_000_000 * 10 ** decimals());
-    }
-}
-
-contract LiquidationTest is Test {
-    openLending internal lending;
-    OpenOracle internal oracle;
-    MockERC20 internal supplyToken; // collateral token
-    MockERC20 internal borrowToken; // loan token
+contract LiquidationTest is OpenLendingBaseTest {
+    event LoanLiquidationUnderway(uint256 lendingId, uint256 reportId, address feeRecipient);
+    event LiqFinishedWithBuffer(uint256 lendingId);
+    event LiqUnsuccessful(uint256 lendingId);
 
     address internal borrower = address(0x1);
     address internal lender = address(0x2);
@@ -30,12 +20,12 @@ contract LiquidationTest is Test {
     uint256 constant UNRELATED_BORROW = 1000 ether;
 
     // Loan parameters
-    uint128 constant SUPPLY_AMOUNT = 100 ether;      // 100 tokens collateral
-    uint128 constant BORROW_AMOUNT = 70 ether;       // 70 tokens borrowed (70% LTV - close to liquidation)
-    uint48 constant LOAN_TERM = 30 days;             // 30 day loan
-    uint32 constant INTEREST_RATE = 1e8;             // 10% annual
-    uint24 constant LIQUIDATION_THRESHOLD = 8e6;     // 80%
-    uint128 constant STAKE = 100;                    // 1% stake for liquidator
+    uint128 constant SUPPLY_AMOUNT = 100 ether; // 100 tokens collateral
+    uint128 constant BORROW_AMOUNT = 70 ether; // 70 tokens borrowed (70% LTV - close to liquidation)
+    uint48 constant LOAN_TERM = 30 days; // 30 day loan
+    uint32 constant INTEREST_RATE = 1e8; // 10% annual
+    uint24 constant LIQUIDATION_THRESHOLD = 8e6; // 80%
+    uint128 constant STAKE = 100; // 1% stake for liquidator
 
     // Oracle parameters (from liquidate function)
     uint128 constant ORACLE_EXACT_TOKEN1 = SUPPLY_AMOUNT / 10; // 10 ether
@@ -49,65 +39,33 @@ contract LiquidationTest is Test {
     uint128 constant EXPECTED_INITIAL_LIQUIDITY = ORACLE_EXACT_TOKEN1; // 10 ether
 
     function setUp() public {
-        // Deploy oracle and lending
-        oracle = new OpenOracle();
-        lending = new openLending(IOpenOracle(address(oracle)));
+        _deployCore("Supply Token", "SUP", "Borrow Token", "BOR");
 
-        // Deploy tokens
-        supplyToken = new MockERC20("Supply Token", "SUP");
-        borrowToken = new MockERC20("Borrow Token", "BOR");
+        address[] memory accounts = new address[](5);
+        accounts[0] = borrower;
+        accounts[1] = lender;
+        accounts[2] = liquidator;
+        accounts[3] = disputer1;
+        accounts[4] = disputer2;
+        _fundSupply(accounts, 10000 ether);
+        _fundBorrow(accounts, 10000 ether);
 
-        // Fund all accounts generously
-        supplyToken.transfer(borrower, 10000 ether);
-        supplyToken.transfer(lender, 10000 ether);
-        supplyToken.transfer(liquidator, 10000 ether);
-        supplyToken.transfer(disputer1, 10000 ether);
-        supplyToken.transfer(disputer2, 10000 ether);
+        address[] memory ethAccounts = new address[](6);
+        ethAccounts[0] = borrower;
+        ethAccounts[1] = lender;
+        ethAccounts[2] = liquidator;
+        ethAccounts[3] = disputer1;
+        ethAccounts[4] = disputer2;
+        ethAccounts[5] = settler;
+        _dealETH(ethAccounts, 100 ether);
 
-        borrowToken.transfer(borrower, 10000 ether);
-        borrowToken.transfer(lender, 10000 ether);
-        borrowToken.transfer(liquidator, 10000 ether);
-        borrowToken.transfer(disputer1, 10000 ether);
-        borrowToken.transfer(disputer2, 10000 ether);
+        _approveLendingBoth(borrower);
+        _approveLendingBoth(lender);
+        _approveLendingBoth(liquidator);
+        _approveOracleBoth(disputer1);
+        _approveOracleBoth(disputer2);
 
-        // Give ETH
-        vm.deal(borrower, 100 ether);
-        vm.deal(lender, 100 ether);
-        vm.deal(liquidator, 100 ether);
-        vm.deal(disputer1, 100 ether);
-        vm.deal(disputer2, 100 ether);
-        vm.deal(settler, 100 ether);
-
-        // Approvals for lending contract
-        vm.prank(borrower);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(borrower);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(lender);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(liquidator);
-        supplyToken.approve(address(lending), type(uint256).max);
-        vm.prank(liquidator);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        // Approvals for oracle (disputers)
-        vm.prank(disputer1);
-        supplyToken.approve(address(oracle), type(uint256).max);
-        vm.prank(disputer1);
-        borrowToken.approve(address(oracle), type(uint256).max);
-
-        vm.prank(disputer2);
-        supplyToken.approve(address(oracle), type(uint256).max);
-        vm.prank(disputer2);
-        borrowToken.approve(address(oracle), type(uint256).max);
-
-        // Seed lending contract with unrelated funds
-        supplyToken.transfer(address(lending), UNRELATED_SUPPLY);
-        borrowToken.transfer(address(lending), UNRELATED_BORROW);
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
     }
 
     // -------------------------------------------------------------------------
@@ -125,7 +83,7 @@ contract LiquidationTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         // Lender offers with allowAnyLiquidator = true
@@ -142,7 +100,11 @@ contract LiquidationTest is Test {
     // -------------------------------------------------------------------------
     // Helper: Calculate total owed at a given time
     // -------------------------------------------------------------------------
-    function calculateOwedNow(uint256 principal, uint32 rate, uint48 term, uint256 start) internal view returns (uint256) {
+    function calculateOwedNow(uint256 principal, uint32 rate, uint48 term, uint256 start)
+        internal
+        view
+        returns (uint256)
+    {
         uint256 year = 365 days;
         uint256 elapsed = block.timestamp > start ? block.timestamp - start : 0;
         if (elapsed > term) elapsed = term;
@@ -166,11 +128,8 @@ contract LiquidationTest is Test {
 
         // Track balances before liquidation
         uint256 liquidatorSupplyBefore = supplyToken.balanceOf(liquidator);
-        uint256 liquidatorBorrowBefore = borrowToken.balanceOf(liquidator);
         uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
-        uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
-        uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
         // Liquidator initiates liquidation
         // oracleAmount2 should represent a price where debt > 80% of collateral
@@ -178,7 +137,10 @@ contract LiquidationTest is Test {
         // For liquidation: debt_in_supply_terms > 80 ether (80% of 100)
         // Using oracleAmount2 = 8 ether (10 supply = 8 borrow ratio)
         uint256 oracleAmount2 = 8 ether;
+        uint256 expectedReportId = oracle.nextReportId();
 
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit LoanLiquidationUnderway(lendingId, expectedReportId, loanBefore.feeRecipient);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -202,32 +164,18 @@ contract LiquidationTest is Test {
         // Dispute 1: generates protocol fee on 10 ether supplyToken (1% = 0.1 ether)
         vm.warp(block.timestamp + 120);
         vm.prank(disputer1);
-        oracle.disputeAndSwap(
-            reportId,
-            address(supplyToken),
-            20 ether,
-            12 ether,
-            disputer1,
-            8 ether,
-            stateHash
-        );
+        oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 12 ether, disputer1, 8 ether, stateHash);
 
         // Dispute 2: generates protocol fee on 20 ether supplyToken (1% = 0.2 ether)
         // Final ratio: 40/32 = 1.25 supply per borrow
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
         vm.prank(disputer2);
-        oracle.disputeAndSwap(
-            reportId,
-            address(supplyToken),
-            40 ether,
-            32 ether,
-            disputer2,
-            12 ether,
-            stateHash
-        );
+        oracle.disputeAndSwap(reportId, address(supplyToken), 40 ether, 32 ether, disputer2, 12 ether, stateHash);
 
         // Settle
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit LiqFinishedWithBuffer(lendingId);
         vm.prank(settler);
         oracle.settle(reportId);
 
@@ -264,8 +212,6 @@ contract LiquidationTest is Test {
 
         // Expected gains from lending contract (not including oracle gains/losses)
         uint256 expectedLenderCollateralGain = debtInSupplyTerms + lenderPiece;
-        uint256 expectedLiquidatorCollateralGain = liquidatorPiece + tokenStake;
-
         // Actual balance changes
         uint256 lenderSupplyGain = supplyToken.balanceOf(lender) - lenderSupplyBefore;
         uint256 borrowerSupplyGain = supplyToken.balanceOf(borrower) - borrowerSupplyBefore;
@@ -288,7 +234,8 @@ contract LiquidationTest is Test {
         // Assert liquidator net change is correct
         // Net = -spent + receivedFromDispute + receivedFromLending
         int256 liquidatorNetChange = int256(liquidatorSupplyAfter) - int256(liquidatorSupplyBefore);
-        int256 expectedLiquidatorNet = int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
+        int256 expectedLiquidatorNet =
+            int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
         assertEq(liquidatorNetChange, expectedLiquidatorNet, "Liquidator net supply change incorrect");
 
         // Verify unrelated funds untouched
@@ -338,15 +285,7 @@ contract LiquidationTest is Test {
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
 
         vm.prank(disputer1);
-        oracle.disputeAndSwap(
-            reportId,
-            address(supplyToken),
-            20 ether,
-            10 ether,
-            disputer1,
-            6 ether,
-            stateHash
-        );
+        oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 10 ether, disputer1, 6 ether, stateHash);
 
         // Settle
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
@@ -395,7 +334,8 @@ contract LiquidationTest is Test {
 
         // Assert liquidator net change is correct
         int256 liquidatorNetChange = int256(liquidatorSupplyAfter) - int256(liquidatorSupplyBefore);
-        int256 expectedLiquidatorNet = int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
+        int256 expectedLiquidatorNet =
+            int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
         assertEq(liquidatorNetChange, expectedLiquidatorNet, "Liquidator net supply change incorrect");
 
         // Unrelated funds untouched
@@ -416,15 +356,15 @@ contract LiquidationTest is Test {
         openLending.LendingView memory loanBefore = lending.getLending(lendingId);
         uint256 tokenStake = SUPPLY_AMOUNT * STAKE / 10000; // 1 ether
 
-        uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
-        uint256 liquidatorSupplyBefore = supplyToken.balanceOf(liquidator);
-
         // Set price so debt < 80% of collateral (safe)
         // Debt ~70.19 borrow. For debt_in_supply < 80:
         // 70.19 * (10/X) < 80 => X > 8.77
         // Use oracleAmount2 = 12 ether (makes debt = 70.19 * 10/12 = 58.5 supply terms < 80)
         uint256 oracleAmount2 = 12 ether;
+        uint256 expectedReportId = oracle.nextReportId();
 
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit LoanLiquidationUnderway(lendingId, expectedReportId, loanBefore.feeRecipient);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -450,7 +390,7 @@ contract LiquidationTest is Test {
             reportId,
             address(supplyToken),
             20 ether,
-            30 ether,                // More favorable for borrower (20 supply = 30 borrow)
+            30 ether, // More favorable for borrower (20 supply = 30 borrow)
             disputer1,
             12 ether,
             stateHash
@@ -458,6 +398,8 @@ contract LiquidationTest is Test {
 
         // Settle
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit LiqUnsuccessful(lendingId);
         vm.prank(settler);
         oracle.settle(reportId);
 
@@ -470,9 +412,12 @@ contract LiquidationTest is Test {
         // Borrower's collateral should have INCREASED by liquidator's stake
         assertEq(loanAfter.supplyAmount, SUPPLY_AMOUNT + tokenStake, "Borrower should gain liquidator stake");
 
-
         // Unrelated funds untouched - but contract now holds extra tokenStake added to borrower's collateral
-        assertEq(supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY + SUPPLY_AMOUNT + tokenStake, "Contract should have unrelated + new collateral");
+        assertEq(
+            supplyToken.balanceOf(address(lending)),
+            UNRELATED_SUPPLY + SUPPLY_AMOUNT + tokenStake,
+            "Contract should have unrelated + new collateral"
+        );
         assertEq(borrowToken.balanceOf(address(lending)), UNRELATED_BORROW);
     }
 
@@ -518,15 +463,7 @@ contract LiquidationTest is Test {
         // Dispute 1: swapping supplyToken
         // Generates 1% of 10 ether = 0.1 ether supplyToken fee
         vm.prank(disputer1);
-        oracle.disputeAndSwap(
-            reportId,
-            address(supplyToken),
-            20 ether,
-            12 ether,
-            disputer1,
-            8 ether,
-            stateHash
-        );
+        oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 12 ether, disputer1, 8 ether, stateHash);
 
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
 
@@ -534,15 +471,7 @@ contract LiquidationTest is Test {
         // Generates 1% of 12 ether = 0.12 ether borrowToken fee
         // Final ratio: 40/20 = 2.0 (underwater)
         vm.prank(disputer2);
-        oracle.disputeAndSwap(
-            reportId,
-            address(borrowToken),
-            40 ether,
-            20 ether,
-            disputer2,
-            12 ether,
-            stateHash
-        );
+        oracle.disputeAndSwap(reportId, address(borrowToken), 40 ether, 20 ether, disputer2, 12 ether, stateHash);
 
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
@@ -558,8 +487,8 @@ contract LiquidationTest is Test {
 
         // Calculate exact protocol fees
         uint256 protocolFeeRate = ORACLE_PROTOCOL_FEE;
-        uint256 supplyFees = 10 ether * protocolFeeRate / 1e7;  // 0.1 ether from dispute 1
-        uint256 borrowFees = 12 ether * protocolFeeRate / 1e7;  // 0.12 ether from dispute 2
+        uint256 supplyFees = 10 ether * protocolFeeRate / 1e7; // 0.1 ether from dispute 1
+        uint256 borrowFees = 12 ether * protocolFeeRate / 1e7; // 0.12 ether from dispute 2
 
         // Fee distribution: 50% borrower, 25% lender, 25% liquidator
         uint256 borrowerSupplyFeeShare = supplyFees / 2;
@@ -594,7 +523,8 @@ contract LiquidationTest is Test {
         uint256 liquidatorReceivedFromLending = tokenStake + liquidatorSupplyFeeShare;
 
         int256 liquidatorSupplyNet = int256(liquidatorSupplyAfter) - int256(liquidatorSupplyBefore);
-        int256 expectedLiquidatorSupplyNet = int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
+        int256 expectedLiquidatorSupplyNet =
+            int256(liquidatorReceivedFromDispute + liquidatorReceivedFromLending) - int256(liquidatorSpent);
         assertEq(liquidatorSupplyNet, expectedLiquidatorSupplyNet, "Liquidator supply net incorrect");
 
         // Liquidator borrow: only spent oracleAmount2 (8 ether), no borrow token back from oracle when supplyToken swapped
@@ -624,7 +554,7 @@ contract LiquidationTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         // Lender offers with allowAnyLiquidator = FALSE
@@ -642,27 +572,13 @@ contract LiquidationTest is Test {
         vm.prank(liquidator);
         vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "wrong liquidator"));
         lending.liquidate{value: 1e15}(
-            lendingId,
-            SUPPLY_AMOUNT,
-            0,
-            8 ether,
-            BORROW_AMOUNT,
-            loan.start,
-            EXPECTED_STAKE,
-            EXPECTED_INITIAL_LIQUIDITY
+            lendingId, SUPPLY_AMOUNT, 0, 8 ether, BORROW_AMOUNT, loan.start, EXPECTED_STAKE, EXPECTED_INITIAL_LIQUIDITY
         );
 
         // Lender can liquidate
         vm.prank(lender);
         lending.liquidate{value: 1e15}(
-            lendingId,
-            SUPPLY_AMOUNT,
-            0,
-            8 ether,
-            BORROW_AMOUNT,
-            loan.start,
-            EXPECTED_STAKE,
-            EXPECTED_INITIAL_LIQUIDITY
+            lendingId, SUPPLY_AMOUNT, 0, 8 ether, BORROW_AMOUNT, loan.start, EXPECTED_STAKE, EXPECTED_INITIAL_LIQUIDITY
         );
 
         openLending.LendingView memory loanAfter = lending.getLending(lendingId);
@@ -684,14 +600,7 @@ contract LiquidationTest is Test {
         vm.prank(liquidator);
         vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "arrangement expired"));
         lending.liquidate{value: 1e15}(
-            lendingId,
-            SUPPLY_AMOUNT,
-            0,
-            8 ether,
-            BORROW_AMOUNT,
-            loan.start,
-            EXPECTED_STAKE,
-            EXPECTED_INITIAL_LIQUIDITY
+            lendingId, SUPPLY_AMOUNT, 0, 8 ether, BORROW_AMOUNT, loan.start, EXPECTED_STAKE, EXPECTED_INITIAL_LIQUIDITY
         );
     }
 
@@ -708,14 +617,7 @@ contract LiquidationTest is Test {
         // Start liquidation
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
-            lendingId,
-            SUPPLY_AMOUNT,
-            0,
-            8 ether,
-            BORROW_AMOUNT,
-            loan.start,
-            EXPECTED_STAKE,
-            EXPECTED_INITIAL_LIQUIDITY
+            lendingId, SUPPLY_AMOUNT, 0, 8 ether, BORROW_AMOUNT, loan.start, EXPECTED_STAKE, EXPECTED_INITIAL_LIQUIDITY
         );
 
         // Try to repay - should fail
@@ -876,7 +778,7 @@ contract LiquidationTest is Test {
 
         // Lender tries to claim - should fail
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "not expired"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "not expired"));
         lending.claimCollateral(lendingId);
     }
 
@@ -1031,10 +933,10 @@ contract LiquidationTest is Test {
 
         // Try to liquidate again - should fail because past maturity
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSignature("InvalidInput(string)", "arrangement expired"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "arrangement expired"));
         lending.liquidate{value: 1e15}(
             lendingId,
-            uint128(newSupplyAmount),  // Updated supply amount after failed liquidation
+            uint128(newSupplyAmount), // Updated supply amount after failed liquidation
             0,
             8 ether,
             BORROW_AMOUNT,

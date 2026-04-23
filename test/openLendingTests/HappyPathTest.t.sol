@@ -2,21 +2,24 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/OpenOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./OpenLendingBase.t.sol";
 
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        _mint(msg.sender, 1_000_000_000 * 10 ** decimals());
-    }
-}
-
-contract HappyPathTest is Test {
-    openLending internal lending;
-    OpenOracle internal oracle;
-    MockERC20 internal supplyToken; // collateral token
-    MockERC20 internal borrowToken; // loan token
+contract HappyPathTest is OpenLendingBaseTest {
+    event BorrowRequested(
+        address indexed borrower,
+        uint256 indexed lendingId,
+        address supplyToken,
+        address borrowToken,
+        uint256 supplyAmount,
+        uint24 liquidationThreshold,
+        uint256 offerExpiration,
+        uint256 stake,
+        openLending.OracleParams oracleParams
+    );
+    event BorrowOffered(address indexed lender, uint256 indexed lendingId, uint256 amount, uint32 rate);
+    event OfferAccepted(uint256 lendingId, uint256 offerNumber);
+    event DebtRepaid(uint256 lendingId, uint256 amount);
+    event CollateralClaimedByLender(uint256 lendingId, uint256 supplyTokenClaimed, uint256 borrowTokenClaimed);
 
     address internal borrower = address(0x1);
     address internal lender = address(0x2);
@@ -27,54 +30,42 @@ contract HappyPathTest is Test {
     uint256 constant UNRELATED_BORROW = 1000 ether;
 
     // Loan parameters
-    uint128 constant SUPPLY_AMOUNT = 100 ether;      // 100 tokens collateral
-    uint128 constant BORROW_AMOUNT = 50 ether;       // 50 tokens borrowed (50% LTV)
-    uint48 constant LOAN_TERM = 30 days;             // 30 day loan
-    uint32 constant INTEREST_RATE = 1e8;             // 10% annual
-    uint24 constant LIQUIDATION_THRESHOLD = 8e6;     // 80%
-    uint128 constant STAKE = 100;                    // 1% stake for liquidator
+    uint128 constant SUPPLY_AMOUNT = 100 ether; // 100 tokens collateral
+    uint128 constant BORROW_AMOUNT = 50 ether; // 50 tokens borrowed (50% LTV)
+    uint48 constant LOAN_TERM = 30 days; // 30 day loan
+    uint32 constant INTEREST_RATE = 1e8; // 10% annual
+    uint24 constant LIQUIDATION_THRESHOLD = 8e6; // 80%
+    uint128 constant STAKE = 100; // 1% stake for liquidator
 
     function setUp() public {
-        // Deploy oracle and lending
-        oracle = new OpenOracle();
-        lending = new openLending(IOpenOracle(address(oracle)));
+        _deployCore("Supply Token", "SUP", "Borrow Token", "BOR");
 
-        // Deploy tokens
-        supplyToken = new MockERC20("Supply Token", "SUP");
-        borrowToken = new MockERC20("Borrow Token", "BOR");
+        address[] memory supplyAccounts = new address[](1);
+        supplyAccounts[0] = borrower;
+        _fundSupply(supplyAccounts, 1000 ether);
 
-        // Fund accounts
-        supplyToken.transfer(borrower, 1000 ether);
-        borrowToken.transfer(lender, 1000 ether);
-        borrowToken.transfer(borrower, 1000 ether); // borrower needs borrowToken to repay
+        address[] memory borrowAccounts = new address[](2);
+        borrowAccounts[0] = lender;
+        borrowAccounts[1] = borrower;
+        _fundBorrow(borrowAccounts, 1000 ether);
 
-        // Give ETH for gas
-        vm.deal(borrower, 10 ether);
-        vm.deal(lender, 10 ether);
-        vm.deal(settler, 10 ether);
+        address[] memory ethAccounts = new address[](3);
+        ethAccounts[0] = borrower;
+        ethAccounts[1] = lender;
+        ethAccounts[2] = settler;
+        _dealETH(ethAccounts, 10 ether);
 
-        // Approvals
-        vm.prank(borrower);
-        supplyToken.approve(address(lending), type(uint256).max);
+        _approveLendingBoth(borrower);
+        _approveLendingBorrow(lender);
 
-        vm.prank(borrower);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        vm.prank(lender);
-        borrowToken.approve(address(lending), type(uint256).max);
-
-        // Seed lending contract with unrelated funds to verify no skimming
-        supplyToken.transfer(address(lending), UNRELATED_SUPPLY);
-        borrowToken.transfer(address(lending), UNRELATED_BORROW);
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
     }
 
     // -------------------------------------------------------------------------
     // Helper: Calculate expected interest at maturity
     // -------------------------------------------------------------------------
     function calculateOwedAtMaturity(uint256 principal, uint32 rate, uint48 term) internal pure returns (uint128) {
-        uint256 year = 365 days;
-        uint256 interest = (principal * uint256(term) * uint256(rate)) / (1e9 * year);
-        return uint128(principal + interest);
+        return _calculateOwedAtMaturity(principal, rate, term);
     }
 
     // -------------------------------------------------------------------------
@@ -86,9 +77,19 @@ contract HappyPathTest is Test {
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
         uint256 lendingSupplyBefore = supplyToken.balanceOf(address(lending));
-        uint256 lendingBorrowBefore = borrowToken.balanceOf(address(lending));
-
         // 1. Borrower requests a borrow
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit BorrowRequested(
+            borrower,
+            1,
+            address(supplyToken),
+            address(borrowToken),
+            SUPPLY_AMOUNT,
+            LIQUIDATION_THRESHOLD,
+            block.timestamp + 1 hours,
+            STAKE,
+            _standardOracleParams()
+        );
         vm.prank(borrower);
         uint256 lendingId = lending.requestBorrow(
             LOAN_TERM,
@@ -99,7 +100,7 @@ contract HappyPathTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         assertEq(lendingId, 1, "First lending ID should be 1");
@@ -117,6 +118,8 @@ contract HappyPathTest is Test {
         );
 
         // 2. Lender offers to fill the borrow
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit BorrowOffered(lender, lendingId, BORROW_AMOUNT, INTEREST_RATE);
         vm.prank(lender);
         uint256 offerNumber = lending.offerBorrow(
             lendingId,
@@ -129,12 +132,12 @@ contract HappyPathTest is Test {
 
         // Verify lender's funds transferred to contract
         assertEq(
-            borrowToken.balanceOf(lender),
-            lenderBorrowBefore - BORROW_AMOUNT,
-            "Lender should have sent borrow amount"
+            borrowToken.balanceOf(lender), lenderBorrowBefore - BORROW_AMOUNT, "Lender should have sent borrow amount"
         );
 
         // 3. Borrower accepts offer
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit OfferAccepted(lendingId, offerNumber);
         vm.prank(borrower);
         lending.acceptOffer(lendingId, offerNumber);
 
@@ -175,6 +178,8 @@ contract HappyPathTest is Test {
         uint256 lenderBorrowBeforeRepay = borrowToken.balanceOf(lender);
 
         // Borrower repays full amount (principal + interest at maturity, not pro-rated!)
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit DebtRepaid(lendingId, totalOwed);
         vm.prank(borrower);
         lending.repayDebt(lendingId, uint128(totalOwed));
 
@@ -199,21 +204,15 @@ contract HappyPathTest is Test {
 
         // Lender received full payment
         assertEq(
-            borrowToken.balanceOf(lender),
-            lenderBorrowBeforeRepay + totalOwed,
-            "Lender should have received total owed"
+            borrowToken.balanceOf(lender), lenderBorrowBeforeRepay + totalOwed, "Lender should have received total owed"
         );
 
         // 8. Verify unrelated funds are untouched
         assertEq(
-            supplyToken.balanceOf(address(lending)),
-            UNRELATED_SUPPLY,
-            "Unrelated supply tokens should be untouched"
+            supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY, "Unrelated supply tokens should be untouched"
         );
         assertEq(
-            borrowToken.balanceOf(address(lending)),
-            UNRELATED_BORROW,
-            "Unrelated borrow tokens should be untouched"
+            borrowToken.balanceOf(address(lending)), UNRELATED_BORROW, "Unrelated borrow tokens should be untouched"
         );
     }
 
@@ -236,16 +235,11 @@ contract HappyPathTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         vm.prank(lender);
-        uint256 offerNumber = lending.offerBorrow(
-            lendingId,
-            BORROW_AMOUNT,
-            INTEREST_RATE,
-            false
-        );
+        uint256 offerNumber = lending.offerBorrow(lendingId, BORROW_AMOUNT, INTEREST_RATE, false);
 
         vm.prank(borrower);
         lending.acceptOffer(lendingId, offerNumber);
@@ -261,6 +255,8 @@ contract HappyPathTest is Test {
         lending.repayDebt(lendingId, uint128(totalOwed));
 
         // 4. Lender claims collateral
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit CollateralClaimedByLender(lendingId, SUPPLY_AMOUNT, 0);
         lending.claimCollateral(lendingId);
 
         // 5. Verify loan is finished
@@ -269,9 +265,7 @@ contract HappyPathTest is Test {
 
         // 6. Verify lender received collateral (no repaid debt since borrower didn't repay anything)
         assertEq(
-            supplyToken.balanceOf(lender),
-            lenderSupplyBefore + SUPPLY_AMOUNT,
-            "Lender should have received collateral"
+            supplyToken.balanceOf(lender), lenderSupplyBefore + SUPPLY_AMOUNT, "Lender should have received collateral"
         );
 
         // Lender is down the borrow amount (they gave the loan, never got paid back)
@@ -283,14 +277,10 @@ contract HappyPathTest is Test {
 
         // 7. Verify unrelated funds untouched
         assertEq(
-            supplyToken.balanceOf(address(lending)),
-            UNRELATED_SUPPLY,
-            "Unrelated supply tokens should be untouched"
+            supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY, "Unrelated supply tokens should be untouched"
         );
         assertEq(
-            borrowToken.balanceOf(address(lending)),
-            UNRELATED_BORROW,
-            "Unrelated borrow tokens should be untouched"
+            borrowToken.balanceOf(address(lending)), UNRELATED_BORROW, "Unrelated borrow tokens should be untouched"
         );
     }
 
@@ -312,7 +302,7 @@ contract HappyPathTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         vm.prank(lender);
@@ -340,9 +330,7 @@ contract HappyPathTest is Test {
 
         // Lender gets collateral + partial repayment
         assertEq(
-            supplyToken.balanceOf(lender),
-            lenderSupplyBefore + SUPPLY_AMOUNT,
-            "Lender should have received collateral"
+            supplyToken.balanceOf(lender), lenderSupplyBefore + SUPPLY_AMOUNT, "Lender should have received collateral"
         );
         assertEq(
             borrowToken.balanceOf(lender),
@@ -358,7 +346,7 @@ contract HappyPathTest is Test {
     // -------------------------------------------------------------------------
     // Test: Interest calculation verification
     // -------------------------------------------------------------------------
-    function testInterestCalculation() public {
+    function testInterestCalculation() public pure {
         // Test various scenarios to verify interest math
 
         // 10% annual for 1 year on 100 tokens = 10 tokens interest
@@ -391,7 +379,7 @@ contract HappyPathTest is Test {
             SUPPLY_AMOUNT,
             0, // amountDemanded = 0
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
     }
 
@@ -410,7 +398,7 @@ contract HappyPathTest is Test {
             0, // supplyAmount = 0
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
     }
 
@@ -428,7 +416,7 @@ contract HappyPathTest is Test {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            openLending.OracleParams(300, 60, 100_000, 100, 10, 200)
+            _standardOracleParams()
         );
 
         vm.prank(lender);
