@@ -251,16 +251,14 @@ contract openLending is ReentrancyGuard {
     function cancelBorrowRequest(uint256 lendingId) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
-        address sender = msg.sender;
-
         if (lending.cancelled) revert InvalidInput("lendingId cancelled");
         if (lending.active) revert InvalidInput("lendingId active");
         if (lending.borrower != msg.sender) revert InvalidInput("msg.sender");
 
         lending.cancelled = true;
 
-        IERC20(lending.supplyToken).safeTransfer(sender, lending.supplyAmount);
-        emit BorrowRequestCancelled(sender, lendingId);
+        IERC20(lending.supplyToken).safeTransfer(msg.sender, lending.supplyAmount);
+        emit BorrowRequestCancelled(msg.sender, lendingId);
     }
 
     /**
@@ -281,19 +279,18 @@ contract openLending is ReentrancyGuard {
         LendingOffers storage offers = lending.lendingOffers[offerNumber];
 
         uint48 currentTime = uint48(block.timestamp);
-        address sender = msg.sender;
         address borrowToken = lending.borrowToken;
         uint256 owedAtMaturity = totalOwedAtMaturity(amount, rate, lending.term);
 
         if (lending.cancelled) revert InvalidInput("lendingId cancelled");
         if (lending.active) revert InvalidInput("lendingId active");
         if (lending.finished) revert InvalidInput("lendingId finished");
-        if (sender == lending.borrower) revert InvalidInput("lender == borrower");
+        if (msg.sender == lending.borrower) revert InvalidInput("lender == borrower");
         if (currentTime > lending.offerExpiration) revert InvalidInput("offer period expired");
         if (amount != lending.amountDemanded) revert InvalidInput("amount wrong");
         if (owedAtMaturity > type(uint128).max) revert InvalidInput("owedAtMaturity too high");
 
-        offers.lender = sender;
+        offers.lender = msg.sender;
         offers.amount = amount;
         offers.rate = rate;
         offers.allowAnyLiquidator = allowAnyLiquidator;
@@ -301,9 +298,9 @@ contract openLending is ReentrancyGuard {
 
         lending.offerNumber += 1;
 
-        IERC20(borrowToken).safeTransferFrom(sender, address(this), amount);
+        IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), amount);
 
-        emit BorrowOffered(sender, lendingId, amount, rate);
+        emit BorrowOffered(msg.sender, lendingId, amount, rate);
 
         return offerNumber;
     }
@@ -333,7 +330,6 @@ contract openLending is ReentrancyGuard {
         refiOfferNumber = lending.refiOfferNumber;
         RefiLendingOffers storage refi = lending.refiLendingOffers[refiNonce][refiOfferNumber];
 
-        address sender = msg.sender;
         uint256 currentTime = block.timestamp;
         uint128 repaidDebt = lending.repaidDebt;
         address borrowToken = lending.borrowToken;
@@ -346,7 +342,7 @@ contract openLending is ReentrancyGuard {
         if (lending.cancelled) revert InvalidInput("lendingId cancelled");
         if (!lending.active) revert InvalidInput("lendingId not active");
         if (lending.finished) revert InvalidInput("lendingId finished");
-        if (sender == lending.borrower) revert InvalidInput("lender == borrower");
+        if (msg.sender == lending.borrower) revert InvalidInput("lender == borrower");
         if (currentTime >= lending.start + lending.term + lending.gracePeriod) revert InvalidInput("expired");
         if (repaidDebt != repaidDebtExpected) revert InvalidInput("repaid debt mismatch");
         if (extraDemanded != extraDemandedExpected) revert InvalidInput("extra demanded mismatch");
@@ -366,16 +362,16 @@ contract openLending is ReentrancyGuard {
 
         lending.refiOfferNumber += 1;
 
-        refi.lender = sender;
+        refi.lender = msg.sender;
         refi.rate = rate;
         refi.amount = uint128(amount);
         refi.allowAnyLiquidator = allowAnyLiquidator;
         refi.repaidDebtAtRefiOfferTime = repaidDebt;
         refi.refiOfferTime = uint48(currentTime);
 
-        IERC20(borrowToken).safeTransferFrom(sender, address(this), amount);
+        IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), amount);
 
-        emit RefiBorrowOffered(sender, lendingId, rate, refiNonce, refiOfferNumber);
+        emit RefiBorrowOffered(msg.sender, lendingId, rate, refiNonce, refiOfferNumber);
 
         return (refiOfferNumber, refiNonce);
     }
@@ -569,7 +565,6 @@ contract openLending is ReentrancyGuard {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         uint256 currentTime = block.timestamp;
-        address sender = msg.sender;
         uint256 borrowAmount = lending.borrowAmount;
         uint256 rate = lending.rate;
         uint256 term = lending.term;
@@ -585,17 +580,17 @@ contract openLending is ReentrancyGuard {
         if (lending.finished) revert InvalidInput("arrangement finished");
         if (!lending.active) revert InvalidInput("not active");
         if (lending.cancelled) revert InvalidInput("cancelled");
-        if (sender != borrower) revert InvalidInput("not borrower");
+        if (msg.sender != borrower) revert InvalidInput("not borrower");
         if (currentTime >= lending.start + term + lending.gracePeriod) revert InvalidInput("expired");
 
         if (amount >= netTerminalDebt) {
             lending.finished = true;
-            IERC20(borrowToken).safeTransferFrom(sender, address(this), netTerminalDebt);
+            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), netTerminalDebt);
             _transferTokens(borrowToken, address(this), lender, owedAtMaturity);
             IERC20(lending.supplyToken).safeTransfer(borrower, supplied);
         } else {
             lending.repaidDebt += amount;
-            IERC20(borrowToken).safeTransferFrom(sender, address(this), amount);
+            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), amount);
         }
 
         emit DebtRepaid(lendingId, amount);
