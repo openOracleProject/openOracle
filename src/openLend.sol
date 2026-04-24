@@ -74,8 +74,6 @@ contract openLending is ReentrancyGuard {
 
         mapping(uint256 => LendingOffers) lendingOffers;
         mapping(uint256 => mapping(uint256 => RefiLendingOffers)) refiLendingOffers;
-        /// @review - refiNonceAccepted can be removed, we can simply check if the refi offer chosen for a given nonce has been accepted or not. This would save a bit of storage and complexity
-        mapping(uint256 => bool) refiNonceAccepted;
         mapping(address => Beneficiaries) feeRecipientToBeneficiaries;
     }
 
@@ -499,7 +497,7 @@ contract openLending is ReentrancyGuard {
         if (lending.inLiquidation) revert InvalidInput("lendingId in liquidation");
         if (refi.chosen) revert InvalidInput("refi already chosen");
         if (borrower != msg.sender) revert InvalidInput("msg.sender");
-        if (lending.refiNonceAccepted[refiNonce]) revert InvalidInput("refi nonce already accepted");
+        if (refiNonce != lending.refiOfferNonce) revert InvalidInput("invalid refi nonce");
         if (currentTime >= lending.start + term + lending.gracePeriod) revert InvalidInput("expired");
         if (refi.cancelled) revert InvalidInput("refi offer cancelled");
         if (refi.amount == 0) revert InvalidInput("no refi offer");
@@ -515,7 +513,6 @@ contract openLending is ReentrancyGuard {
 
         refi.chosen = true;
 
-        lending.refiNonceAccepted[refiNonce] = true;
         lending.refiOfferNonce += 1;
         lending.refiOfferNumber = 1;
         // A fresh fee receiver is only created if a future liquidation actually needs one.
@@ -1101,6 +1098,7 @@ contract openLending is ReentrancyGuard {
     }
 
     function getRefiNonceAccepted(uint256 lendingId, uint256 refiNonce) external view returns (bool) {
-        return lendingArrangements[lendingId].refiNonceAccepted[refiNonce];
+        LendingArrangement storage lending = lendingArrangements[lendingId];
+        return refiNonce != 0 && refiNonce < lending.refiOfferNonce;
     }
 }
