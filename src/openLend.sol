@@ -117,8 +117,6 @@ contract openLending is ReentrancyGuard {
 
     struct Beneficiaries {
         address lender;
-        // review: borrower could be removed since it never changes for a lending arrangement
-        address borrower;
         address liquidator;
     }
 
@@ -790,7 +788,6 @@ contract openLending is ReentrancyGuard {
 
         if (feeRecipient != address(0)) {
             lending.feeRecipientToBeneficiaries[feeRecipient].lender = lending.lender;
-            lending.feeRecipientToBeneficiaries[feeRecipient].borrower = lending.borrower;
             lending.feeRecipientToBeneficiaries[feeRecipient].liquidator = msg.sender;
         }
 
@@ -959,7 +956,7 @@ contract openLending is ReentrancyGuard {
         uint256 lenderSupplyFeePiece = borrowerSupplyFeePiece / 2;
         uint256 liquidatorSupplyFeePiece = feesSupply - borrowerSupplyFeePiece - lenderSupplyFeePiece;
 
-        address borrower = lending.feeRecipientToBeneficiaries[feeRecipient].borrower;
+        address borrower = lending.borrower;
         address lender = lending.feeRecipientToBeneficiaries[feeRecipient].lender;
         address liquidator = lending.feeRecipientToBeneficiaries[feeRecipient].liquidator;
 
