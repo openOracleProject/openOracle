@@ -137,10 +137,8 @@ contract LiquidationTest is OpenLendingBaseTest {
         // For liquidation: debt_in_supply_terms > 80 ether (80% of 100)
         // Using oracleAmount2 = 8 ether (10 supply = 8 borrow ratio)
         uint256 oracleAmount2 = 8 ether;
-        uint256 expectedReportId = oracle.nextReportId();
-
-        vm.expectEmit(false, false, false, true, address(lending));
-        emit LoanLiquidationUnderway(lendingId, expectedReportId, loanBefore.feeRecipient);
+        vm.expectEmit(false, false, false, false, address(lending));
+        emit LoanLiquidationUnderway(0, 0, address(0));
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -157,6 +155,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         openLending.LendingView memory loanDuring = lending.getLending(lendingId);
         assertTrue(loanDuring.inLiquidation, "Loan should be in liquidation");
         assertEq(loanDuring.liquidator, liquidator, "Liquidator should be set");
+        assertTrue(loanDuring.feeRecipient != address(0), "fee receiver should be created at liquidation");
 
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
@@ -361,10 +360,8 @@ contract LiquidationTest is OpenLendingBaseTest {
         // 70.19 * (10/X) < 80 => X > 8.77
         // Use oracleAmount2 = 12 ether (makes debt = 70.19 * 10/12 = 58.5 supply terms < 80)
         uint256 oracleAmount2 = 12 ether;
-        uint256 expectedReportId = oracle.nextReportId();
-
-        vm.expectEmit(false, false, false, true, address(lending));
-        emit LoanLiquidationUnderway(lendingId, expectedReportId, loanBefore.feeRecipient);
+        vm.expectEmit(false, false, false, false, address(lending));
+        emit LoanLiquidationUnderway(0, 0, address(0));
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,

@@ -463,14 +463,9 @@ contract openLending is ReentrancyGuard {
 
         uint128 amount = offer.amount;
         if (amount == 0) revert InvalidInput("no offer");
-        address feeReceiver = Clones.clone(feeReceiverImpl);
         address borrowToken = lending.borrowToken;
 
         offer.chosen = true;
-        oracleFeeReceiver(feeReceiver).initialize(
-            address(this), uint128(lendingId), address(oracle), lending.supplyToken, borrowToken
-        );
-        lending.feeRecipient = feeReceiver;
 
         lending.active = true;
         lending.rate = offer.rate;
@@ -516,8 +511,6 @@ contract openLending is ReentrancyGuard {
         if (refi.amount == 0) revert InvalidInput("no refi offer");
         if (refi.repaidDebtAtRefiOfferTime != repaidDebt) revert InvalidInput("repaid debt changed");
 
-        address feeReceiver = Clones.clone(feeReceiverImpl);
-
         if (lending.refiParams.set) {
             extraDemanded = lending.refiParams.extraDemanded;
             supplyPulled = lending.refiParams.supplyPulled;
@@ -531,7 +524,8 @@ contract openLending is ReentrancyGuard {
         lending.refiNonceAccepted[refiNonce] = true;
         lending.refiOfferNonce += 1;
         lending.refiOfferNumber = 1;
-        lending.feeRecipient = feeReceiver;
+        // A fresh fee receiver is only created if a future liquidation actually needs one.
+        lending.feeRecipient = address(0);
         lending.rate = refi.rate;
         lending.lender = refi.lender;
         lending.borrowAmount = refi.amount;
@@ -547,9 +541,6 @@ contract openLending is ReentrancyGuard {
         lending.refiParams.supplyPulled = 0;
         lending.refiParams.set = false;
 
-        oracleFeeReceiver(feeReceiver).initialize(
-            address(this), uint128(lendingId), address(oracle), supplyToken, borrowToken
-        );
         _transferTokens(borrowToken, address(this), prevLender, owed);
 
         if (extraDemanded > 0) {
@@ -768,12 +759,9 @@ contract openLending is ReentrancyGuard {
         uint256 currentTime = block.timestamp;
         uint48 start = lending.start;
         uint128 supplyAmount = lending.supplyAmount;
-        address sender = msg.sender;
-        uint256 value = msg.value;
-        address lender = lending.lender;
         address borrowToken = lending.borrowToken;
         address supplyToken = lending.supplyToken;
-        address feeRecipient = lending.feeRecipient;
+        address feeRecipient;
         uint256 tokenStake = uint256(supplyAmount) * lending.stake / 10000;
         uint256 initialLiquidity = uint256(supplyAmount) * oracleParams.initialLiquidity / 100;
         uint256 escHalt = uint256(supplyAmount) * oracleParams.escalationFactor / 100;
@@ -782,19 +770,75 @@ contract openLending is ReentrancyGuard {
         if (lending.finished) revert InvalidInput("arrangement finished");
         if (!lending.active) revert InvalidInput("not active");
         if (lending.cancelled) revert InvalidInput("cancelled");
-        if (!lending.allowAnyLiquidator && sender != lender) revert InvalidInput("wrong liquidator");
+        if (!lending.allowAnyLiquidator && msg.sender != lending.lender) revert InvalidInput("wrong liquidator");
         if (supplyAmount != expectedCollateral) revert InvalidInput("expected collateral");
         if (lending.repaidDebt != expectedRepaidDebt) revert InvalidInput("expected repaid debt");
         if (lending.borrowAmount != expectedBorrowAmount) revert InvalidInput("expected borrow amount");
         if (start != expectedLoanStart) revert InvalidInput("expected loan start");
         if (tokenStake != expectedStake) revert InvalidInput("expected stake");
         if (initialLiquidity != expectedInitialLiquidity) revert InvalidInput("initial liquidity expected");
-        if (value != 1e15) revert InvalidInput("msg.value != 1e15");
+        if (msg.value != 1e15) revert InvalidInput("msg.value != 1e15");
         if (currentTime > start + lending.term) revert InvalidInput("arrangement expired");
 
-        IOpenOracle.CreateReportParams memory params = IOpenOracle.CreateReportParams({
-            exactToken1Report: uint128(initialLiquidity),
-            escalationHalt: uint128(escHalt),
+        if (oracleParams.oracleGameFee > 0) {
+            feeRecipient = _deployFeeReceiver(lendingId, supplyToken, borrowToken);
+            lending.feeRecipient = feeRecipient;
+        }
+
+        IOpenOracle.CreateReportParams memory params = _buildLiquidationReportParams(
+            oracleParams, supplyToken, borrowToken, uint128(initialLiquidity), uint128(escHalt), feeRecipient
+        );
+
+        lending.inLiquidation = true;
+        lending.liquidationStart = uint48(currentTime);
+        lending.liquidator = msg.sender;
+
+        if (feeRecipient != address(0)) {
+            lending.feeRecipientToBeneficiaries[feeRecipient].lender = lending.lender;
+            lending.feeRecipientToBeneficiaries[feeRecipient].borrower = lending.borrower;
+            lending.feeRecipientToBeneficiaries[feeRecipient].liquidator = msg.sender;
+        }
+
+        uint256 reportId = oracle.createReportInstance{value: msg.value}(params);
+
+        reportIdToLending[reportId] = lendingId;
+
+        uint256 amount1 = initialLiquidity;
+
+        IERC20(supplyToken).safeTransferFrom(msg.sender, address(this), amount1 + tokenStake);
+        IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), oracleAmount2);
+
+        _ensureOracleApproval(supplyToken);
+        _ensureOracleApproval(borrowToken);
+
+        oracle.submitInitialReport(
+            reportId, uint128(amount1), oracleAmount2, oracle.extraData(reportId).stateHash, msg.sender
+        );
+
+        emit LoanLiquidationUnderway(lendingId, reportId, feeRecipient);
+    }
+
+    function _deployFeeReceiver(uint256 lendingId, address supplyToken, address borrowToken)
+        internal
+        returns (address feeReceiver)
+    {
+        feeReceiver = Clones.clone(feeReceiverImpl);
+        oracleFeeReceiver(feeReceiver).initialize(
+            address(this), uint128(lendingId), address(oracle), supplyToken, borrowToken
+        );
+    }
+
+    function _buildLiquidationReportParams(
+        OracleParams storage oracleParams,
+        address supplyToken,
+        address borrowToken,
+        uint128 initialLiquidity,
+        uint128 escHalt,
+        address feeRecipient
+    ) internal view returns (IOpenOracle.CreateReportParams memory params) {
+        params = IOpenOracle.CreateReportParams({
+            exactToken1Report: initialLiquidity,
+            escalationHalt: escHalt,
             settlerReward: 1e15,
             token1Address: supplyToken,
             settlementTime: oracleParams.settlementTime,
@@ -810,32 +854,6 @@ contract openLending is ReentrancyGuard {
             callbackSelector: this.onSettle.selector,
             protocolFeeRecipient: feeRecipient
         });
-
-        lending.inLiquidation = true;
-        lending.liquidationStart = uint48(currentTime);
-        lending.liquidator = sender;
-
-        lending.feeRecipientToBeneficiaries[feeRecipient].lender = lender;
-        lending.feeRecipientToBeneficiaries[feeRecipient].borrower = lending.borrower;
-        lending.feeRecipientToBeneficiaries[feeRecipient].liquidator = lending.liquidator;
-
-        uint256 reportId = oracle.createReportInstance{value: value}(params);
-
-        reportIdToLending[reportId] = lendingId;
-
-        uint256 amount1 = initialLiquidity;
-
-        IERC20(supplyToken).safeTransferFrom(sender, address(this), amount1 + tokenStake);
-        IERC20(borrowToken).safeTransferFrom(sender, address(this), oracleAmount2);
-
-        _ensureOracleApproval(supplyToken);
-        _ensureOracleApproval(borrowToken);
-
-        oracle.submitInitialReport(
-            reportId, uint128(amount1), oracleAmount2, oracle.extraData(reportId).stateHash, sender
-        );
-
-        emit LoanLiquidationUnderway(lendingId, reportId, feeRecipient);
     }
 
     /* -------- oracle callback -------- */
@@ -904,7 +922,10 @@ contract openLending is ReentrancyGuard {
             emit LiqUnsuccessful(lendingId);
         }
 
-        _grabOracleGameFees(lending, lending.feeRecipient);
+        address feeRecipient = lending.feeRecipient;
+        if (feeRecipient != address(0)) {
+            _grabOracleGameFees(lending, feeRecipient);
+        }
     }
 
     /**
@@ -914,6 +935,7 @@ contract openLending is ReentrancyGuard {
      */
     function grabOracleGameFeesAny(uint256 lendingId, address feeRecipient) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
+        if (feeRecipient == address(0)) revert InvalidInput("no fee recipient");
         if (oracleFeeReceiver(feeRecipient).gameId() != lendingId) {
             revert InvalidInput("feeRecipient not for lendingId");
         }

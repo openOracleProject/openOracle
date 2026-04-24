@@ -207,11 +207,28 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         assertEq(borrowToken.balanceOf(liquidator), liquidatorBefore, "second sweep should be a no-op for liquidator");
     }
 
-    function testAcceptOffer_InitializesCloneFeeReceiver() public {
+    function testLiquidate_InitializesCloneFeeReceiver() public {
         uint256 lendingId = _setupActiveLoan(true);
-        openLending.LendingView memory loan = lending.getLending(lendingId);
+        openLending.LendingView memory loanBefore = lending.getLending(lendingId);
 
-        oracleFeeReceiver feeReceiver = oracleFeeReceiver(loan.feeRecipient);
+        assertEq(loanBefore.feeRecipient, address(0), "fee recipient should stay unset before liquidation");
+
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            uint128(loanBefore.supplyAmount),
+            uint128(loanBefore.repaidDebt),
+            8 ether,
+            uint128(loanBefore.borrowAmount),
+            loanBefore.start,
+            loanBefore.supplyAmount * STAKE / 10000,
+            INITIAL_LIQUIDITY
+        );
+
+        openLending.LendingView memory loanDuring = lending.getLending(lendingId);
+        assertTrue(loanDuring.feeRecipient != address(0), "liquidation should deploy a fee receiver");
+
+        oracleFeeReceiver feeReceiver = oracleFeeReceiver(loanDuring.feeRecipient);
         assertEq(feeReceiver.owner(), address(lending), "clone owner mismatch");
         assertEq(feeReceiver.gameId(), lendingId, "clone gameId mismatch");
         assertEq(address(feeReceiver.oracle()), address(oracle), "clone oracle mismatch");
@@ -219,9 +236,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         assertEq(feeReceiver.token2(), address(borrowToken), "clone token2 mismatch");
     }
 
-    function testAcceptRefiOffer_UsesFreshCloneAndInitializesIt() public {
+    function testAcceptRefiOffer_LeavesFeeRecipientUnsetUntilLiquidation() public {
         uint256 lendingId = _setupActiveLoan(true);
-        address initialFeeRecipient = lending.getLending(lendingId).feeRecipient;
+        assertEq(lending.getLending(lendingId).feeRecipient, address(0), "fee recipient should start unset");
 
         vm.prank(borrower);
         lending.changeRefiParams(lendingId, 10 ether, 5 ether);
@@ -234,20 +251,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         lending.acceptRefiOffer(lendingId, refiOfferNumber, refiNonce);
 
         openLending.LendingView memory loan = lending.getLending(lendingId);
-        address newFeeRecipient = loan.feeRecipient;
-
-        assertTrue(newFeeRecipient != initialFeeRecipient, "refi should deploy a fresh fee receiver clone");
-
-        oracleFeeReceiver oldReceiver = oracleFeeReceiver(initialFeeRecipient);
-        oracleFeeReceiver newReceiver = oracleFeeReceiver(newFeeRecipient);
-
-        assertEq(oldReceiver.owner(), address(lending), "old clone owner mismatch");
-        assertEq(oldReceiver.gameId(), lendingId, "old clone gameId mismatch");
-        assertEq(newReceiver.owner(), address(lending), "new clone owner mismatch");
-        assertEq(newReceiver.gameId(), lendingId, "new clone gameId mismatch");
-        assertEq(address(newReceiver.oracle()), address(oracle), "new clone oracle mismatch");
-        assertEq(newReceiver.token1(), address(supplyToken), "new clone token1 mismatch");
-        assertEq(newReceiver.token2(), address(borrowToken), "new clone token2 mismatch");
+        assertEq(loan.feeRecipient, address(0), "refi should not eagerly deploy a fee receiver");
     }
 
     function _setupActiveLoan(bool allowAnyLiquidator) internal returns (uint256 lendingId) {

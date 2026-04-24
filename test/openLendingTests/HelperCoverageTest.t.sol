@@ -268,6 +268,20 @@ contract HelperCoverageTest is Test {
 
     function testGrabOracleGameFeesAny_RevertsForWrongLendingId() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), false, _standardOracleParams());
+        openLending.LendingView memory loanBefore = lending.getLending(lendingId);
+
+        vm.prank(lender);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            uint128(loanBefore.supplyAmount),
+            uint128(loanBefore.repaidDebt),
+            8 ether,
+            uint128(loanBefore.borrowAmount),
+            loanBefore.start,
+            loanBefore.supplyAmount * STAKE / 10000,
+            uint128(loanBefore.supplyAmount / 10)
+        );
+
         address feeRecipient = lending.getLending(lendingId).feeRecipient;
 
         vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "feeRecipient not for lendingId"));
