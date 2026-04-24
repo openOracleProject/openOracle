@@ -33,6 +33,7 @@ contract openLending is ReentrancyGuard {
         feeReceiverImpl = address(new oracleFeeReceiver());
     }
 
+    /// @review - this struct could be packed more tightly, but maybe you specifically ordered it like this for better readability
     struct LendingArrangement {
         uint128 supplyAmount; // amount supplied as collateral
         uint128 borrowAmount; // amount borrowed at time of loan origination
@@ -56,6 +57,7 @@ contract openLending is ReentrancyGuard {
         uint48 liquidationStart; // timestamp where the liquidation started
         uint48 gracePeriod; // extra time to repay debt / accept refinance offer if liquidation oracle game runs past maturity
         bool cancelled; // borrow request cancelled by borrower
+        /// @review: active is redundant, we can check if lender != address(0) to determine if offer has been accepted and loan is active. This would save a bit of storage and complexity
         bool active; // offer accepted and loan is live
         bool inLiquidation; // loan is in liquidation (oracle game is running)
         bool finished; // loan has been liquidated or repaid
@@ -72,6 +74,7 @@ contract openLending is ReentrancyGuard {
 
         mapping(uint256 => LendingOffers) lendingOffers;
         mapping(uint256 => mapping(uint256 => RefiLendingOffers)) refiLendingOffers;
+        /// @review - refiNonceAccepted can be removed, we can simply check if the refi offer chosen for a given nonce has been accepted or not. This would save a bit of storage and complexity
         mapping(uint256 => bool) refiNonceAccepted;
         mapping(address => Beneficiaries) feeRecipientToBeneficiaries;
     }
@@ -114,6 +117,7 @@ contract openLending is ReentrancyGuard {
 
     struct Beneficiaries {
         address lender;
+        // review: borrower could be removed since it never changes for a lending arrangement
         address borrower;
         address liquidator;
     }
@@ -674,7 +678,9 @@ contract openLending is ReentrancyGuard {
         lending.finished = true;
 
         IERC20(lending.supplyToken).safeTransfer(lender, supplyAmount);
-        IERC20(lending.borrowToken).safeTransfer(lender, repaidDebt);
+        if (repaidDebt > 0) {
+            IERC20(lending.borrowToken).safeTransfer(lender, repaidDebt);
+        }
         emit CollateralClaimedByLender(lendingId, supplyAmount, repaidDebt);
     }
 
@@ -898,10 +904,23 @@ contract openLending is ReentrancyGuard {
             emit LiqUnsuccessful(lendingId);
         }
 
-        grabOracleGameFees(lending, lending.feeRecipient);
+        _grabOracleGameFees(lending, lending.feeRecipient);
     }
 
-    function grabOracleGameFees(LendingArrangement storage lending, address feeRecipient) internal {
+    /**
+     * @notice Anyone can distribute protocol fees from a given feeRecipient contract.
+     *            Eventual oracle game callback should always clear these tokens out anyways.
+     * @param lendingId Unique identification number of lending instance
+     */
+    function grabOracleGameFeesAny(uint256 lendingId, address feeRecipient) external nonReentrant {
+        LendingArrangement storage lending = lendingArrangements[lendingId];
+        if (oracleFeeReceiver(feeRecipient).gameId() != lendingId) {
+            revert InvalidInput("feeRecipient not for lendingId");
+        }
+        _grabOracleGameFees(lending, feeRecipient);
+    }
+
+    function _grabOracleGameFees(LendingArrangement storage lending, address feeRecipient) internal {
         oracleFeeReceiver feeReceiver = oracleFeeReceiver(feeRecipient);
 
         address supplyToken = lending.supplyToken;
@@ -938,19 +957,6 @@ contract openLending is ReentrancyGuard {
         _transferTokens(borrowToken, address(this), borrower, borrowerBorrowFeePiece);
         _transferTokens(borrowToken, address(this), lender, lenderBorrowFeePiece);
         _transferTokens(borrowToken, address(this), liquidator, liquidatorBorrowFeePiece);
-    }
-
-    /**
-     * @notice Anyone can distribute protocol fees from a given feeRecipient contract.
-     *            Eventual oracle game callback should always clear these tokens out anyways.
-     * @param lendingId Unique identification number of lending instance
-     */
-    function grabOracleGameFeesAny(uint256 lendingId, address feeRecipient) external nonReentrant {
-        LendingArrangement storage lending = lendingArrangements[lendingId];
-        if (oracleFeeReceiver(feeRecipient).gameId() != lendingId) {
-            revert InvalidInput("feeRecipient not for lendingId");
-        }
-        grabOracleGameFees(lending, feeRecipient);
     }
 
     /**
