@@ -231,9 +231,10 @@ contract HelperCoverageTest is Test {
             uint128(loanBefore.supplyAmount / 10)
         );
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
+        openLending.LendingView memory loanAfterLiquidation = lending.getLending(lendingId);
+        address feeRecipient = loanAfterLiquidation.feeRecipient;
         openLending.Beneficiaries memory beneficiaries = lending.getBeneficiaries(lendingId, feeRecipient);
-        assertEq(beneficiaries.borrower, borrower, "borrower beneficiary mismatch");
+        assertEq(loanAfterLiquidation.borrower, borrower, "borrower mismatch");
         assertEq(beneficiaries.lender, lender, "lender beneficiary mismatch");
         assertEq(beneficiaries.liquidator, liquidator, "liquidator beneficiary mismatch");
 

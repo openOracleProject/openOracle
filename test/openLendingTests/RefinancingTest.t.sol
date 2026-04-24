@@ -469,7 +469,7 @@ contract RefinancingTest is OpenLendingBaseTest {
 
         // Try to accept second offer with same nonce
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "refi nonce already accepted"));
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "invalid refi nonce"));
         lending.acceptRefiOffer(lendingId, offer2, nonce);
     }
 
