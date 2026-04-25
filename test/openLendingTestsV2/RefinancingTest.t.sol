@@ -1,0 +1,775 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import "./OpenLendingBase.t.sol";
+
+contract RefinancingTest is OpenLendingBaseTest {
+    event RefiParamsUpdated(uint256 lendingId, uint256 extraBorrowDemanded, uint256 supplyPulled);
+    event RefiBorrowOffered(
+        address indexed lender, uint256 indexed lendingId, uint32 rate, uint256 refiNonce
+    );
+    event RefiOfferAccepted(uint256 lendingId, uint256 refiNonce);
+    event RefiBorrowOfferCancelled(uint256 lendingId, uint256 refiNonce);
+
+    address internal borrower = address(0x1);
+    address internal lender1 = address(0x2);
+    address internal lender2 = address(0x3);
+    address internal lender3 = address(0x4);
+    address internal liquidator = address(0x5);
+    address internal settler = address(0x6);
+
+    // Unrelated funds
+    uint256 constant UNRELATED_SUPPLY = 500e18;
+    uint256 constant UNRELATED_BORROW = 1000e18;
+
+    // Loan parameters
+    uint128 constant SUPPLY_AMOUNT = 100e18;
+    uint128 constant BORROW_AMOUNT = 70e18;
+    uint48 constant LOAN_TERM = 30 days;
+    uint32 constant INTEREST_RATE = 1e8; // 10% annual
+    uint24 constant LIQUIDATION_THRESHOLD = 8e6; // 80%
+    uint128 constant STAKE = 100; // 1%
+    uint256 constant OFFER_EXPIRATION = 1 hours;
+
+    // Oracle parameters
+    uint128 constant ORACLE_EXACT_TOKEN1 = 10e18;
+    uint256 constant ORACLE_SETTLEMENT_TIME = 300;
+
+    // Liquidation expected params
+    uint256 constant EXPECTED_STAKE = SUPPLY_AMOUNT * STAKE / 10000; // 1 ether
+    uint128 constant EXPECTED_INITIAL_LIQUIDITY = ORACLE_EXACT_TOKEN1; // 10 ether
+
+    function setUp() public {
+        _deployCore("Supply", "SUP", "Borrow", "BOR");
+
+        address[] memory supplyAccounts = new address[](2);
+        supplyAccounts[0] = borrower;
+        supplyAccounts[1] = liquidator;
+        _fundSupply(supplyAccounts, 10000e18);
+
+        address[] memory borrowAccounts = new address[](5);
+        borrowAccounts[0] = borrower;
+        borrowAccounts[1] = lender1;
+        borrowAccounts[2] = lender2;
+        borrowAccounts[3] = lender3;
+        borrowAccounts[4] = liquidator;
+        _fundBorrow(borrowAccounts, 10000e18);
+
+        _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
+
+        _approveLendingBoth(borrower);
+        _approveLendingBorrow(lender1);
+        _approveLendingBorrow(lender2);
+        _approveLendingBorrow(lender3);
+        _approveLendingBoth(liquidator);
+        _approveOracleBoth(liquidator);
+        _approveOracleBoth(lender2);
+
+        vm.deal(liquidator, 10 ether);
+    }
+
+    // Helper: Create and activate a loan
+    function setupActiveLoan() internal returns (uint256 lendingId) {
+        vm.prank(borrower);
+        lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            uint48(block.timestamp + OFFER_EXPIRATION),
+            address(supplyToken),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            _standardOracleParams()
+        );
+
+        vm.prank(lender1);
+        lending.offerBorrow(lendingId, BORROW_AMOUNT, INTEREST_RATE, true);
+
+        vm.prank(borrower);
+        lending.acceptOffer(lendingId);
+    }
+
+    // Helper: Calculate total owed at maturity
+    function totalOwedAtMaturity(uint256 amount, uint256 rate, uint256 term) internal pure returns (uint256) {
+        return _calculateOwedAtMaturity(amount, uint32(rate), uint48(term));
+    }
+
+    // =========================================================================
+    // BASIC REFI FLOW
+    // =========================================================================
+
+    function testRefi_BasicFlow() public {
+        uint256 lendingId = setupActiveLoan();
+
+        uint256 lender1Before = borrowToken.balanceOf(lender1);
+        uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
+
+        // Calculate what lender1 is owed
+        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+
+        // Borrower sets refi params (no extra demand, no supply pull)
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiParamsUpdated(lendingId, 0, 0);
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        // Lender2 offers refi (V2: rate must be > 0; no prev offer, so any rate ok)
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit RefiBorrowOffered(lender2, lendingId, INTEREST_RATE - 1e7, 1);
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(
+            lendingId,
+            INTEREST_RATE - 1e7, // slightly lower rate (better for borrower)
+            true,
+            0, // repaidDebt
+            0, // extraDemanded
+            0 // minSupplyPostRefi
+        );
+
+        assertEq(refiNonce, 1, "First refi nonce should be 1");
+
+        // Borrower accepts refi
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiOfferAccepted(lendingId, refiNonce);
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        // Verify lender1 got paid
+        uint256 lender1After = borrowToken.balanceOf(lender1);
+        assertEq(lender1After, lender1Before + owedToLender1, "Lender1 should receive full owed amount");
+
+        // Verify loan state updated
+        openLending.LendingView memory loanAfter = lending.getLending(lendingId);
+        assertEq(loanAfter.lender, lender2, "New lender should be lender2");
+        assertEq(loanAfter.borrowAmount, owedToLender1, "New borrow amount should equal what was owed");
+        assertEq(loanAfter.rate, INTEREST_RATE - 1e7, "Rate should be updated");
+        assertEq(loanAfter.start, block.timestamp, "Start should be reset");
+        assertEq(loanAfter.repaidDebt, 0, "Repaid debt should be reset");
+        assertEq(loanAfter.gracePeriod, 0, "Grace period should be reset");
+
+        // Borrower should NOT have received extra (no extraDemanded)
+        assertEq(borrowToken.balanceOf(borrower), borrowerBorrowBefore, "Borrower borrow balance unchanged");
+
+        // Unrelated funds untouched
+        assertEq(supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY + SUPPLY_AMOUNT, "Supply funds correct");
+    }
+
+    function testRefi_WithExtraDemanded() public {
+        uint256 lendingId = setupActiveLoan();
+
+        uint128 extraDemanded = 10e18;
+        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+        uint256 totalRefiAmount = owedToLender1 + extraDemanded;
+
+        uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
+
+        // Set refi params with extra demand
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, extraDemanded, 0);
+
+        // Lender2 offers refi (must provide owedToLender1 + extraDemanded)
+        vm.prank(lender2);
+        uint256 refiNonce =
+            lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, extraDemanded, 0);
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        // Borrower should have received extraDemanded
+        assertEq(
+            borrowToken.balanceOf(borrower),
+            borrowerBorrowBefore + extraDemanded,
+            "Borrower should receive extra demanded"
+        );
+
+        // New loan amount should be total
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+        assertEq(loan.borrowAmount, totalRefiAmount, "New borrow amount should include extra");
+    }
+
+    function testRefi_WithSupplyPulled() public {
+        uint256 lendingId = setupActiveLoan();
+
+        uint128 supplyPulled = 20e18;
+        uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
+
+        // Set refi params with supply pull
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, supplyPulled);
+
+        // Lender2 offers refi
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(
+            lendingId,
+            INTEREST_RATE,
+            true,
+            0,
+            0,
+            SUPPLY_AMOUNT - supplyPulled // minSupplyPostRefi
+        );
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        // Borrower should have received supplyPulled
+        assertEq(
+            supplyToken.balanceOf(borrower),
+            borrowerSupplyBefore + supplyPulled,
+            "Borrower should receive pulled supply"
+        );
+
+        // Loan supply reduced
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+        assertEq(loan.supplyAmount, SUPPLY_AMOUNT - supplyPulled, "Supply should be reduced");
+    }
+
+    // =========================================================================
+    // MULTIPLE REFI CYCLES
+    // =========================================================================
+
+    function testRefi_MultipleCycles() public {
+        uint256 lendingId = setupActiveLoan();
+
+        // --- REFI 1: lender1 -> lender2 ---
+        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiParamsUpdated(lendingId, 0, 0);
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refi1Nonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        assertEq(refi1Nonce, 1, "First refi nonce");
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refi1Nonce);
+
+        openLending.LendingView memory loanAfterRefi1 = lending.getLending(lendingId);
+        assertEq(loanAfterRefi1.lender, lender2, "Lender should be lender2");
+        assertEq(loanAfterRefi1.borrowAmount, owedToLender1, "Borrow amount after refi1");
+
+        // --- REFI 2: lender2 -> lender3 ---
+        vm.warp(block.timestamp + 10 days); // Some time passes
+
+        uint256 owedToLender2 = totalOwedAtMaturity(owedToLender1, INTEREST_RATE, LOAN_TERM);
+        uint256 lender2Before = borrowToken.balanceOf(lender2);
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender3);
+        uint256 refi2Nonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        assertEq(refi2Nonce, 2, "Second refi nonce");
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refi2Nonce);
+
+        // Lender2 should have been paid
+        assertEq(borrowToken.balanceOf(lender2), lender2Before + owedToLender2, "Lender2 should receive full owed");
+
+        openLending.LendingView memory loanAfterRefi2 = lending.getLending(lendingId);
+        assertEq(loanAfterRefi2.lender, lender3, "Lender should be lender3");
+        assertEq(loanAfterRefi2.borrowAmount, owedToLender2, "Borrow amount after refi2");
+
+        // Verify nonce incremented
+        openLending.RefiParams memory refiParams = lending.getRefiParams(lendingId);
+        assertFalse(refiParams.set, "Refi params should be reset");
+    }
+
+    // =========================================================================
+    // REFI PARAMS RESTRICTIONS
+    // =========================================================================
+
+    function testRefi_CannotOfferIfParamsNotSet() public {
+        uint256 lendingId = setupActiveLoan();
+
+        // Try to offer refi without params set
+        vm.prank(lender2);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "refi params not set"));
+        lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+    }
+
+    function testRefi_CannotSetParamsTwice() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        // Try to set again
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "params already set"));
+        lending.changeRefiParams(lendingId, 10e18, 0);
+    }
+
+    function testRefi_ParamsResetAfterAccept() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 5e18, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 5e18, 0);
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        // Params should be reset
+        openLending.RefiParams memory params = lending.getRefiParams(lendingId);
+        assertFalse(params.set, "Params should not be set after accept");
+        assertEq(params.extraDemanded, 0, "Extra demanded should be 0");
+        assertEq(params.supplyPulled, 0, "Supply pulled should be 0");
+
+        // Can set params again for next refi
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        openLending.RefiParams memory paramsAfter = lending.getRefiParams(lendingId);
+        assertTrue(paramsAfter.set, "Should be able to set params again");
+    }
+
+    // =========================================================================
+    // REFI OFFER CANCELLATION
+    // =========================================================================
+
+    function testRefi_LenderCanCancelAfter60s() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        uint256 lender2Before = borrowToken.balanceOf(lender2);
+        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        uint256 lender2AfterOffer = borrowToken.balanceOf(lender2);
+        assertEq(lender2AfterOffer, lender2Before - owedToLender1, "Lender2 should have deposited");
+
+        vm.warp(block.timestamp + 60);
+
+        vm.expectEmit(false, false, false, true, address(lending));
+        emit RefiBorrowOfferCancelled(lendingId, refiNonce);
+        vm.prank(lender2);
+        lending.cancelRefiBorrowOffer(lendingId, refiNonce);
+
+        assertEq(borrowToken.balanceOf(lender2), lender2Before, "Lender2 should get funds back");
+    }
+
+    function testRefi_CannotCancelBefore60s() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        vm.warp(block.timestamp + 59);
+
+        vm.prank(lender2);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "cancel too soon"));
+        lending.cancelRefiBorrowOffer(lendingId, refiNonce);
+    }
+
+    // V2: acceptRefiOffer deletes the slot, so a subsequent cancel sees no offer.
+    function testRefi_CannotCancelAfterAccepted() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        vm.warp(block.timestamp + 60);
+
+        // After accept, refiOfferNonce was bumped to 2, so old nonce is invalid
+        vm.prank(lender2);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "invalid refi nonce"));
+        lending.cancelRefiBorrowOffer(lendingId, refiNonce);
+    }
+
+    // V2: A later refi offeror at a strictly better rate auto-refunds the previous offeror.
+    function testRefi_BetterRateOfferAutoRefundsPrevious() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        uint256 lender2Before = borrowToken.balanceOf(lender2);
+        uint256 owedToLender1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+
+        // First refi offer at INTEREST_RATE
+        vm.prank(lender2);
+        lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        assertEq(borrowToken.balanceOf(lender2), lender2Before - owedToLender1, "lender2 deposited");
+
+        // Lender3 makes a better-rate offer; lender2 must be auto-refunded
+        vm.prank(lender3);
+        lending.offerRefiBorrow(lendingId, INTEREST_RATE - 1e7, true, 0, 0, 0);
+
+        assertEq(borrowToken.balanceOf(lender2), lender2Before, "lender2 should be auto-refunded");
+
+        // Higher rate offer must revert in V2
+        vm.prank(lender2);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "must improve rate"));
+        lending.offerRefiBorrow(lendingId, INTEREST_RATE - 1e7, true, 0, 0, 0);
+    }
+
+    // =========================================================================
+    // ACCEPT RESTRICTIONS
+    // =========================================================================
+
+    function testRefi_CannotAcceptAfterFinished() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        // Borrower repays full debt to finish loan; V2 auto-refunds the standing refi offer
+        uint256 owed = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, uint128(owed));
+
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+        assertTrue(loan.finished, "Loan should be finished");
+
+        // Try to accept refi
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId finished"));
+        lending.acceptRefiOffer(lendingId, refiNonce);
+    }
+
+    // V2: a second refi offer at a strictly better rate replaces the first (auto-refund).
+    // Once accepted, the slot is deleted and a re-accept reverts with "no refi offer".
+    function testRefi_CannotDoubleAccept() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 nonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        // Lender3 replaces with a better rate
+        vm.prank(lender3);
+        lending.offerRefiBorrow(lendingId, INTEREST_RATE - 1e7, true, 0, 0, 0);
+
+        // Accept the (current) offer at nonce 1
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, nonce);
+
+        // Slot was deleted and refiOfferNonce was bumped to 2
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "invalid refi nonce"));
+        lending.acceptRefiOffer(lendingId, nonce);
+    }
+
+    // V2: partial repayDebt auto-refunds the standing refi offer and bumps refiOfferNonce.
+    function testRefi_PartialRepayAutoVoidsRefiOffer() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        uint256 lender2Before = borrowToken.balanceOf(lender2);
+
+        // Lender2 makes refi offer
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        // Borrower partially repays — auto-refunds lender2 and bumps nonce
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, 10e18);
+
+        assertEq(borrowToken.balanceOf(lender2), lender2Before, "lender2 should be auto-refunded by partial repay");
+
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+        assertGt(loan.refiOfferNonce, refiNonce, "refi nonce should bump after partial repay voids offer");
+
+        // Old nonce no longer accepted
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "invalid refi nonce"));
+        lending.acceptRefiOffer(lendingId, refiNonce);
+    }
+
+    function testRefi_CannotAcceptDuringLiquidation() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.warp(block.timestamp + 10 days);
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+
+        // Start liquidation
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            SUPPLY_AMOUNT,
+            0,
+            8e18, // price that would liquidate
+            BORROW_AMOUNT,
+            loan.start,
+            EXPECTED_STAKE,
+            EXPECTED_INITIAL_LIQUIDITY
+        );
+
+        // Try to accept refi during liquidation
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId in liquidation"));
+        lending.acceptRefiOffer(lendingId, refiNonce);
+    }
+
+    function testRefi_CannotAcceptExpired() public {
+        uint256 lendingId = setupActiveLoan();
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        // Warp past maturity
+        vm.warp(block.timestamp + LOAN_TERM + 1);
+
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "expired"));
+        lending.acceptRefiOffer(lendingId, refiNonce);
+    }
+
+    // =========================================================================
+    // GRACE PERIOD WITH REFI
+    // =========================================================================
+
+    function testRefi_CanAcceptDuringGracePeriod() public {
+        uint256 lendingId = setupActiveLoan();
+
+        // Warp to near maturity
+        vm.warp(block.timestamp + LOAN_TERM - 200);
+
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+
+        // Start liquidation that will fail (safe price)
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            SUPPLY_AMOUNT,
+            0,
+            12e18, // safe price
+            BORROW_AMOUNT,
+            loan.start,
+            EXPECTED_STAKE,
+            EXPECTED_INITIAL_LIQUIDITY
+        );
+
+        uint256 reportId = oracle.nextReportId() - 1;
+
+        // Settle
+        vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        // Grace period should be set
+        openLending.LendingView memory loanAfterLiq = lending.getLending(lendingId);
+        assertGt(loanAfterLiq.gracePeriod, 0, "Grace period should be set");
+
+        // Warp into grace period (past original maturity)
+        vm.warp(loanAfterLiq.start + loanAfterLiq.term + 100);
+
+        // Set refi params and accept refi during grace
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(
+            lendingId,
+            INTEREST_RATE,
+            true,
+            0,
+            0,
+            loanAfterLiq.supplyAmount // minSupplyPostRefi
+        );
+
+        // Should succeed during grace
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        openLending.LendingView memory loanAfterRefi = lending.getLending(lendingId);
+        assertEq(loanAfterRefi.lender, lender2, "Refi should succeed during grace");
+        assertEq(loanAfterRefi.gracePeriod, 0, "Grace period reset after refi");
+    }
+
+    // =========================================================================
+    // LIQUIDATION ON REFINANCED DEBT
+    // =========================================================================
+
+    function testRefi_LiquidationWorksAfterRefi() public {
+        uint256 lendingId = setupActiveLoan();
+
+        // Refi to lender2
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 refiNonce = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, refiNonce);
+
+        openLending.LendingView memory loanAfterRefi = lending.getLending(lendingId);
+        assertEq(loanAfterRefi.lender, lender2, "Lender should be lender2");
+
+        // Wait some time
+        vm.warp(block.timestamp + 10 days);
+
+        // Liquidate the refinanced loan
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            uint128(loanAfterRefi.supplyAmount),
+            0,
+            8e18, // liquidating price
+            uint128(loanAfterRefi.borrowAmount),
+            loanAfterRefi.start,
+            EXPECTED_STAKE,
+            EXPECTED_INITIAL_LIQUIDITY
+        );
+
+        uint256 reportId = oracle.nextReportId() - 1;
+
+        vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        openLending.LendingView memory loanFinal = lending.getLending(lendingId);
+        assertTrue(loanFinal.finished, "Loan should be finished after liquidation");
+    }
+
+    // =========================================================================
+    // ACCOUNTING VERIFICATION
+    // =========================================================================
+
+    function testRefi_AccountingAcrossMultipleCycles() public {
+        uint256 lendingId = setupActiveLoan();
+
+        uint256 lender1InitialBorrow = borrowToken.balanceOf(lender1);
+        uint256 lender2InitialBorrow = borrowToken.balanceOf(lender2);
+
+        // REFI 1
+        uint256 owedCycle1 = totalOwedAtMaturity(BORROW_AMOUNT, INTEREST_RATE, LOAN_TERM);
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender2);
+        uint256 nonce1 = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        uint256 lender2AfterOffer1 = borrowToken.balanceOf(lender2);
+        assertEq(lender2AfterOffer1, lender2InitialBorrow - owedCycle1, "Lender2 deposited owedCycle1");
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, nonce1);
+
+        assertEq(borrowToken.balanceOf(lender1), lender1InitialBorrow + owedCycle1, "Lender1 received owedCycle1");
+
+        // REFI 2
+        uint256 owedCycle2 = totalOwedAtMaturity(owedCycle1, INTEREST_RATE, LOAN_TERM);
+
+        vm.prank(borrower);
+        lending.changeRefiParams(lendingId, 0, 0);
+
+        vm.prank(lender3);
+        uint256 nonce2 = lending.offerRefiBorrow(lendingId, INTEREST_RATE, true, 0, 0, 0);
+
+        vm.prank(borrower);
+        lending.acceptRefiOffer(lendingId, nonce2);
+
+        // Lender2 (prev lender) gets owedCycle2
+        assertEq(
+            borrowToken.balanceOf(lender2),
+            lender2AfterOffer1 + owedCycle2,
+            "Lender2 received owedCycle2 as prev lender"
+        );
+
+        // Final loan state
+        openLending.LendingView memory finalLoan = lending.getLending(lendingId);
+        assertEq(finalLoan.borrowAmount, owedCycle2, "Final borrow amount is owedCycle2");
+        assertEq(finalLoan.lender, lender3, "Final lender is lender3");
+
+        // Unrelated funds untouched throughout
+        assertEq(supplyToken.balanceOf(address(lending)), UNRELATED_SUPPLY + SUPPLY_AMOUNT, "Supply unchanged");
+
+        // Contract borrow balance: After refi, lender3's deposit went directly to lender2 (prev lender).
+        // With extraDemanded=0, no borrow tokens stay in contract from the refi.
+        // So contract should just have UNRELATED_BORROW.
+        assertEq(
+            borrowToken.balanceOf(address(lending)),
+            UNRELATED_BORROW,
+            "Borrow = unrelated only (refi deposits went to prev lenders)"
+        );
+    }
+
+    // =========================================================================
+    // ORIGINAL OFFER CANCELLATION AFTER REFI
+    // =========================================================================
+
+    // V2: a better-rate offer auto-refunds the previous offeror. Once the borrower accepts,
+    // the slot is cleared and any further cancel reverts.
+    function testRefi_BetterRateOfferAutoRefundsOriginalOfferor() public {
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            uint48(block.timestamp + OFFER_EXPIRATION),
+            address(supplyToken),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            _standardOracleParams()
+        );
+
+        uint256 lender1Before = borrowToken.balanceOf(lender1);
+
+        vm.prank(lender1);
+        lending.offerBorrow(lendingId, BORROW_AMOUNT, INTEREST_RATE, true);
+
+        assertEq(borrowToken.balanceOf(lender1), lender1Before - BORROW_AMOUNT, "lender1 deposited");
+
+        // Lender2 makes a better-rate offer; lender1 must be auto-refunded
+        vm.prank(lender2);
+        lending.offerBorrow(lendingId, BORROW_AMOUNT, INTEREST_RATE - 1e7, true);
+
+        assertEq(borrowToken.balanceOf(lender1), lender1Before, "lender1 should be auto-refunded");
+
+        // Borrower accepts lender2 (the standing best offer)
+        vm.prank(borrower);
+        lending.acceptOffer(lendingId);
+
+        openLending.LendingView memory loan = lending.getLending(lendingId);
+        assertEq(loan.lender, lender2, "lender2 should now be the active lender");
+
+        // After accept, slot is empty; lender1 can no longer cancel anything
+        vm.warp(block.timestamp + 60);
+        vm.prank(lender1);
+        vm.expectRevert(abi.encodeWithSelector(openLending.InvalidInput.selector, "lendingId active"));
+        lending.cancelBorrowOffer(lendingId);
+    }
+}
