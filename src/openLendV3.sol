@@ -369,9 +369,7 @@ contract openLend is ReentrancyGuard {
             lending.active = true;
             lending.borrowAmount = lending.amountDemanded;
 
-            //can we just transferFrom lender direct to borrower instead of through contract?
-            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), lending.amountDemanded);
-            IERC20(borrowToken).safeTransfer(borrower, lending.amountDemanded);
+            IERC20(borrowToken).safeTransferFrom(msg.sender, borrower, lending.amountDemanded);
 
             emit LoanOriginated(
                 lendingId, msg.sender, lending.amountDemanded, rate, uint48(currentTime), prevTerm, allowAnyLiquidator
