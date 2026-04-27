@@ -59,7 +59,7 @@ contract openLend is ReentrancyGuard {
         uint128 supplyAmount; // amount supplied as collateral
         uint128 borrowAmount; // amount borrowed at time of loan origination
         uint128 amountDemanded; // amount demanded by borrower
-        uint128 repaidDebt; // amount of debt repaid
+        uint128 repaidDebt; // cumulative debt streamed to the lender (already in their wallet); pure accounting credit
         address borrower; // borrower address
         uint48 term; // length of loan in seconds
         uint48 start; // timestamp loan began
@@ -162,7 +162,7 @@ contract openLend is ReentrancyGuard {
     event LoanLiquidationUnderway(uint256 indexed lendingId, uint256 reportId, address feeRecipient);
     event DebtRepaid(uint256 indexed lendingId, address indexed payer, uint256 amount, bool fullyRepaid);
     event CollateralToppedOff(uint256 indexed lendingId, address indexed payer, uint256 amount);
-    event CollateralClaimedByLender(uint256 indexed lendingId, uint256 supplyTokenClaimed, uint256 borrowTokenClaimed);
+    event CollateralClaimedByLender(uint256 indexed lendingId, uint256 supplyTokenClaimed);
     event RefiOpened(
         uint256 indexed lendingId,
         uint128 extraDemanded,
@@ -377,10 +377,12 @@ contract openLend is ReentrancyGuard {
         } else {
             // refi
             uint256 owedAtMaturity = totalOwedAtMaturity(lending.borrowAmount, prevRate, prevTerm);
+            uint128 prevRepaidDebt = lending.repaidDebt;
             uint128 extraDemanded = lending.refiParams.extraDemanded;
             uint128 supplyPulled = lending.refiParams.supplyPulled;
             uint48 newTerm = lending.refiParams.newTerm;
-            uint256 newBorrowAmount = owedAtMaturity - lending.repaidDebt + extraDemanded;
+            uint256 netTerminalDebtPrev = owedAtMaturity - prevRepaidDebt;
+            uint256 newBorrowAmount = netTerminalDebtPrev + extraDemanded;
 
             if (newBorrowAmount < minLendAmount || newBorrowAmount > maxLendAmount) {
                 revert InvalidInput("lend amount out of bounds");
@@ -399,7 +401,7 @@ contract openLend is ReentrancyGuard {
             lending.refiParams.newTerm = 0;
 
             IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), newBorrowAmount);
-            _transferTokens(borrowToken, address(this), prevLender, owedAtMaturity);
+            _transferTokens(borrowToken, address(this), prevLender, netTerminalDebtPrev);
             if (extraDemanded > 0) IERC20(borrowToken).safeTransfer(borrower, extraDemanded);
             if (supplyPulled > 0) IERC20(supplyToken).safeTransfer(borrower, supplyPulled);
 
@@ -408,7 +410,7 @@ contract openLend is ReentrancyGuard {
                 msg.sender,
                 prevLender,
                 newBorrowAmount,
-                owedAtMaturity,
+                netTerminalDebtPrev,
                 rate,
                 uint48(currentTime),
                 newTerm,
@@ -421,9 +423,10 @@ contract openLend is ReentrancyGuard {
 
     /**
      * @notice Borrower-only repayment. Pays down debt, reducing liquidation risk.
-     * @dev    If `amount >= netTerminalDebt` (= `totalOwedAtMaturity - repaidDebt`), the loan is fully closed:
-     *         lender is paid `owedAtMaturity` and borrower receives all collateral. Otherwise `repaidDebt` is
-     *         incremented. Reverts during liquidation, after maturity (+ grace), or when finished/cancelled.
+     * @dev    Partial repayments are forwarded to the lender immediately (streamed) and `repaidDebt` is incremented
+     *         as accounting credit. If `amount >= netTerminalDebt` (= `totalOwedAtMaturity - repaidDebt`), the loan
+     *         is fully closed: lender is paid the remaining `netTerminalDebt` and borrower receives all collateral.
+     *         Reverts during liquidation, after maturity (+ grace), or when finished/cancelled.
      * @param  lendingId Unique identifier of the lending arrangement.
      * @param  amount BorrowToken amount to apply against debt. May exceed `netTerminalDebt` (excess is not pulled).
      * @param  expectedParamHash Optional loose paramHash. Set to bytes32(0) to skip.
@@ -503,9 +506,9 @@ contract openLend is ReentrancyGuard {
     }
 
     /**
-     * @notice Forfeits unused collateral + any partial repayments to the lender once the loan has expired without
-     *         being repaid or refinanced.
-     * @dev    Permissionless: anyone can call (the funds always go to the lender). Reverts if still within
+     * @notice Forfeits unused collateral to the lender once the loan has expired without being repaid or refinanced.
+     * @dev    Permissionless: anyone can call (the funds always go to the lender). Only sends supplyToken — any
+     *         partial repayments were already streamed to the lender at repay time. Reverts if still within
      *         `start + term + gracePeriod`. The grace period is non-zero only when a failed liquidation finished
      *         too close to or past maturity.
      * @param  lendingId Unique identifier of the lending arrangement.
@@ -516,7 +519,6 @@ contract openLend is ReentrancyGuard {
         uint256 currentTime = block.timestamp;
         address lender = lending.lender;
         uint128 supplyAmount = lending.supplyAmount;
-        uint128 repaidDebt = lending.repaidDebt;
 
         if (lending.inLiquidation) revert InvalidInput("in liquidation");
         if (lending.finished) revert InvalidInput("arrangement finished");
@@ -530,11 +532,8 @@ contract openLend is ReentrancyGuard {
         _clearRefiCurve(lending);
 
         IERC20(lending.supplyToken).safeTransfer(lender, supplyAmount);
-        if (repaidDebt > 0) {
-            IERC20(lending.borrowToken).safeTransfer(lender, repaidDebt);
-        }
 
-        emit CollateralClaimedByLender(lendingId, supplyAmount, repaidDebt);
+        emit CollateralClaimedByLender(lendingId, supplyAmount);
     }
 
     /**
@@ -634,7 +633,8 @@ contract openLend is ReentrancyGuard {
      *         While the report is open the loan is `inLiquidation`: the borrower cannot repay or top up.
      *         Resolution happens in `onSettle`:
      *           - If oracle resolves underwater: liquidator recovers stake, gets 50% of any equity buffer; lender
-     *             receives remaining collateral plus all `repaidDebt`. Loan finishes.
+     *             receives remaining collateral. (Any prior partial repayments are already in the lender's wallet
+     *             from streaming.) Loan finishes.
      *           - If oracle resolves NOT underwater: stake is forfeit to the borrower (added to `supplyAmount`).
      *             Loan continues. If resolution lands within 30 minutes (1800s) of maturity or after it,
      *             `gracePeriod` is set to `1800 + 2 * (currentTime - liquidationStart)`, so the borrower has
@@ -737,7 +737,8 @@ contract openLend is ReentrancyGuard {
      *         loan underwater (`borrowValueInSupplyTerms > liqThresh`):
      *           - Underwater: marks the loan finished. If equity is fully consumed, lender gets all collateral and
      *             liquidator gets just the stake. If a buffer remains, lender gets borrowValueInSupplyTerms + half
-     *             the buffer; liquidator gets the other half plus the stake. Lender also receives any `repaidDebt`.
+     *             the buffer; liquidator gets the other half plus the stake. (Any prior partial repayments are
+     *             already in the lender's wallet from streaming, not paid out here.)
      *           - Not underwater: liquidator's stake is forfeit to the borrower (added to `supplyAmount`). If the
      *             curve is open, `requestStart` is reset to keep the rate auction honest. If resolution lands near
      *             or past maturity, a grace period is granted to the borrower.
@@ -783,8 +784,6 @@ contract openLend is ReentrancyGuard {
         if (liqThresh < borrowValueInSupplyTerms) {
             lending.finished = true;
             _clearRefiCurve(lending);
-
-            _transferTokens(borrowToken, address(this), lender, repaidDebt);
 
             if (borrowValueInSupplyTerms > supplyAmount) {
                 _transferTokens(supplyToken, address(this), lender, supplyAmount);
@@ -862,7 +861,8 @@ contract openLend is ReentrancyGuard {
     // -------------------------------------------------------------------------
 
     /// @dev Shared implementation for `repayDebt` and `repayAnyDebt`. Performs lifecycle gating, paramHash + bounds
-    ///      checks, and either fully closes the loan (`amount >= netTerminalDebt`) or accumulates `repaidDebt`.
+    ///      checks, and either fully closes the loan (`amount >= netTerminalDebt`) or streams the partial to the
+    ///      lender and increments `repaidDebt` as accounting credit.
     function _repayDebt(
         uint256 lendingId,
         uint128 amount,
@@ -900,13 +900,14 @@ contract openLend is ReentrancyGuard {
             _clearRefiCurve(lending);
 
             IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), netTerminalDebt);
-            _transferTokens(borrowToken, address(this), lender, owedAtMaturity);
+            _transferTokens(borrowToken, address(this), lender, netTerminalDebt);
             IERC20(lending.supplyToken).safeTransfer(borrower, supplied);
             emit DebtRepaid(lendingId, msg.sender, netTerminalDebt, true);
         } else {
             lending.repaidDebt += amount;
 
             IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), amount);
+            _transferTokens(borrowToken, address(this), lender, amount);
             emit DebtRepaid(lendingId, msg.sender, amount, false);
         }
     }
