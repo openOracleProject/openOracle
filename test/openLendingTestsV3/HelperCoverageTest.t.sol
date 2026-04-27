@@ -330,22 +330,10 @@ contract HelperCoverageTest is Test {
     // Callback liveness: onSettle must clear inLiquidation even if a participant token transfer fails
     // -------------------------------------------------------------------------
 
-    /// @dev openOracle uses a low-level call on `onSettle` and DOES NOT revert settlement on callback failure.
-    ///      So onSettle's internal _transferTokens must be liveness-safe: a blacklisted recipient should not brick
-    ///      the loan in `inLiquidation` forever. The blacklisted recipient's payout lands in tempHolding instead.
-    function testCallbackLiveness_BlacklistedLenderUnderwaterLiq() public {
-        // Set up a loan where lender is the blacklist-token recipient
-        // Borrower funds: supplyToken collateral; loan is borrowToken-denominated.
-        // For this test we make borrowToken the blacklisted one so the lender's repaidDebt payout fails.
-        // Origination loan in (supplyToken supply, blacklistedBorrowToken borrow):
-        address disputer = address(0xD15);
-        supplyToken.mint(disputer, 10_000 ether);
-        blacklistedBorrowToken.mint(disputer, 10_000 ether);
-        vm.prank(disputer);
-        blacklistedBorrowToken.approve(address(oracle), type(uint256).max);
-        vm.prank(disputer);
-        supplyToken.approve(address(oracle), type(uint256).max);
-
+    /// @dev Streaming-era liveness: a blacklisted lender must not brick the borrower's partial repay. Borrower's
+    ///      funds still leave; the lender's streamed payment lands in tempHolding[lender][borrowToken] until
+    ///      they're unblacklisted and can pull it.
+    function testCallbackLiveness_BlacklistedLenderDuringPartialRepay() public {
         uint256 lendingId = _setupCustomLoan(
             address(supplyToken),
             address(blacklistedBorrowToken),
@@ -355,57 +343,56 @@ contract HelperCoverageTest is Test {
             _standardOracleParams()
         );
 
-        // Borrower pays a partial debt so lender has a payout to receive in onSettle's underwater branch
+        // Lender gets blacklisted on borrowToken AFTER originating but BEFORE the partial repay
+        blacklistedBorrowToken.blacklist(lender);
+
+        uint256 borrowerBorrowBefore = blacklistedBorrowToken.balanceOf(borrower);
+        uint256 lenderBorrowBefore = blacklistedBorrowToken.balanceOf(lender);
+        uint256 contractBorrowBefore = blacklistedBorrowToken.balanceOf(address(lending));
+
+        // Borrower partial repay — lender's streaming payout lands in tempHolding (blacklisted)
         vm.prank(borrower);
         lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, 0);
 
-        vm.warp(block.timestamp + 10 days);
+        // Borrower's funds still moved; loan accounting still progresses
+        assertEq(blacklistedBorrowToken.balanceOf(borrower), borrowerBorrowBefore - 5 ether, "borrower paid");
+        assertEq(lending.getLending(lendingId).repaidDebt, 5 ether, "repaidDebt incremented");
 
-        // Liquidate
-        bytes32 paramHash = lending.getParamHash(lendingId);
-        vm.prank(lender);
-        lending.liquidate{value: 1e15}(
-            lendingId,
-            6 ether * 1e18 / 10 ether, // priceRatio targeting oracleAmount2 = 6
-            type(uint128).max,
-            paramHash,
-            0
+        // Lender's wallet balance did NOT change (blacklisted; direct receipt blocked)
+        assertEq(
+            blacklistedBorrowToken.balanceOf(lender),
+            lenderBorrowBefore,
+            "lender direct receipt blocked by blacklist"
         );
 
-        // Drive to underwater via dispute
-        uint256 reportId = oracle.nextReportId() - 1;
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
-        vm.warp(block.timestamp + 60 + 1);
-        vm.prank(disputer);
-        oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 10 ether, disputer, 6 ether, stateHash);
-
-        // Blacklist the lender BEFORE settlement so the borrowToken payout (repaidDebt) to lender fails
-        blacklistedBorrowToken.blacklist(lender);
-
-        // Settle — onSettle MUST clear inLiquidation even though the lender's repaidDebt transfer fails
-        vm.warp(block.timestamp + 300 + 1);
-        vm.prank(address(0xCAFE));
-        oracle.settle(reportId);
-
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertFalse(loan.inLiquidation, "onSettle must clear inLiquidation despite failing recipient transfer");
-        assertTrue(loan.finished, "underwater liq should still finish the loan");
-
-        // The failed repaidDebt payout lands in tempHolding for the lender
+        // The streamed payout sat in tempHolding for lender
         assertEq(
             lending.tempHolding(lender, address(blacklistedBorrowToken)),
             5 ether,
-            "blocked repaidDebt payout should land in tempHolding"
+            "blocked streaming payout should land in tempHolding"
         );
 
-        // After unblacklisting, lender can pull it
+        // Contract balance reflects the held tempHolding-backing 5 ether
+        assertEq(
+            blacklistedBorrowToken.balanceOf(address(lending)),
+            contractBorrowBefore + 5 ether,
+            "contract holds the funds in tempHolding-backing balance"
+        );
+
+        // Unblacklist; lender pulls via getTempHolding
         blacklistedBorrowToken.unblacklist(lender);
         vm.prank(lender);
         lending.getTempHolding(address(blacklistedBorrowToken));
+
         assertEq(
-            blacklistedBorrowToken.balanceOf(lender) > 0,
-            true,
-            "lender should recover funds via getTempHolding"
+            blacklistedBorrowToken.balanceOf(lender),
+            lenderBorrowBefore + 5 ether,
+            "lender recovers via getTempHolding"
+        );
+        assertEq(
+            lending.tempHolding(lender, address(blacklistedBorrowToken)),
+            0,
+            "tempHolding should be cleared after withdrawal"
         );
     }
 

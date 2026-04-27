@@ -56,11 +56,17 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         assertEq(
             borrowToken.balanceOf(borrower), borrowerBorrowBefore - repayAmount, "borrower should spend exact amount"
         );
-        assertEq(borrowToken.balanceOf(lender1), lenderBorrowBefore, "lender should not be paid before maturity");
+        // Streaming: lender receives the partial directly at repay time
+        assertEq(
+            borrowToken.balanceOf(lender1),
+            lenderBorrowBefore + repayAmount,
+            "lender should receive streamed partial repayment immediately"
+        );
+        // Contract balance does not accumulate repaid debt under streaming
         assertEq(
             borrowToken.balanceOf(address(lending)),
-            contractBorrowBefore + repayAmount,
-            "contract should hold the repaid amount"
+            contractBorrowBefore,
+            "contract should NOT hold the repaid amount under streaming"
         );
     }
 

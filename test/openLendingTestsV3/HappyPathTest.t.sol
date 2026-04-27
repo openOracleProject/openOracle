@@ -28,7 +28,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         bool allowAnyLiquidator
     );
     event DebtRepaid(uint256 indexed lendingId, address indexed payer, uint256 amount, bool fullyRepaid);
-    event CollateralClaimedByLender(uint256 indexed lendingId, uint256 supplyTokenClaimed, uint256 borrowTokenClaimed);
+    event CollateralClaimedByLender(uint256 indexed lendingId, uint256 supplyTokenClaimed);
 
     address internal borrower = address(0x1);
     address internal lender = address(0x2);
@@ -173,7 +173,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, 0);
 
         vm.expectEmit(true, false, false, true, address(lending));
-        emit CollateralClaimedByLender(lendingId, SUPPLY_AMOUNT, 0);
+        emit CollateralClaimedByLender(lendingId, SUPPLY_AMOUNT);
         lending.claimCollateral(lendingId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
