@@ -176,6 +176,7 @@ contract openLend is ReentrancyGuard {
     event LiqFinishedUnderwater(uint256 indexed lendingId);
     event LiqFinishedWithBuffer(uint256 indexed lendingId);
     event LiqUnsuccessful(uint256 indexed lendingId);
+    event Recovery(uint256 indexed lendingId);
     event OracleGameFeesGrabbed(
         uint256 indexed lendingId, address indexed feeRecipient, uint256 feesSupply, uint256 feesBorrow
     );
@@ -766,6 +767,7 @@ contract openLend is ReentrancyGuard {
         address borrowToken = lending.borrowToken;
         address liquidator = lending.liquidator;
         uint256 borrowValue = totalOwedNow(lending.borrowAmount, lending.rate, term, start);
+        address feeRecipient = lending.feeRecipient;
 
         if (borrowValue > repaidDebt) {
             borrowValue -= repaidDebt;
@@ -781,6 +783,7 @@ contract openLend is ReentrancyGuard {
         uint256 liqThresh = uint256(supplyAmount) * lending.liquidationThreshold / 1e7;
 
         lending.inLiquidation = false;
+        reportIdToLending[id] = 0;
         if (liqThresh < borrowValueInSupplyTerms) {
             lending.finished = true;
             _clearRefiCurve(lending);
@@ -812,14 +815,70 @@ contract openLend is ReentrancyGuard {
             }
 
             lending.liquidationStart = 0;
+            lending.liquidator = address(0);
+            lending.feeRecipient = address(0);
 
             emit LiqUnsuccessful(lendingId);
         }
 
-        address feeRecipient = lending.feeRecipient;
         if (feeRecipient != address(0)) {
             _grabOracleGameFees(lending, feeRecipient, lendingId);
         }
+    }
+
+    /**
+     * @notice Permissionless escape hatch for a liquidation whose oracle settlement callback failed.
+     * @dev    The openOracle `settle` uses a low-level `call` for its settlement callback and does not revert on
+     *         failure. If `onSettle` reverts, the report is settled on the oracle side but `inLiquidation` stays true and the
+     *         loan is bricked. This function unsticks it. This should very rarely if ever happen, since the contract is
+     *         designed to not revert in onSettle.
+     *
+     *         Outcome is treated similar to an unsuccessful liquidation regardless of what the oracle actually resolved to:
+     *           - liquidator's stake is returned to the liquidator (diverges from onSettle failed liquidation branch).
+     *           - any open refi curve has `requestStart` reset
+     *           - `gracePeriod` is granted on the same near-maturity rule as a normal failed liq.
+     *           - any oracle game protocol fees are swept via the standard split.
+     *           - the lender retains the loan and may either re-liquidate
+     *             or ride to maturity and `claimCollateral`
+     *
+     * @param  reportId The openOracle reportId whose settlement callback failed. Indexers can find this in the
+     *                  `LoanLiquidationUnderway(lendingId, reportId, feeRecipient)` event emitted at `liquidate` time.
+     */
+    function recover(uint256 reportId) external nonReentrant {
+        uint256 lendingId = reportIdToLending[reportId];
+        LendingArrangement storage lending = lendingArrangements[lendingId];
+
+        uint256 tokenStake = uint256(lending.supplyAmount) * lending.stake / 10000;
+        address liquidator = lending.liquidator;
+        uint256 currentTime = block.timestamp;
+        address feeRecipient = lending.feeRecipient;
+
+        if (lendingId == 0) revert InvalidInput("no lendingId for reportId");
+        if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
+        if (oracle.reportStatus(reportId).settlementTimestamp == 0) revert InvalidInput("no oracle settlement");
+
+        if (currentTime > uint256(lending.start) + lending.term - 1800) {
+            lending.gracePeriod = uint48(1800 + (currentTime - lending.liquidationStart) * 2);
+        }
+
+        if (lending.curveOpen) {
+            lending.requestStart = uint48(currentTime);
+        }
+
+        lending.inLiquidation = false;
+        lending.liquidationStart = 0;
+        reportIdToLending[reportId] = 0;
+        lending.liquidator = address(0);
+        lending.feeRecipient = address(0);
+
+        _transferTokens(lending.supplyToken, address(this), liquidator, tokenStake);
+    
+        if (feeRecipient != address(0)) {
+            _grabOracleGameFees(lending, feeRecipient, lendingId);
+        }
+
+        emit Recovery(lendingId);
+
     }
 
     /**
