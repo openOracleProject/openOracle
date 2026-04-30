@@ -127,7 +127,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
 
         // Borrower opens refi curve with extraDemanded
         vm.prank(borrower);
-        lending.refinance(lendingId, extraDemanded, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, extraDemanded, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         // Lender2 accepts the refi at the current curve rate
         vm.prank(lender2);

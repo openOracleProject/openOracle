@@ -174,6 +174,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             10 ether,
             5 ether,
             0,
+            0,
             _standardInterestRateParams(),
             bytes32(0),
             0,
@@ -274,7 +275,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
     }
 
     /// @dev `lend` (active loan branch) reverts at `currentTime >= start + term + gracePeriod`.
@@ -331,7 +332,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         // Now gracePeriod > 0. Open a refi so a `lend` accept path exists
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
     }
 
     // ---------------- interest rate params validation ----------------
@@ -358,6 +359,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
+            false,
+            0,
             _standardOracleParams(),
             bad
         );
@@ -382,6 +385,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
+            false,
+            0,
             _standardOracleParams(),
             flat
         );
@@ -406,6 +411,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
+            false,
+            0,
             _standardOracleParams(),
             bad
         );
@@ -471,6 +478,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
+            false,
+            0,
             oracleParams,
             _standardInterestRateParams()
         );

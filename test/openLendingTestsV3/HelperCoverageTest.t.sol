@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "../utils/MockWETH.sol";
 
 contract MintableERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
@@ -65,7 +66,8 @@ contract HelperCoverageTest is Test {
 
     function setUp() public {
         oracle = new OpenOracle();
-        lending = new openLend(IOpenOracle(address(oracle)));
+        MockWETH weth = new MockWETH();
+        lending = new openLend(IOpenOracle(address(oracle)), address(weth));
 
         supplyToken = new MintableERC20("Supply Token", "SUP");
         borrowToken = new MintableERC20("Borrow Token", "BOR");
@@ -226,6 +228,7 @@ contract HelperCoverageTest is Test {
             5 ether,                  // extraDemanded
             7 ether,                  // supplyPulled
             0,                        // newTerm = 0 → keep existing term
+            0,                        // gasCompensation
             _standardInterestRateParams(),
             bytes32(0),
             0,
@@ -434,6 +437,8 @@ contract HelperCoverageTest is Test {
             supplyAmount,
             borrowAmount,
             stake,
+            false,
+            0,
             oracleParams,
             _standardInterestRateParams()
         );

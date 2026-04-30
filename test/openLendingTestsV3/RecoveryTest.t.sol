@@ -162,7 +162,7 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         // Borrower opens a refi curve mid-liq.
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         // Warp deep into the oracle game so requestStart would be very stale relative to recover-time.
         vm.warp(block.timestamp + 60 minutes);

@@ -51,7 +51,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         // Borrower opens refi (no extra borrow, no supply pull, keep term)
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         owedAtMaturity1 = _calculateOwedAtMaturity(BORROW_AMOUNT, rate1, LOAN_TERM);
         refiBorrowAmount = owedAtMaturity1;
@@ -246,7 +246,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         // Second refi: lender1 takes it back
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         uint128 owedToLender2 = _calculateOwedAtMaturity(refiBorrowAmount, rate2, LOAN_TERM);
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
@@ -290,7 +290,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, supplyPulled, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, supplyPulled, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         uint128 owedToLender1 = _calculateOwedAtMaturity(BORROW_AMOUNT, rate1, LOAN_TERM);
 

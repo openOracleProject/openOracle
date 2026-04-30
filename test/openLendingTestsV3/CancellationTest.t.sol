@@ -142,6 +142,7 @@ contract CancellationTest is OpenLendingBaseTest {
             0,                           // extraDemanded
             0,                           // supplyPulled
             0,                           // newTerm (keep)
+            0,                           // gasCompensation
             _standardInterestRateParams(),
             bytes32(0),
             0,
@@ -176,7 +177,7 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         vm.prank(randomUser);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not borrower"));
@@ -209,7 +210,7 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         vm.prank(borrower);
         lending.cancelRefinance(lendingId);
@@ -224,14 +225,14 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         vm.prank(borrower);
         lending.cancelRefinance(lendingId);
 
         // Reopen successfully
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertTrue(loan.curveOpen, "curve should be reopened");

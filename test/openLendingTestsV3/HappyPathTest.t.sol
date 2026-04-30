@@ -15,6 +15,8 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint48 term,
         uint24 liquidationThreshold,
         uint16 stake,
+        bool flexibleRepayment,
+        uint96 gasCompensation,
         openLend.OracleParams oracleParams,
         openLend.InterestRateParams interestRateParams
     );
@@ -25,6 +27,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint256 rate,
         uint48 start,
         uint48 term,
+        uint96 gasCompensation,
         bool allowAnyLiquidator
     );
     event DebtRepaid(uint256 indexed lendingId, address indexed payer, uint256 amount, bool fullyRepaid);
@@ -76,6 +79,8 @@ contract HappyPathTest is OpenLendingBaseTest {
             LOAN_TERM,
             8e6,                 // liquidationThreshold per _requestBorrow
             100,                 // stake per _requestBorrow
+            false,               // flexibleRepayment per _requestBorrow default
+            0,                   // gasCompensation per _requestBorrow default
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -96,7 +101,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         // 2. Lender accepts the curve at startingRate (no time has passed)
         uint32 expectedRate = _standardInterestRateParams().startingRate;
         vm.expectEmit(true, true, false, true, address(lending));
-        emit LoanOriginated(lendingId, lender, BORROW_AMOUNT, expectedRate, uint48(block.timestamp), LOAN_TERM, false);
+        emit LoanOriginated(lendingId, lender, BORROW_AMOUNT, expectedRate, uint48(block.timestamp), LOAN_TERM, 0, false);
         _lend(lender, lendingId);
 
         // Borrower received funds
@@ -253,6 +258,8 @@ contract HappyPathTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             0,                    // amountDemanded = 0
             100,
+            false,
+            0,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -269,6 +276,8 @@ contract HappyPathTest is OpenLendingBaseTest {
             0,                    // supplyAmount = 0
             BORROW_AMOUNT,
             100,
+            false,
+            0,
             _standardOracleParams(),
             _standardInterestRateParams()
         );

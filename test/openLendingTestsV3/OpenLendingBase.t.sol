@@ -5,12 +5,14 @@ import "forge-std/Test.sol";
 import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "../utils/MockERC20.sol";
+import "../utils/MockWETH.sol";
 
 abstract contract OpenLendingBaseTest is Test {
     openLend internal lending;
     OpenOracle internal oracle;
     MockERC20 internal supplyToken;
     MockERC20 internal borrowToken;
+    MockWETH internal weth;
 
     // ---------------- deployment ----------------
 
@@ -21,7 +23,8 @@ abstract contract OpenLendingBaseTest is Test {
         string memory borrowSymbol
     ) internal {
         oracle = new OpenOracle();
-        lending = new openLend(IOpenOracle(address(oracle)));
+        weth = new MockWETH();
+        lending = new openLend(IOpenOracle(address(oracle)), address(weth));
         supplyToken = new MockERC20(supplyName, supplySymbol);
         borrowToken = new MockERC20(borrowName, borrowSymbol);
     }
@@ -98,16 +101,27 @@ abstract contract OpenLendingBaseTest is Test {
 
     // ---------------- lifecycle helpers ----------------
 
-    /// @dev Borrower opens a borrow request with standard oracle + rate params. Caller must have approved
-    ///      `supplyAmount` of supplyToken to the lending contract.
+    /// @dev Borrower opens a borrow request with standard oracle + rate params, flexibleRepayment = false, no gasComp.
     function _requestBorrow(
         address borrower,
         uint128 supplyAmount,
         uint128 amountDemanded,
         uint48 term
     ) internal returns (uint256 lendingId) {
+        return _requestBorrowFlex(borrower, supplyAmount, amountDemanded, term, false, 0);
+    }
+
+    /// @dev Borrower opens a borrow request with explicit flexibleRepayment + gasCompensation knobs.
+    function _requestBorrowFlex(
+        address borrower,
+        uint128 supplyAmount,
+        uint128 amountDemanded,
+        uint48 term,
+        bool flexibleRepayment,
+        uint96 gasCompensation
+    ) internal returns (uint256 lendingId) {
         vm.prank(borrower);
-        lendingId = lending.requestBorrow(
+        lendingId = lending.requestBorrow{value: gasCompensation}(
             term,
             address(supplyToken),
             address(borrowToken),
@@ -115,6 +129,8 @@ abstract contract OpenLendingBaseTest is Test {
             supplyAmount,
             amountDemanded,
             100,                 // 1% liquidator stake
+            flexibleRepayment,
+            gasCompensation,
             _standardOracleParams(),
             _standardInterestRateParams()
         );

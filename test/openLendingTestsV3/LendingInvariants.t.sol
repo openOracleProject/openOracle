@@ -8,6 +8,7 @@ import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "../../src/oracleFeeReceiver.sol";
 import "../utils/MockERC20.sol";
+import "../utils/MockWETH.sol";
 
 contract LendingInvariantHandler is Test {
     openLend public immutable lending;
@@ -66,16 +67,17 @@ contract LendingInvariantHandler is Test {
         return lendingIds[idx];
     }
 
-    function createLoan(uint96 supplySeed, uint96 borrowSeed) external {
+    function createLoan(uint96 supplySeed, uint96 borrowSeed, uint96 gasCompSeed, bool flexible) external {
         if (lendingIds.length >= 8) return;
 
         uint128 supplyAmount = uint128(bound(supplySeed, 10 ether, 5_000 ether));
         uint128 maxBorrow = uint128((uint256(supplyAmount) * 75) / 100);
         if (maxBorrow == 0) return;
         uint128 borrowAmount = uint128(bound(borrowSeed, 1 ether, maxBorrow));
+        uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
 
         vm.startPrank(borrower);
-        try lending.requestBorrow(
+        try lending.requestBorrow{value: gasComp}(
             LOAN_TERM,
             address(supplyToken),
             address(borrowToken),
@@ -83,6 +85,8 @@ contract LendingInvariantHandler is Test {
             supplyAmount,
             borrowAmount,
             STAKE,
+            flexible,
+            gasComp,
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -133,7 +137,7 @@ contract LendingInvariantHandler is Test {
         vm.stopPrank();
     }
 
-    function openRefi(uint256 loanSeed, uint96 extraSeed, uint96 pullSeed) external {
+    function openRefi(uint256 loanSeed, uint96 extraSeed, uint96 pullSeed, uint96 gasCompSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
@@ -141,9 +145,10 @@ contract LendingInvariantHandler is Test {
 
         uint128 extraDemanded = uint128(bound(extraSeed, 0, 500 ether));
         uint128 supplyPulled = uint128(bound(pullSeed, 0, loan.supplyAmount - 1));
+        uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
 
         vm.startPrank(borrower);
-        try lending.refinance(lendingId, extraDemanded, supplyPulled, 0, _standardInterestRateParams(), bytes32(0), 0, 0) {} catch {}
+        try lending.refinance{value: gasComp}(lendingId, extraDemanded, supplyPulled, 0, gasComp, _standardInterestRateParams(), bytes32(0), 0, 0) {} catch {}
         vm.stopPrank();
     }
 
@@ -212,7 +217,8 @@ contract LendingInvariantsTest is StdInvariant, Test {
 
     function setUp() public {
         oracle = new OpenOracle();
-        lending = new openLend(IOpenOracle(address(oracle)));
+        MockWETH weth = new MockWETH();
+        lending = new openLend(IOpenOracle(address(oracle)), address(weth));
         supplyToken = new MockERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
@@ -266,6 +272,22 @@ contract LendingInvariantsTest is StdInvariant, Test {
             supplyToken.balanceOf(address(lending)),
             requiredSupply,
             "contract supply balance should exactly match stored collateral bookkeeping"
+        );
+    }
+
+    /// @notice Contract ETH balance must back all currently-staged gasComp escrows.
+    ///         Catches accounting bugs where gasComp is set in storage without msg.value, or refunded twice, etc.
+    function invariant_ethBalanceBacksStagedGasComp() public view {
+        uint256 count = handler.loanCount();
+        uint256 stagedGasComp;
+        for (uint256 i = 0; i < count; i++) {
+            uint256 lendingId = handler.getLoanId(i);
+            stagedGasComp += lending.getLending(lendingId).gasCompensation;
+        }
+        assertGe(
+            address(lending).balance,
+            stagedGasComp,
+            "contract ETH balance must cover sum of staged gasComp"
         );
     }
 

@@ -8,6 +8,7 @@ import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "../../src/oracleFeeReceiver.sol";
 import "../utils/MockERC20.sol";
+import "../utils/MockWETH.sol";
 
 /// @notice Invariant handler that exercises the lend → liquidate → settle path. Bounded action set:
 ///         createLoan / lendLoan / liquidate / settleLatest / advanceTime. No disputes (settle resolves to whatever
@@ -90,6 +91,8 @@ contract LiquidationInvariantHandler is Test {
             supplyAmount,
             borrowAmount,
             STAKE,
+            false,
+            0,
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -181,7 +184,8 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
 
     function setUp() public {
         oracle = new OpenOracle();
-        lending = new openLend(IOpenOracle(address(oracle)));
+        MockWETH weth = new MockWETH();
+        lending = new openLend(IOpenOracle(address(oracle)), address(weth));
         supplyToken = new MockERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
