@@ -176,6 +176,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             0,
             0,
             _standardInterestRateParams(),
+            _zeroOracleParams(),
             bytes32(0),
             0,
             0
@@ -275,7 +276,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
     }
 
     /// @dev `lend` (active loan branch) reverts at `currentTime >= start + term + gracePeriod`.
@@ -332,7 +333,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         // Now gracePeriod > 0. Open a refi so a `lend` accept path exists
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
     }
 
     // ---------------- interest rate params validation ----------------
@@ -359,7 +360,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             bad
@@ -385,7 +386,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             flat
@@ -411,7 +412,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             bad
@@ -433,7 +434,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     }
 
     function _badOracle_escFactorBelowMin() internal pure returns (openLend.OracleParams memory p) {
-        p = openLend.OracleParams(300, 60, 100_000, 99, 10, 200);
+        // initLiquidity must be <= escFactor; setting initLiquidity also = 9 still passes initLiquidity >= 10 check.
+        // Use escFactor = 9, initLiquidity = 9 → both fail the lower bounds (10).
+        p = openLend.OracleParams(300, 60, 100_000, 9, 9, 200);
     }
 
     function _badOracle_escFactorAboveMax() internal pure returns (openLend.OracleParams memory p) {
@@ -478,7 +481,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             oracleParams,
             _standardInterestRateParams()
@@ -486,39 +489,141 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     }
 
     function testRequestBorrow_OracleParamsValidationMatrix() public {
-        _expectInvalidInput("oracle settlementTime out of bounds");
+        // _validateOracleParams collapses every per-field check into a single revert("oracleParams").
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_settlementTimeBelowMin());
 
-        _expectInvalidInput("oracle settlementTime out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_settlementTimeAboveMax());
 
-        // escalationFactor bound is checked before disputeDelay; escalationFactor=100, initialLiquidity=10 ok here
-        _expectInvalidInput("disputeDelay >= settlementTime");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_disputeDelayGtSettlement());
 
-        _expectInvalidInput("oracle escalation factor out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_escFactorBelowMin());
 
-        _expectInvalidInput("oracle escalation factor out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_escFactorAboveMax());
 
-        _expectInvalidInput("oracle initial liquidity out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_initLiquidityBelowMin());
 
-        _expectInvalidInput("oracle initial liquidity out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_initLiquidityAboveMax());
 
-        _expectInvalidInput("escalation factor too small");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_escFactorBelowInitLiquidity());
 
-        _expectInvalidInput("oracle game fees too high");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_feeTooHigh());
 
-        _expectInvalidInput("oracle game multiplier out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_multiplierBelowMin());
 
-        _expectInvalidInput("oracle game multiplier out of bounds");
+        _expectInvalidInput("oracleParams");
         _request(_badOracle_multiplierAboveMax());
+    }
+
+    // ---------------- requestBorrow non-oracle guard matrix ----------------
+
+    function _requestBorrowRaw(
+        address supplyTokenAddr,
+        address borrowTokenAddr,
+        uint24 lt,
+        uint128 supplyAmt,
+        uint128 amountDemanded,
+        uint16 stake,
+        uint48 term,
+        openLend.InterestRateParams memory ir
+    ) internal {
+        vm.prank(borrower);
+        lending.requestBorrow(
+            term,
+            supplyTokenAddr,
+            borrowTokenAddr,
+            lt,
+            supplyAmt,
+            amountDemanded,
+            stake,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            ir
+        );
+    }
+
+    function testRequestBorrow_RejectsSameTokenOnBothSides() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply == borrow"));
+        _requestBorrowRaw(address(supplyToken), address(supplyToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsLiquidationThresholdBelowMin() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "LT out of bounds"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 7e6 - 1, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsLiquidationThresholdAboveMax() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "LT out of bounds"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 1e7 + 1, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsStakeAboveBound() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "stake too high"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 10001, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsTermBelowMin() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, 1799, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsTermAboveMax() public {
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        _requestBorrowRaw(
+            address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100,
+            uint48(60 * 60 * 24 * 365 + 1), _standardInterestRateParams()
+        );
+    }
+
+    /// @dev supply + (supply * stake / 10000) > uint128.max — pick supplyAmount near the cap with non-zero stake.
+    function testRequestBorrow_RejectsSupplyPlusStakeOverflow() public {
+        uint128 nearMax = uint128(type(uint128).max - 1);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply + stake too high"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, nearMax, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_RejectsMaxRateBelowStartingRate() public {
+        openLend.InterestRateParams memory bad = openLend.InterestRateParams({
+            maxRate: 1e8,
+            startingRate: 1e9,    // startingRate > maxRate → reject
+            roundLength: 300,
+            growthRate: 10500,
+            maxRounds: 100
+        });
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, bad);
+    }
+
+    function testRequestBorrow_RejectsZeroInterestRateField() public {
+        openLend.InterestRateParams memory zeroStart = openLend.InterestRateParams({
+            maxRate: 1e9,
+            startingRate: 0,        // zero starting rate → reject
+            roundLength: 300,
+            growthRate: 10500,
+            maxRounds: 100
+        });
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, zeroStart);
+
+        openLend.InterestRateParams memory zeroRound = openLend.InterestRateParams({
+            maxRate: 1e9,
+            startingRate: 1e8,
+            roundLength: 0,        // zero roundLength → reject
+            growthRate: 10500,
+            maxRounds: 100
+        });
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, zeroRound);
     }
 
     // ---------------- helpers ----------------

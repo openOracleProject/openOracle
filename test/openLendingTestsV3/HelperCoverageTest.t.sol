@@ -57,6 +57,9 @@ contract HelperCoverageTest is Test {
     address internal lender = address(0x2);
     address internal lender2 = address(0x3);
     address internal topper = address(0x4);
+    address internal liquidator = address(0x5);
+    address internal disputer = address(0x6);
+    address internal settler = address(0x7);
 
     uint128 internal constant SUPPLY_AMOUNT = 100 ether;
     uint128 internal constant BORROW_AMOUNT = 50 ether;
@@ -73,7 +76,8 @@ contract HelperCoverageTest is Test {
         borrowToken = new MintableERC20("Borrow Token", "BOR");
         blacklistedBorrowToken = new BlacklistableMintableERC20("Blacklist Borrow Token", "BBOR");
 
-        address[4] memory accounts = [borrower, lender, lender2, topper];
+        address[7] memory accounts =
+            [borrower, lender, lender2, topper, liquidator, disputer, settler];
         for (uint256 i = 0; i < accounts.length; i++) {
             supplyToken.mint(accounts[i], 10_000 ether);
             borrowToken.mint(accounts[i], 10_000 ether);
@@ -230,6 +234,7 @@ contract HelperCoverageTest is Test {
             0,                        // newTerm = 0 → keep existing term
             0,                        // gasCompensation
             _standardInterestRateParams(),
+            openLend.OracleParams(0, 0, 0, 0, 0, 0),
             bytes32(0),
             0,
             0
@@ -400,6 +405,273 @@ contract HelperCoverageTest is Test {
     }
 
     // -------------------------------------------------------------------------
+    // onSettle liquidation-payout liveness — blacklisted recipients land in tempHolding instead of bricking the loan
+    // -------------------------------------------------------------------------
+
+    /// @dev Underwater settle pays the entire `supplyAmount` to the lender. If the supplyToken blacklists the lender,
+    ///      _transferTokens routes that amount to tempHolding[lender][supplyToken]. The loan still finishes,
+    ///      inLiquidation clears, and the lender pulls funds via getTempHolding once unblacklisted.
+    function testCallbackLiveness_BlacklistedLenderUnderwaterLiquidation() public {
+        BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
+        _setupBlacklistableSupplyAccounts(bSupply);
+
+        // Originate against the blacklistable supply token
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(bSupply),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            70 ether,
+            STAKE,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            _standardInterestRateParams()
+        );
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+
+        vm.warp(block.timestamp + 10 days);
+
+        // Liquidate at oracleAmount2=6 then dispute to underwater 20/10
+        bytes32 paramHash = lending.getParamHash(lendingId);
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            6 ether * 1e18 / 10 ether,
+            type(uint128).max,
+            paramHash,
+            0
+        );
+        uint256 reportId = oracle.nextReportId() - 1;
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(reportTs) + 61);
+        vm.prank(disputer);
+        oracle.disputeAndSwap(reportId, address(bSupply), 20 ether, 10 ether, disputer, 6 ether, stateHash);
+
+        // Blacklist the lender RIGHT before settle so the underwater payout falls back to tempHolding
+        bSupply.blacklist(lender);
+
+        (,,, uint48 disputeTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(disputeTs) + 301);
+        uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        // Loan finished, inLiquidation cleared
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertTrue(loan.finished, "loan finished underwater despite blacklisted lender");
+        assertFalse(loan.inLiquidation, "inLiquidation cleared");
+
+        // Lender's payouts (underwater = full supplyAmount, plus their 25% share of dispute fee) went to tempHolding.
+        // Dispute fee = 1% × 10 ether = 0.1 ether; lender share = 0.025 ether. Expected = supplyAmount + 0.025e.
+        uint256 lenderFeePiece = (10 ether * 100_000 / 1e7) / 2 / 2; // 0.025 ether
+        uint256 expectedEscrow = uint256(SUPPLY_AMOUNT) + lenderFeePiece;
+        assertEq(bSupply.balanceOf(lender), lenderSupplyBefore, "lender wallet untouched");
+        assertEq(
+            lending.tempHolding(lender, address(bSupply)),
+            expectedEscrow,
+            "lender's underwater payout + fee share escrowed"
+        );
+
+        // Unblacklist and pull
+        bSupply.unblacklist(lender);
+        vm.prank(lender);
+        lending.getTempHolding(address(bSupply));
+        assertEq(
+            bSupply.balanceOf(lender),
+            lenderSupplyBefore + expectedEscrow,
+            "lender recovers via getTempHolding"
+        );
+        assertEq(lending.tempHolding(lender, address(bSupply)), 0, "tempHolding cleared");
+    }
+
+    /// @dev Underwater no-equity settle: lender gets supplyAmount, liquidator gets tokenStake. Blacklisting the
+    ///      liquidator routes their stake (+ fee piece) into tempHolding; lender still receives directly.
+    function testCallbackLiveness_BlacklistedLiquidatorUnderwaterLiquidation() public {
+        BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
+        _setupBlacklistableSupplyAccounts(bSupply);
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(bSupply),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            70 ether,
+            STAKE,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            _standardInterestRateParams()
+        );
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+
+        vm.warp(block.timestamp + 10 days);
+
+        // Liquidate then dispute to a buffer-region ratio (20/12 → debt-in-supply > LT but < supplyAmount)
+        bytes32 paramHash = lending.getParamHash(lendingId);
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            8 ether * 1e18 / 10 ether,
+            type(uint128).max,
+            paramHash,
+            0
+        );
+        uint256 reportId = oracle.nextReportId() - 1;
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(reportTs) + 61);
+        vm.prank(disputer);
+        oracle.disputeAndSwap(reportId, address(bSupply), 20 ether, 12 ether, disputer, 8 ether, stateHash);
+
+        // Blacklist the liquidator before settle
+        bSupply.blacklist(liquidator);
+
+        uint256 liquidatorSupplyBefore = bSupply.balanceOf(liquidator);
+
+        (,,, uint48 disputeTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(disputeTs) + 301);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        // Loan finished underwater
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertTrue(loan.finished, "loan finished underwater despite blacklisted liquidator");
+        assertFalse(loan.inLiquidation, "inLiquidation cleared");
+
+        // Exact math: no-equity branch → liquidator's payout = tokenStake + their 25% fee piece.
+        // tokenStake = supplyAmount × stake / 10000 = 100 × 100 / 10000 = 1 ether.
+        // Dispute fee in supply = 1% × 10 ether = 0.1 ether → liquidator share = 0.025 ether.
+        uint256 expectedTokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;            // 1 ether
+        uint256 expectedFeePiece = (10 ether * 100_000 / 1e7) / 2 / 2;                  // 0.025 ether
+        uint256 expectedLiquidatorEscrow = expectedTokenStake + expectedFeePiece;       // 1.025 ether
+
+        assertEq(bSupply.balanceOf(liquidator), liquidatorSupplyBefore, "liquidator wallet untouched");
+        assertEq(
+            lending.tempHolding(liquidator, address(bSupply)),
+            expectedLiquidatorEscrow,
+            "liquidator's stake + fee piece escrowed exactly"
+        );
+
+        // Lender received directly: full supplyAmount (underwater) + their 25% fee share = 100.025 ether.
+        uint256 expectedLenderDirect = uint256(SUPPLY_AMOUNT) + expectedFeePiece;
+        assertEq(
+            bSupply.balanceOf(lender),
+            expectedLenderDirect,
+            "lender received supplyAmount + fee share directly"
+        );
+    }
+
+    /// @dev Both lender AND liquidator blacklisted: the entire underwater payout pair lands in tempHolding.
+    function testCallbackLiveness_BothBlacklistedUnderwaterLiquidation() public {
+        BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
+        _setupBlacklistableSupplyAccounts(bSupply);
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(bSupply),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            70 ether,
+            STAKE,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            _standardInterestRateParams()
+        );
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+
+        vm.warp(block.timestamp + 10 days);
+
+        bytes32 paramHash = lending.getParamHash(lendingId);
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            8 ether * 1e18 / 10 ether,
+            type(uint128).max,
+            paramHash,
+            0
+        );
+        uint256 reportId = oracle.nextReportId() - 1;
+        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(reportTs) + 61);
+        vm.prank(disputer);
+        oracle.disputeAndSwap(reportId, address(bSupply), 20 ether, 12 ether, disputer, 8 ether, stateHash);
+
+        bSupply.blacklist(lender);
+        bSupply.blacklist(liquidator);
+
+        (,,, uint48 disputeTs,,,) = oracle.reportStatus(reportId);
+        vm.warp(uint256(disputeTs) + 301);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertTrue(loan.finished, "loan finished even when both parties blacklisted");
+        assertFalse(loan.inLiquidation, "inLiquidation cleared");
+
+        // Exact escrow math (no-equity branch with both blacklisted):
+        //   lender escrow = supplyAmount + fee share = 100 + 0.025 = 100.025 ether
+        //   liquidator escrow = tokenStake + fee share = 1 + 0.025 = 1.025 ether
+        uint256 expectedTokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
+        uint256 expectedFeePiece = (10 ether * 100_000 / 1e7) / 2 / 2;
+        assertEq(
+            lending.tempHolding(lender, address(bSupply)),
+            uint256(SUPPLY_AMOUNT) + expectedFeePiece,
+            "lender escrow = supplyAmount + fee share"
+        );
+        assertEq(
+            lending.tempHolding(liquidator, address(bSupply)),
+            expectedTokenStake + expectedFeePiece,
+            "liquidator escrow = tokenStake + fee share"
+        );
+
+        // Both can recover after unblacklist
+        bSupply.unblacklist(lender);
+        bSupply.unblacklist(liquidator);
+        vm.prank(lender);
+        lending.getTempHolding(address(bSupply));
+        vm.prank(liquidator);
+        lending.getTempHolding(address(bSupply));
+        assertEq(lending.tempHolding(lender, address(bSupply)), 0, "lender tempHolding cleared");
+        assertEq(lending.tempHolding(liquidator, address(bSupply)), 0, "liquidator tempHolding cleared");
+    }
+
+    function _setupBlacklistableSupplyAccounts(BlacklistableMintableERC20 t) internal {
+        // Mint to borrower (origination), liquidator (stake + initialLiquidity), disputer (oracle game), and topper.
+        t.mint(borrower, 10_000 ether);
+        t.mint(liquidator, 10_000 ether);
+        t.mint(disputer, 10_000 ether);
+        t.mint(topper, 10_000 ether);
+        // Approvals
+        vm.prank(borrower);
+        t.approve(address(lending), type(uint256).max);
+        vm.prank(liquidator);
+        t.approve(address(lending), type(uint256).max);
+        vm.prank(disputer);
+        t.approve(address(oracle), type(uint256).max);
+        vm.prank(topper);
+        t.approve(address(lending), type(uint256).max);
+        // Disputer also needs borrowToken approve to oracle for disputes that swap token2
+        vm.prank(disputer);
+        borrowToken.approve(address(oracle), type(uint256).max);
+    }
+
+    // -------------------------------------------------------------------------
     // helpers
     // -------------------------------------------------------------------------
 
@@ -437,7 +709,7 @@ contract HelperCoverageTest is Test {
             supplyAmount,
             borrowAmount,
             stake,
-            false,
+            uint24(1e7),
             0,
             oracleParams,
             _standardInterestRateParams()

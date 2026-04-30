@@ -56,6 +56,7 @@ contract LendingInvariantHandler is Test {
 
         vm.startPrank(topper);
         supplyToken.approve(address(lending), type(uint256).max);
+        borrowToken.approve(address(lending), type(uint256).max);
         vm.stopPrank();
     }
 
@@ -67,7 +68,7 @@ contract LendingInvariantHandler is Test {
         return lendingIds[idx];
     }
 
-    function createLoan(uint96 supplySeed, uint96 borrowSeed, uint96 gasCompSeed, bool flexible) external {
+    function createLoan(uint96 supplySeed, uint96 borrowSeed, uint96 gasCompSeed, uint24 commitmentSeed) external {
         if (lendingIds.length >= 8) return;
 
         uint128 supplyAmount = uint128(bound(supplySeed, 10 ether, 5_000 ether));
@@ -75,6 +76,7 @@ contract LendingInvariantHandler is Test {
         if (maxBorrow == 0) return;
         uint128 borrowAmount = uint128(bound(borrowSeed, 1 ether, maxBorrow));
         uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
+        uint24 commitmentFraction = uint24(bound(uint256(commitmentSeed), 0, 1e7));
 
         vm.startPrank(borrower);
         try lending.requestBorrow{value: gasComp}(
@@ -85,7 +87,7 @@ contract LendingInvariantHandler is Test {
             supplyAmount,
             borrowAmount,
             STAKE,
-            flexible,
+            commitmentFraction,
             gasComp,
             _standardOracleParams(),
             _standardInterestRateParams()
@@ -148,7 +150,7 @@ contract LendingInvariantHandler is Test {
         uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
 
         vm.startPrank(borrower);
-        try lending.refinance{value: gasComp}(lendingId, extraDemanded, supplyPulled, 0, gasComp, _standardInterestRateParams(), bytes32(0), 0, 0) {} catch {}
+        try lending.refinance{value: gasComp}(lendingId, extraDemanded, supplyPulled, 0, gasComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0) {} catch {}
         vm.stopPrank();
     }
 
@@ -180,6 +182,31 @@ contract LendingInvariantHandler is Test {
         vm.warp(block.timestamp + jump);
     }
 
+    function repayAny(uint256 loanSeed, uint96 repaySeed) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
+
+        uint128 totalOwed = _calculateOwedAtMaturity(loan.borrowAmount, loan.rate, loan.term);
+        uint128 repaid = loan.repaidDebt;
+        if (repaid >= totalOwed) return;
+        uint128 maxRepay = totalOwed - repaid;
+        uint128 amount = uint128(bound(repaySeed, 1, maxRepay));
+
+        // topper acts as the third-party payer
+        vm.startPrank(topper);
+        try lending.repayAnyDebt(lendingId, amount, bytes32(0), 0, 0) {} catch {}
+        vm.stopPrank();
+    }
+
+    function claimCollateralAction(uint256 loanSeed) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        // Claim is permissionless, so any random caller can attempt it; contract gates internally.
+        try lending.claimCollateral(lendingId) {} catch {}
+    }
+
     function _standardOracleParams() internal pure returns (openLend.OracleParams memory) {
         return openLend.OracleParams({
             settlementTime: 300,
@@ -188,6 +215,17 @@ contract LendingInvariantHandler is Test {
             escalationFactor: 100,
             initialLiquidity: 10,
             multiplier: 200
+        });
+    }
+
+    function _zeroOracleParams() internal pure returns (openLend.OracleParams memory) {
+        return openLend.OracleParams({
+            settlementTime: 0,
+            disputeDelay: 0,
+            oracleGameFee: 0,
+            escalationFactor: 0,
+            initialLiquidity: 0,
+            multiplier: 0
         });
     }
 

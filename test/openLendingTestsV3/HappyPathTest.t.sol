@@ -15,7 +15,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint48 term,
         uint24 liquidationThreshold,
         uint16 stake,
-        bool flexibleRepayment,
+        uint24 commitmentFraction,
         uint96 gasCompensation,
         openLend.OracleParams oracleParams,
         openLend.InterestRateParams interestRateParams
@@ -79,7 +79,7 @@ contract HappyPathTest is OpenLendingBaseTest {
             LOAN_TERM,
             8e6,                 // liquidationThreshold per _requestBorrow
             100,                 // stake per _requestBorrow
-            false,               // flexibleRepayment per _requestBorrow default
+            uint24(1e7),         // commitmentFraction per _requestBorrow default (full-term commitment)
             0,                   // gasCompensation per _requestBorrow default
             _standardOracleParams(),
             _standardInterestRateParams()
@@ -258,7 +258,7 @@ contract HappyPathTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             0,                    // amountDemanded = 0
             100,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             _standardInterestRateParams()
@@ -276,7 +276,7 @@ contract HappyPathTest is OpenLendingBaseTest {
             0,                    // supplyAmount = 0
             BORROW_AMOUNT,
             100,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             _standardInterestRateParams()
@@ -318,6 +318,51 @@ contract HappyPathTest is OpenLendingBaseTest {
         assertEq(supplyToken.balanceOf(payer), payerSupplyBefore, "payer should not receive collateral");
         // Borrower's borrow balance unchanged
         assertEq(borrowToken.balanceOf(borrower), borrowerBorrowBefore, "borrower borrow balance untouched");
+    }
+
+    /// @dev Third-party PARTIAL repay via repayAnyDebt: payer's borrowToken streams to lender (no full close, no
+    ///      collateral movement, repaidDebt increments). Loose-hash + bounds gates work the same as borrower repay.
+    function testRepayAnyDebt_ThirdPartyPartialRepay_StreamsToLender() public {
+        uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
+
+        address payer = address(0xCAFE);
+        borrowToken.transfer(payer, 100 ether);
+        vm.prank(payer);
+        borrowToken.approve(address(lending), type(uint256).max);
+
+        uint128 partialAmt = 5 ether;
+
+        uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
+        uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
+        uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
+        uint256 payerBorrowBefore = borrowToken.balanceOf(payer);
+
+        vm.prank(payer);
+        lending.repayAnyDebt(lendingId, partialAmt, bytes32(0), 0, 0);
+
+        // Loan still live
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertFalse(loan.finished, "partial repay should not finish loan");
+        assertTrue(loan.active, "loan still active");
+        assertEq(loan.repaidDebt, partialAmt, "repaidDebt incremented exactly");
+
+        // Payer's borrowToken decreased by partialAmt
+        assertEq(borrowToken.balanceOf(payer), payerBorrowBefore - partialAmt, "payer spent exact partial amount");
+        // Streamed to lender
+        assertEq(borrowToken.balanceOf(lender), lenderBorrowBefore + partialAmt, "lender received streamed partial");
+        // Borrower's balances both unchanged (third party paid, lender received)
+        assertEq(supplyToken.balanceOf(borrower), borrowerSupplyBefore, "borrower supply untouched");
+        assertEq(borrowToken.balanceOf(borrower), borrowerBorrowBefore, "borrower borrow untouched");
+
+        // Loose-hash + bounds gates still apply: partial w/ wrong hash reverts
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
+        lending.repayAnyDebt(lendingId, 1 ether, bytes32(uint256(1)), 0, 0);
+
+        // expectedRepaidDebtMin gate: ask for repaidDebt >= partialAmt + 1 → reverts
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "repaid debt too low"));
+        lending.repayAnyDebt(lendingId, 1 ether, bytes32(0), 0, partialAmt + 1);
     }
 
     function testLend_OriginationAcceptsCorrectParamHash() public {

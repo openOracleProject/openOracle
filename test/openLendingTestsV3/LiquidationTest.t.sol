@@ -454,7 +454,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             SUPPLY_AMOUNT,
             BORROW_AMOUNT,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             zeroFeeParams,
             _standardInterestRateParams()

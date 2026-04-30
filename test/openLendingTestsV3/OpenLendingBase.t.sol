@@ -101,23 +101,23 @@ abstract contract OpenLendingBaseTest is Test {
 
     // ---------------- lifecycle helpers ----------------
 
-    /// @dev Borrower opens a borrow request with standard oracle + rate params, flexibleRepayment = false, no gasComp.
+    /// @dev Borrower opens a borrow request with standard oracle + rate params, full-term commitment, no gasComp.
     function _requestBorrow(
         address borrower,
         uint128 supplyAmount,
         uint128 amountDemanded,
         uint48 term
     ) internal returns (uint256 lendingId) {
-        return _requestBorrowFlex(borrower, supplyAmount, amountDemanded, term, false, 0);
+        return _requestBorrowFlex(borrower, supplyAmount, amountDemanded, term, 1e7, 0);
     }
 
-    /// @dev Borrower opens a borrow request with explicit flexibleRepayment + gasCompensation knobs.
+    /// @dev Borrower opens a borrow request with explicit commitmentFraction + gasCompensation knobs.
     function _requestBorrowFlex(
         address borrower,
         uint128 supplyAmount,
         uint128 amountDemanded,
         uint48 term,
-        bool flexibleRepayment,
+        uint24 commitmentFraction,
         uint96 gasCompensation
     ) internal returns (uint256 lendingId) {
         vm.prank(borrower);
@@ -129,11 +129,23 @@ abstract contract OpenLendingBaseTest is Test {
             supplyAmount,
             amountDemanded,
             100,                 // 1% liquidator stake
-            flexibleRepayment,
+            commitmentFraction,
             gasCompensation,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
+    }
+
+    /// @dev Empty OracleParams struct used as the "keep current" sentinel on refinance.
+    function _zeroOracleParams() internal pure returns (openLend.OracleParams memory) {
+        return openLend.OracleParams({
+            settlementTime: 0,
+            disputeDelay: 0,
+            oracleGameFee: 0,
+            escalationFactor: 0,
+            initialLiquidity: 0,
+            multiplier: 0
+        });
     }
 
     /// @dev Lender accepts the current rate on the curve. Skips paramHash and rate floor for simple test paths.

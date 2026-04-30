@@ -91,7 +91,7 @@ contract LiquidationInvariantHandler is Test {
             supplyAmount,
             borrowAmount,
             STAKE,
-            false,
+            uint24(1e7),
             0,
             _standardOracleParams(),
             _standardInterestRateParams()
