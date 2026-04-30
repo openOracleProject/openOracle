@@ -118,8 +118,14 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");
 
-        // The post-refi lender (lender2) should receive collateral; lender1 should be untouched
-        assertGt(supplyToken.balanceOf(lender2), lender2SupplyBefore, "lender2 should receive collateral");
+        // Underwater no-equity branch: lender2 gets supplyAmount + their 25% share of the dispute fee.
+        // Dispute fee = 1% of 10 ether token1 swap = 0.1 ether; lender piece = 0.025 ether.
+        uint256 lender2FeePiece = (10 ether * 100_000 / 1e7) / 2 / 2;
+        assertEq(
+            supplyToken.balanceOf(lender2) - lender2SupplyBefore,
+            uint256(SUPPLY_AMOUNT) + lender2FeePiece,
+            "lender2 receives full supply (underwater) + fee share"
+        );
         assertEq(supplyToken.balanceOf(lender1), lender1SupplyBefore, "lender1 should not receive anything from this liq");
     }
 
@@ -250,7 +256,8 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "refi curve survives failed liq");
-        assertGt(afterLiq.gracePeriod, 0, "failed past-maturity liq should grant gracePeriod");
+        // liqStart = start + term - 200, settle at start + term + 200 → delta = 400 → gracePeriod = 1800 + 800
+        assertEq(afterLiq.gracePeriod, 1800 + 400 * 2, "exact gracePeriod from post-maturity failed liq");
 
         // We're past nominal maturity but inside gracePeriod. lend()'s expiry check uses prevTerm + gracePeriod.
         uint256 graceEnd = uint256(afterLiq.start) + afterLiq.term + afterLiq.gracePeriod;
@@ -297,7 +304,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "curve survives failed liq");
         assertEq(afterLiq.requestStart, uint48(block.timestamp), "requestStart reset on failed liq");
-        assertGt(afterLiq.requestStart, requestStartBefore, "requestStart strictly advanced");
+        // line above already pins requestStart exactly; redundant strictly-advanced check removed.
 
         // Lender2 can still accept the (re-anchored) refi
         vm.prank(lender2);
@@ -366,7 +373,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.curveOpen, "curve still closed after failed liq with cancel-during-liq");
-        assertGt(afterLiq.gracePeriod, 0, "near-maturity failed liq should grant gracePeriod");
+        assertEq(afterLiq.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Borrower can repay during grace
         uint128 totalOwed = _calculateOwedAtMaturity(afterLiq.borrowAmount, afterLiq.rate, afterLiq.term);

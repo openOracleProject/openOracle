@@ -116,7 +116,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory afterFailedLiq = lending.getLending(lendingId);
-        assertGt(afterFailedLiq.gracePeriod, 0, "failed late liquidation should create grace period");
+        // liqStart = start + term - 100, settle at liqStart + 301 → delta 301 → gracePeriod = 1800 + 602
+        assertEq(afterFailedLiq.gracePeriod, 1800 + 301 * 2, "exact gracePeriod from failed late liq");
 
         vm.warp(uint256(loan.start) + loan.term + afterFailedLiq.gracePeriod);
 
@@ -281,7 +282,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testLend_RefiAtExactGraceEnd_Reverts() public {
         uint256 lendingId = _setupActiveLoanForGrace();
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertGt(loan.gracePeriod, 0, "scenario must have grace > 0");
+        // _setupActiveLoanForGrace: liq at start+term-900, settle +301 → delta 301 → gracePeriod = 1800 + 602
+        assertEq(loan.gracePeriod, 1800 + 301 * 2, "exact gracePeriod from helper");
 
         // Exactly at the grace boundary
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod);

@@ -272,7 +272,8 @@ contract LiquidationTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertGt(loan.gracePeriod, 0, "Grace period should be set after near-maturity failed liq");
+        // settle delta = ORACLE_SETTLEMENT_TIME + 1 = 301; gracePeriod = 1800 + 301*2
+        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Warp past original maturity but within grace
         uint256 timeInGrace = uint256(loan.start) + loan.term + (loan.gracePeriod / 2);
@@ -310,7 +311,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertGt(loan.gracePeriod, 0, "Grace period should be set");
+        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace
         vm.warp(uint256(loan.start) + loan.term + 100);
@@ -569,7 +570,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertGt(loan.gracePeriod, 0, "Grace should be set");
+        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace — V3 blocks at the gracePeriod gate
         vm.warp(uint256(loan.start) + loan.term + 100);
