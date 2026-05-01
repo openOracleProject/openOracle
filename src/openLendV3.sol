@@ -106,7 +106,7 @@ contract openLend is ReentrancyGuard {
         bool finished; // loan has been liquidated or repaid
         bool curveOpen; // interest rate curve open
         address feeRecipient; // contract that receives protocol fees from oracle game
-        uint48 requestStart; // when latest borrow request or refi request started
+        uint48 requestStart; // anchor for the rate curve. Set when a borrow request or non-liq refi opens; parked at 0 while a refi is open during a live liquidation, then set to the report's settleable-at time when an unsuccessful liquidation settles.
         RefiParams refiParams; // parameters for borrower's next refinance
         OracleParams oracleParams; // parameters for oracle game
         InterestRateParams interestRateParams; // interest rate parameters
@@ -114,8 +114,10 @@ contract openLend is ReentrancyGuard {
 
     /// @notice Parameters for the rising interest rate curve evaluated by `calcRate`.
     /// @dev    Rate at round k is `min(maxRate, startingRate * (growthRate/10000)^k)`.
-    ///         Curve is keyed on `requestStart`; resets when borrower opens a refi or when a failed liquidation finishes
-    ///         while the curve is open.
+    ///         Curve is keyed on `requestStart`. `requestStart` is set when a borrow request opens or when a refi
+    ///         opens outside liquidation; a refi opened mid-liquidation leaves `requestStart` at zero until the
+    ///         liquidation settles unsuccessfully, at which point `onSettle` (or `recover`) sets it to the
+    ///         report's settleable-at time.
     struct InterestRateParams {
         uint32 maxRate; // 1e8 = 10% APR cap. Hard ceiling on rate.
         uint32 startingRate; // 1e8 = 10% APR. Rate at round 0 (`requestStart`).
@@ -333,14 +335,18 @@ contract openLend is ReentrancyGuard {
 
     /**
      * @notice Accepts the current rate on the borrow / refi curve. Single entrypoint for both origination and refinance.
-     * @dev    On origination, the lender funds the borrower with `amountDemanded` of borrowToken and the loan
-     *         goes active. On refinance, the new lender pays off the previous lender (the close-out debt at the
-     *         old rate/term/start, less anything already streamed back), funds any extra borrow the borrower
-     *         requested, and returns any pulled collateral; per-loan state from the prior round (repaidDebt,
-     *         gracePeriod, liquidator scratch fields) is reset, and the new term, rate, and start are taken from
-     *         the refi params and the current block. The rate paid is whatever `calcRate` returns at this
-     *         moment on the curve. Reverts if the arrangement is cancelled, finished, in liquidation, has no
-     *         open curve, or (on the refi branch) is past maturity plus grace.
+     * @dev    Carries the `autoSettle` modifier, so a settleable pending liquidation is resolved before the body
+     *         runs; if the resolution is unsuccessful the loan exits liquidation and lend can proceed against
+     *         the post-settle state, including any virtual `requestStart` set to the report's settleable-at
+     *         time. On origination, the lender funds the borrower with `amountDemanded` of borrowToken and the
+     *         loan goes active. On refinance, the new lender pays off the previous lender (the close-out debt
+     *         at the old rate/term/start, less anything already streamed back), funds any extra borrow the
+     *         borrower requested, and returns any pulled collateral; per-loan state from the prior round
+     *         (repaidDebt, gracePeriod, liquidator scratch fields) is reset, and the new term, rate, and start
+     *         are taken from the refi params and the current block. The rate paid is whatever `calcRate`
+     *         returns against `requestStart` at the current block. Reverts if the arrangement is cancelled,
+     *         finished, still in liquidation after auto-settle, has no open curve, or (on the refi branch) is
+     *         past maturity plus grace.
      * @param  lendingId Unique identifier of the lending arrangement.
      * @param  paramHashExpected Optional loose paramHash (zeroes supplyAmount + repaidDebt before hashing). Set to
      *                           bytes32(0) to skip.
@@ -359,7 +365,7 @@ contract openLend is ReentrancyGuard {
         uint128 expectedMinSupply,
         uint32 minRate,
         bool allowAnyLiquidator
-    ) external nonReentrant notBusy {
+    ) external nonReentrant notBusy autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         uint256 currentTime = block.timestamp;
@@ -579,13 +585,15 @@ contract openLend is ReentrancyGuard {
     /**
      * @notice Borrower opens a refinance: re-opens the rate curve so any lender can roll the loan, optionally
      *         drawing extra borrow, returning some collateral, or changing the term.
-     * @dev    Stages the refi parameters and re-opens the curve at `block.timestamp`; the actual roll happens
-     *         when a lender calls `lend`. New oracle params (when supplied) are validated now and become the
-     *         loan's oracle config at lend time. Allowed during a live liquidation: opening a refi mid-liq
-     *         parks the curve so it can be accepted as soon as the liquidation clears, and the maturity-plus-
-     *         grace expiry check is skipped in that case. Only the borrower can call, only on an active loan
-     *         with a closed curve. Emits `RefiOpenedDuringLiquidation` when called mid-liquidation,
-     *         `RefiOpened` otherwise.
+     * @dev    Stages the refi parameters and marks the curve open; the actual roll happens when a lender
+     *         calls `lend`. Outside liquidation, `requestStart` is set to `block.timestamp` so the curve
+     *         starts ticking immediately. During liquidation the curve is parked: `requestStart` is left at
+     *         zero and only gets populated later, when an unsuccessful liquidation settles and `onSettle`
+     *         (or `recover`) writes the report's settleable-at time. New oracle params (when supplied) are
+     *         validated now and become the loan's oracle config at lend time. Allowed during a live
+     *         liquidation; the maturity-plus-grace expiry check is skipped in that case. Only the borrower
+     *         can call, only on an active loan with a closed curve. Emits `RefiOpenedDuringLiquidation` when
+     *         called mid-liquidation, `RefiOpened` otherwise.
      * @param  lendingId Unique identifier of the lending arrangement.
      * @param  extraDemanded Additional borrowToken pulled to the borrower at lend-time (on top of rolling debt).
      * @param  supplyPulled SupplyToken returned to the borrower at lend-time. Must be < current `supplyAmount`.
@@ -643,7 +651,9 @@ contract openLend is ReentrancyGuard {
         refiParams.supplyPulled = supplyPulled;
         refiParams.newTerm = newTerm == 0 ? lending.term : newTerm;
         lending.curveOpen = true;
-        lending.requestStart = uint48(currentTime);
+        if (!lending.inLiquidation) {
+            lending.requestStart = uint48(currentTime);
+        }
         lending.interestRateParams = interestRateParams;
         lending.gasCompensation = gasCompensation;
         if (oracleParams.settlementTime != 0) refiParams.oracleParams = oracleParams;
@@ -687,9 +697,11 @@ contract openLend is ReentrancyGuard {
      *         openOracle settler reward. While the report is open the loan is in liquidation: the borrower
      *         cannot repay or top up. Resolution happens in `onSettle`: if the oracle resolves underwater the
      *         liquidator recovers the stake plus half of any equity buffer and the lender receives the rest of
-     *         the collateral; otherwise the stake is forfeit to the borrower (added to supplyAmount), and if
-     *         resolution lands within the last 30 minutes of the term or after maturity, a grace period is
-     *         granted to give the borrower time to react. Only the lender can call unless `allowAnyLiquidator`
+     *         the collateral; otherwise the stake is forfeit. If resolution lands more than 30 minutes before
+     *         maturity, the full stake goes to the borrower (added to supplyAmount). If it lands within the
+     *         last 30 minutes of the term or after maturity, a grace period is granted to give the borrower
+     *         time to react and the stake is split: half to the lender as compensation for the deferred
+     *         payoff, the rest added to supplyAmount. Only the lender can call unless `allowAnyLiquidator`
      *         was set at lend time. Reverts if the loan is already in liquidation, finished, cancelled, past
      *         maturity, or sitting in a grace period left over from a prior failed liquidation.
      * @param  lendingId Unique identifier of the lending arrangement.
@@ -740,6 +752,8 @@ contract openLend is ReentrancyGuard {
         if (initialLiquidity > maxInitialLiquidity) revert InvalidInput("too much oracle game initial liquidity");
         _checkParamsLoose(lending, paramHashExpected);
 
+        lending.requestStart = 0;
+
         if (oracleParams.oracleGameFee > 0) {
             feeRecipient = _deployFeeReceiver(lendingId, supplyToken, borrowToken);
             lending.feeRecipient = feeRecipient;
@@ -786,9 +800,12 @@ contract openLend is ReentrancyGuard {
      *             liquidator gets just the stake. If a buffer remains, lender gets borrowValueInSupplyTerms + half
      *             the buffer; liquidator gets the other half plus the stake. (Any prior partial repayments are
      *             already in the lender's wallet from streaming, not paid out here.)
-     *           - Not underwater: liquidator's stake is forfeit to the borrower (added to `supplyAmount`). If the
-     *             curve is open, `requestStart` is reset to keep the rate auction honest. If resolution lands near
-     *             or past maturity, a grace period is granted to the borrower.
+     *           - Not underwater: liquidator's stake is forfeit. If the curve is open, `requestStart` is reset
+     *             to the moment the report became settleable to keep the rate auction honest. If resolution
+     *             lands within the last 30 minutes of the term or after maturity, a grace period is granted
+     *             to the borrower and the stake is split — half routed to the lender as compensation for the
+     *             deferred payoff, the rest added to `supplyAmount`. Otherwise the full stake goes to
+     *             `supplyAmount`.
      *         Distributes any oracle game protocol fees via `_grabOracleGameFees`.
      * @param  id The openOracle reportId that just settled (used to look up the lendingId).
      */
@@ -803,7 +820,6 @@ contract openLend is ReentrancyGuard {
 
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
-        uint256 currentTime = block.timestamp;
         uint48 start = lending.start;
         uint48 term = lending.term;
         uint128 repaidDebt = lending.repaidDebt;
@@ -853,15 +869,23 @@ contract openLend is ReentrancyGuard {
                 emit LiqFinishedWithBuffer(lendingId);
             }
         } else {
-            lending.supplyAmount += uint128(tokenStake);
+
+            uint256 settleableAt = oracle.reportStatus(id).reportTimestamp + oracle.reportMeta(id).settlementTime;
 
             if (lending.curveOpen) {
-                lending.requestStart = uint48(currentTime);
+                lending.requestStart = uint48(settleableAt);
             }
 
-            // grace period around liquidations that end either too close to maturity (30 minutes) or after it
-            if (currentTime > uint256(start) + term - 1800) {
-                lending.gracePeriod = uint48(1800 + (currentTime - lending.liquidationStart) * 2);
+            // grace period around liquidations that end either too close to maturity (30 minutes) or after it.
+            // When grace fires, half the stake routes to the lender.
+            if (settleableAt > uint256(start) + term - 1800) {
+                lending.gracePeriod = uint48(1800 + (settleableAt - lending.liquidationStart) * 2);
+
+                uint256 lenderStakePiece = tokenStake / 2;
+                lending.supplyAmount += uint128(tokenStake - lenderStakePiece);
+                _transferTokens(supplyToken, address(this), lender, lenderStakePiece);
+            } else {
+                lending.supplyAmount += uint128(tokenStake);
             }
 
             lending.liquidationStart = 0;
@@ -882,10 +906,12 @@ contract openLend is ReentrancyGuard {
      *         failure, so a reverting `onSettle` leaves the report settled on the oracle side while the loan
      *         remains stuck in liquidation. This function unwinds that stuck state, treating the outcome as an
      *         unsuccessful liquidation regardless of what the oracle actually resolved to: the liquidator gets
-     *         their stake back, any open refi curve has its rate-curve clock reset, a grace period is granted
-     *         on the same near-maturity rule as a normal failed liquidation, any accumulated oracle-game
-     *         protocol fees are distributed, and the lender keeps the loan to either re-liquidate or ride to
-     *         maturity and call `claimCollateral`.
+     *         their full stake back, any open refi curve has its rate-curve clock reset, a grace period is
+     *         granted on the same near-maturity rule as a normal failed liquidation, any accumulated
+     *         oracle-game protocol fees are distributed, and the lender keeps the loan to either re-liquidate
+     *         or ride to maturity and call `claimCollateral`. Unlike `onSettle`'s failed-liq branch, this path
+     *         does not split the stake when grace fires — recovery is treated as "callback failed, undo cleanly,"
+     *         not as a liquidation outcome that should compensate the lender for delay.
      * @param  reportId The openOracle reportId whose settlement callback failed. Indexers can find this in the
      *                  `LoanLiquidationUnderway(lendingId, reportId, feeRecipient)` event emitted at `liquidate` time.
      */
@@ -895,20 +921,20 @@ contract openLend is ReentrancyGuard {
 
         uint256 tokenStake = uint256(lending.supplyAmount) * lending.stake / 10000;
         address liquidator = lending.liquidator;
-        uint256 currentTime = block.timestamp;
         address feeRecipient = lending.feeRecipient;
+        uint256 settleableAt = oracle.reportStatus(reportId).reportTimestamp + oracle.reportMeta(reportId).settlementTime;
 
         if (lendingId == 0) revert InvalidInput("no lendingId for reportId");
         if (lending.finished) revert InvalidInput("finished");
         if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
         if (oracle.reportStatus(reportId).settlementTimestamp == 0) revert InvalidInput("no oracle settlement");
 
-        if (currentTime > uint256(lending.start) + lending.term - 1800) {
-            lending.gracePeriod = uint48(1800 + (currentTime - lending.liquidationStart) * 2);
+        if (settleableAt > uint256(lending.start) + lending.term - 1800) {
+            lending.gracePeriod = uint48(1800 + (settleableAt - lending.liquidationStart) * 2);
         }
 
         if (lending.curveOpen) {
-            lending.requestStart = uint48(currentTime);
+            lending.requestStart = uint48(settleableAt);
         }
 
         lending.inLiquidation = false;
@@ -946,7 +972,7 @@ contract openLend is ReentrancyGuard {
     }
 
     /**
-     * @notice Permissionless settler for a stuck oracle report tied to a loan. No-op if no report is pending,
+     * @notice Permissionless settler for the oracle report tied to a loan. No-op if no report is pending,
      *         the report isn't yet eligible to settle, or the report has already been settled. On success,
      *         forwards the oracle's settler reward to msg.sender.
      * @dev    Useful when the post-settle state would cause an autoSettle entrypoint's body to revert and
@@ -1215,8 +1241,10 @@ contract openLend is ReentrancyGuard {
     /// @dev Settles the oracle report tied to this loan if one is pending and eligible, then forwards the
     ///      settler reward to msg.sender. No-op when the loan is not in liquidation, when no report is
     ///      pending, when the report is not yet eligible to settle, or when it has already been settled.
-    ///      Wrapped in try/catch so a reverting callback leaves the borrower's outer call alive; the loan
-    ///      can then be resolved via `recover()`.
+    ///      Wrapped in try/catch so a reverting `oracle.settle` callback doesn't bubble out of this helper —
+    ///      the calling entrypoint's body still runs (and may itself revert and roll back the whole tx,
+    ///      including any settle effects). If the callback is the thing that reverted, the loan can be
+    ///      resolved via `recover()`.
     function _settleHelper(uint256 lendingId) internal {
         if (!lendingArrangements[lendingId].inLiquidation) return;
 
@@ -1380,14 +1408,49 @@ contract openLend is ReentrancyGuard {
     /**
      * @notice Returns the loose paramHash for an arrangement: the keccak256 of the struct with `supplyAmount`
      *         and `repaidDebt` zeroed in the preimage. Pass this to entrypoints that accept a `paramHashExpected`.
+     * @dev    This helper does not classify whether the settleable report would succeed or fail liquidation.
+     *         It returns the failed-liq executable projection used by successful autoSettle action paths. If
+     *         actual settlement finishes the loan, autoSettle entrypoints revert on `finished` before checking
+     *         the hash.
      */
     function getParamHash(uint256 lendingId) external view returns (bytes32) {
         LendingArrangement memory copy = lendingArrangements[lendingId];
+
+        uint256 currentTime = block.timestamp;
+
+        if (copy.inLiquidation) {
+            uint256 reportId = lendingToReportId[lendingId];
+            if (reportId != 0) {
+                IOpenOracle.ReportStatus memory rs = oracle.reportStatus(reportId);
+                if (rs.settlementTimestamp == 0) {
+                    uint256 settleableAt = uint256(rs.reportTimestamp) + oracle.reportMeta(reportId).settlementTime;
+                    if (currentTime >= settleableAt) {
+                        // Mirrors onSettle's failed-liq branch on the memory copy.
+                        uint256 tokenStake = uint256(copy.supplyAmount) * copy.stake / 10000;
+
+                        if (copy.curveOpen) {
+                            copy.requestStart = uint48(settleableAt);
+                        }
+
+                        if (settleableAt > uint256(copy.start) + copy.term - 1800) {
+                            copy.gracePeriod = uint48(1800 + (settleableAt - copy.liquidationStart) * 2);
+                            uint256 lenderStakePiece = tokenStake / 2;
+                            copy.supplyAmount += uint128(tokenStake - lenderStakePiece);
+                        } else {
+                            copy.supplyAmount += uint128(tokenStake);
+                        }
+
+                        copy.inLiquidation = false;
+                        copy.liquidationStart = 0;
+                        copy.liquidator = address(0);
+                        copy.feeRecipient = address(0);
+                    }
+                }
+            }
+        }
+
         copy.supplyAmount = 0;
         copy.repaidDebt = 0;
         return keccak256(abi.encode(copy));
     }
 }
-
-
-
