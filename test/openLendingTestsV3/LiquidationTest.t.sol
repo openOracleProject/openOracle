@@ -273,7 +273,7 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         // settle delta = ORACLE_SETTLEMENT_TIME + 1 = 301; gracePeriod = 1800 + 301*2
-        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
+        assertEq(loan.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Warp past original maturity but within grace
         uint256 timeInGrace = uint256(loan.start) + loan.term + (loan.gracePeriod / 2);
@@ -284,6 +284,7 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
         uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
+        uint256 lenderStakePiece = tokenStake / 2;
 
         vm.prank(borrower);
         lending.repayDebt(lendingId, paymentAmount, bytes32(0), 0, 0);
@@ -291,11 +292,12 @@ contract LiquidationTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished after grace-period repay");
 
-        // Borrower receives original supply + the stake forfeited by the failed liquidator
+        // Failed liq with grace already routed half the stake to the lender at settle. Borrower reclaims the
+        // original supply plus the borrower-side stake remainder via repayDebt's full-close path.
         assertEq(
             supplyToken.balanceOf(borrower),
-            borrowerSupplyBefore + SUPPLY_AMOUNT + tokenStake,
-            "Borrower should reclaim collateral plus forfeited stake"
+            borrowerSupplyBefore + SUPPLY_AMOUNT + (tokenStake - lenderStakePiece),
+            "Borrower should reclaim collateral plus borrower-side stake remainder"
         );
     }
 
@@ -311,7 +313,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
+        assertEq(loan.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace
         vm.warp(uint256(loan.start) + loan.term + 100);
@@ -325,6 +327,11 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(true);
 
         vm.warp(block.timestamp + LOAN_TERM - 900);
+
+        uint256 lenderSupplyBeforeSettle = supplyToken.balanceOf(lender);
+        uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
+        uint256 lenderStakePiece = tokenStake / 2;
+
         _liquidate(liquidator, lendingId, 12 ether);
 
         uint256 reportId = oracle.nextReportId() - 1;
@@ -332,21 +339,35 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         oracle.settle(reportId);
 
+        // Failed liq with grace splits the stake: half to the lender now, the rest left in supplyAmount.
+        assertEq(
+            supplyToken.balanceOf(lender),
+            lenderSupplyBeforeSettle + lenderStakePiece,
+            "Lender should receive half the stake at settle"
+        );
+
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
 
         // Past grace
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod + 1);
 
-        uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
-        uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
+        uint256 lenderSupplyBeforeClaim = supplyToken.balanceOf(lender);
 
         vm.prank(lender);
         lending.claimCollateral(lendingId);
 
+        // claimCollateral pays out supplyAmount, which now includes only the borrower-side stake remainder.
         assertEq(
             supplyToken.balanceOf(lender),
-            lenderSupplyBefore + SUPPLY_AMOUNT + tokenStake,
-            "Lender should receive collateral + forfeited stake after grace expires"
+            lenderSupplyBeforeClaim + SUPPLY_AMOUNT + (tokenStake - lenderStakePiece),
+            "Lender should receive collateral + remaining stake on claim"
+        );
+
+        // Total over the loan lifetime equals supplyAmount + full stake.
+        assertEq(
+            supplyToken.balanceOf(lender),
+            lenderSupplyBeforeSettle + SUPPLY_AMOUNT + tokenStake,
+            "Lender total should equal collateral + full stake"
         );
     }
 
@@ -572,7 +593,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
+        assertEq(loan.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace — V3 blocks at the gracePeriod gate
         vm.warp(uint256(loan.start) + loan.term + 100);

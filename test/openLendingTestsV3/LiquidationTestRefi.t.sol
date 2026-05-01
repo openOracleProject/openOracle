@@ -202,6 +202,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
         vm.prank(disputer);
         oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 30 ether, disputer, 12 ether, stateHash);
+
+        // Capture the dispute-shifted reportTimestamp so we can pin requestStart against settleableAt below.
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        uint48 settleableAt = reportTs + uint48(ORACLE_SETTLEMENT_TIME);
+
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
         oracle.settle(reportId);
@@ -209,7 +214,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "refi curve persists across failed liq");
-        assertEq(afterLiq.requestStart, uint48(block.timestamp), "requestStart reset on failed liq");
+        assertEq(afterLiq.requestStart, settleableAt, "requestStart pinned to settleableAt on failed liq");
 
         // Now lender2 can accept the refi
         vm.prank(lender2);
@@ -256,8 +261,8 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "refi curve survives failed liq");
-        // liqStart = start + term - 200, settle at start + term + 200 → delta = 400 → gracePeriod = 1800 + 800
-        assertEq(afterLiq.gracePeriod, 1800 + 400 * 2, "exact gracePeriod from post-maturity failed liq");
+        // No dispute, so settleableAt - liquidationStart = ORACLE_SETTLEMENT_TIME regardless of when settle lands.
+        assertEq(afterLiq.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from post-maturity failed liq");
 
         // We're past nominal maturity but inside gracePeriod. lend()'s expiry check uses prevTerm + gracePeriod.
         uint256 graceEnd = uint256(afterLiq.start) + afterLiq.term + afterLiq.gracePeriod;
@@ -296,6 +301,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Resolve as failed — no dispute, settle to liquidator's favorable price
         uint256 reportId = oracle.nextReportId() - 1;
+
+        // Capture settleableAt before warping past it. No dispute, so reportTimestamp == liquidationStart.
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        uint48 settleableAt = reportTs + uint48(ORACLE_SETTLEMENT_TIME);
+
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
         oracle.settle(reportId);
@@ -303,8 +313,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "curve survives failed liq");
-        assertEq(afterLiq.requestStart, uint48(block.timestamp), "requestStart reset on failed liq");
-        // line above already pins requestStart exactly; redundant strictly-advanced check removed.
+        assertEq(afterLiq.requestStart, settleableAt, "requestStart pinned to settleableAt on failed liq");
 
         // Lender2 can still accept the (re-anchored) refi
         vm.prank(lender2);
@@ -373,7 +382,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
         assertFalse(afterLiq.curveOpen, "curve still closed after failed liq with cancel-during-liq");
-        assertEq(afterLiq.gracePeriod, 1800 + (ORACLE_SETTLEMENT_TIME + 1) * 2, "exact gracePeriod from near-maturity failed liq");
+        assertEq(afterLiq.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Borrower can repay during grace
         uint128 totalOwed = _calculateOwedAtMaturity(afterLiq.borrowAmount, afterLiq.rate, afterLiq.term);

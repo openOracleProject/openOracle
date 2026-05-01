@@ -160,24 +160,27 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         uint256 reportId = _liquidate(lendingId, 8 ether);
 
+        // Capture settleableAt now (no dispute, so reportTimestamp == liquidationStart).
+        (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
+        uint48 settleableAt = reportTs + uint48(ORACLE_SETTLEMENT_TIME);
+
         // Borrower opens a refi curve mid-liq.
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
 
-        // Warp deep into the oracle game so requestStart would be very stale relative to recover-time.
+        // Warp deep into the oracle game so settle/recover lands far past settleableAt.
         vm.warp(block.timestamp + 60 minutes);
         _forceCallbackRevert();
         vm.prank(settler);
         oracle.settle(reportId);
         vm.clearMockedCalls();
 
-        uint256 recoverTime = block.timestamp;
         vm.prank(randomCaller);
         lending.recover(reportId);
 
         openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
         assertTrue(loanAfter.curveOpen, "curve still open");
-        assertEq(loanAfter.requestStart, recoverTime, "requestStart reset to recover-time");
+        assertEq(loanAfter.requestStart, settleableAt, "requestStart pinned to settleableAt, not recover-time");
     }
 
     // -------------------------------------------------------------------------
@@ -197,12 +200,12 @@ contract RecoveryTest is OpenLendingBaseTest {
         // Settle inside the near-maturity window so gracePeriod is granted.
         _settleWithBrokenCallback(reportId);
 
-        uint256 recoverTime = block.timestamp;
         vm.prank(randomCaller);
         lending.recover(reportId);
 
         openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
-        uint256 expectedGrace = 1800 + (recoverTime - uint256(liqStart)) * 2;
+        // No dispute, so settleableAt - liqStart = ORACLE_SETTLEMENT_TIME regardless of when settle/recover lands.
+        uint256 expectedGrace = 1800 + ORACLE_SETTLEMENT_TIME * 2;
         assertEq(loanAfter.gracePeriod, expectedGrace, "gracePeriod follows the same near-maturity rule");
         assertGt(loanAfter.gracePeriod, 1800, "delta term should be non-zero");
     }
