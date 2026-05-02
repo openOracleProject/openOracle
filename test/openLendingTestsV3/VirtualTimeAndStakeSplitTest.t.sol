@@ -43,10 +43,10 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
 
     // ---------------- helpers ----------------
 
-    function _setupActiveLoan(bool allowAnyLiquidator) internal returns (uint256 lendingId) {
+    function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, allowAnyLiquidator);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
     }
 
     function _liquidateAt(address by, uint256 lendingId, uint256 priceRatio18) internal returns (uint256 reportId) {
@@ -54,7 +54,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.prank(by);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId, priceRatio18, type(uint128).max, paramHash, 0
-        );
+        , SETTLER_REWARD);
         reportId = oracle.nextReportId() - 1;
     }
 
@@ -74,14 +74,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testRefiDuringLiq_RequestStartParkedAtZero() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
@@ -95,14 +95,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiqFailed_SetsVirtualRequestStart() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -123,14 +123,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLend_AutoSettlesFailedLiqAndAcceptsRefi() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -139,7 +139,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 300 + 5);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared by auto-settle");
@@ -155,14 +155,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLateSettlement_IncreasesRefiRate() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -171,7 +171,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 5 * 300 + 5);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         // 1e8 * (10500/10000)^5, with floor at each round:
@@ -185,14 +185,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testGetParamHash_ProjectionMatchesPostAutoSettleState() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -203,7 +203,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         assertTrue(paramHash != bytes32(0), "projected hash non-zero");
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0);
 
         assertEq(lending.getLending(lendingId).lender, lender2, "lender2 accepted refi using projected hash");
     }
@@ -213,14 +213,14 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testGetParamHash_GraceProjectionIncludesHalfStakeSplit() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900); // grace-window territory
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -233,7 +233,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         uint256 lenderStakePiece = tokenStake / 2;
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertEq(loan.lender, lender2, "lender2 accepted refi using projected hash");
@@ -259,7 +259,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiqFailed_NoGrace_FullStakeToSupply() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days); // far from maturity
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
@@ -285,7 +285,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiqFailed_WithGrace_HalfStakeToLender() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900); // near maturity
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
@@ -320,7 +320,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testRecover_NearGrace_ReturnsFullStakeToLiquidator() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900); // near maturity
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
@@ -365,7 +365,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testRecover_OpenRefiCurve_SetsVirtualRequestStart() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(12 ether));
@@ -373,7 +373,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         // Borrower opens a refi mid-liq -- curve open with parked requestStart.
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
         openLend.LendingArrangement memory mid = lending.getLending(lendingId);
         assertTrue(mid.curveOpen, "curve open after mid-liq refi");
@@ -405,7 +405,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLend_UnderwaterAutoSettleRollsBack() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         // Underwater priceRatio (oracleAmount2 = 6 ether on 10 ether of supply -> supply cheap, position under).
@@ -413,7 +413,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         lending.refinance(
-            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0
+            lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
         uint48 settleableAt = _settleableAtFor(reportId);
@@ -430,7 +430,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         // lend() auto-settles -> underwater -> loan finished -> body reverts on `finished` check -> whole tx unwinds.
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "finished"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         // EVM rollback should leave both openLend and the oracle in their pre-call state.
         openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);

@@ -125,7 +125,7 @@ contract CancellationTest is OpenLendingBaseTest {
 
         vm.prank(lender);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "cancelled"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
     }
 
     // =========================================================================
@@ -147,7 +147,7 @@ contract CancellationTest is OpenLendingBaseTest {
             _zeroOracleParams(),
             bytes32(0),
             0,
-            0
+            type(uint128).max
         );
 
         // Curve is now open
@@ -178,7 +178,7 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(randomUser);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not borrower"));
@@ -211,7 +211,7 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
         lending.cancelRefinance(lendingId);
@@ -226,14 +226,14 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
         lending.cancelRefinance(lendingId);
 
         // Reopen successfully
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertTrue(loan.curveOpen, "curve should be reopened");

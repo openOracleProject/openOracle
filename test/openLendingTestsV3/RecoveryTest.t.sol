@@ -53,11 +53,11 @@ contract RecoveryTest is OpenLendingBaseTest {
         _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
     }
 
-    /// @dev Originate with allowAnyLiquidator = true so liquidator can act.
+    /// @dev Originate with liquidatorFraction = true so liquidator can act.
     function _setupLoan() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
     function _priceRatioFor(uint256 oracleAmount2Target) internal pure returns (uint256) {
@@ -73,7 +73,7 @@ contract RecoveryTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
         reportId = oracle.nextReportId() - 1;
     }
 
@@ -166,7 +166,7 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         // Borrower opens a refi curve mid-liq.
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Warp deep into the oracle game so settle/recover lands far past settleableAt.
         vm.warp(block.timestamp + 60 minutes);

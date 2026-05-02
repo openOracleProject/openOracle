@@ -149,7 +149,13 @@ abstract contract OpenLendingBaseTest is Test {
     }
 
     /// @dev Lender accepts the current rate on the curve. Skips paramHash and rate floor for simple test paths.
+    ///      Defaults `liquidatorFraction = 0` (lender keeps all of any post-settlement equity buffer).
     function _lend(address lender, uint256 lendingId) internal {
+        _lendWithFraction(lender, lendingId, 0);
+    }
+
+    /// @dev Same as `_lend` but allows specifying `liquidatorFraction` (1e7 fixed-point).
+    function _lendWithFraction(address lender, uint256 lendingId, uint24 liquidatorFraction) internal {
         vm.prank(lender);
         lending.lend(
             lendingId,
@@ -158,7 +164,7 @@ abstract contract OpenLendingBaseTest is Test {
             type(uint128).max,   // maxLendAmount (refi-only, ignored on origination)
             0,                   // expectedMinSupply
             0,                   // minRate floor
-            false                // allowAnyLiquidator
+            liquidatorFraction
         );
     }
 

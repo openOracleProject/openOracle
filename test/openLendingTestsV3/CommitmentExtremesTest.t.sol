@@ -51,7 +51,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
     function _setup(uint24 commitmentFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, commitmentFraction, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
     function _owedNow(uint128 amount, uint32 rate, uint48 term, uint48 start) internal view returns (uint256) {
@@ -92,7 +92,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
 
         // Pass oversized amount to force full close branch
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
         // Borrower should have paid exactly totalOwedNow
         assertEq(borrowerBorrowBefore - borrowToken.balanceOf(borrower), expectedNow, "borrower pays exactly totalOwedNow");
@@ -111,7 +111,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
         assertEq(borrowerBorrowBefore - borrowToken.balanceOf(borrower), expectedMaturity, "borrower pays totalOwedAtMaturity even mid-term");
     }
@@ -125,12 +125,12 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
 
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(flexLoan, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(flexLoan, type(uint128).max, bytes32(0), 0, type(uint128).max);
         uint256 flexCost = borrowerBefore - borrowToken.balanceOf(borrower);
 
         borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(fixedLoan, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(fixedLoan, type(uint128).max, bytes32(0), 0, type(uint128).max);
         uint256 fixedCost = borrowerBefore - borrowToken.balanceOf(borrower);
 
         assertLt(flexCost, fixedCost, "zero-commitment costs less mid-term");
@@ -148,16 +148,16 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 expectedNow = _owedNow(BORROW_AMOUNT, rate, LOAN_TERM, start);
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, expectedNow, "prev lender paid totalOwedNow under flex");
-        assertEq(lending.getLending(lendingId).borrowAmount, expectedNow, "new principal = totalOwedNow");
+        assertEq(lending.getLending(lendingId).principal, expectedNow, "new principal = totalOwedNow");
     }
 
     function testCommitmentFull_RefiPaysPriorLenderTotalOwedAtMaturity() public {
@@ -167,45 +167,47 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 expectedMaturity = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, expectedMaturity, "prev lender paid totalOwedAtMaturity");
-        assertEq(lending.getLending(lendingId).borrowAmount, expectedMaturity, "new principal = totalOwedAtMaturity");
+        assertEq(lending.getLending(lendingId).principal, expectedMaturity, "new principal = totalOwedAtMaturity");
     }
 
     // -------------------------------------------------------------------------
-    // Partial-then-full quirk: total cost = totalOwedNow at close, no early-payoff savings on the partialAmt
+    // Partial-then-full with commitFrac=0: amortization reduces total interest cost
     // -------------------------------------------------------------------------
 
-    function testCommitmentZero_PartialThenFullEqualsTotalOwedNowAtClose() public {
+    function testCommitmentZero_PartialThenFullAmortizesInterest() public {
         uint256 lendingId = _setup(0);
         uint32 rate = lending.getLending(lendingId).rate;
         uint48 start = lending.getLending(lendingId).start;
 
         vm.warp(block.timestamp + 5 days);
 
-        // Partial repayment
+        // Partial repayment — exceeds accrued-interest-so-far, so excess reduces principal.
         uint128 partialAmt = 5 ether;
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
 
         vm.warp(block.timestamp + 15 days); // total elapsed = 20 days
 
-        uint256 expectedTotalAtClose = _owedNow(BORROW_AMOUNT, rate, LOAN_TERM, start);
+        // Hypothetical no-amort cost: full simple interest on original principal.
+        uint256 noAmortCost = _owedNow(BORROW_AMOUNT, rate, LOAN_TERM, start);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
-        // Total borrower outlay = totalOwedNow at close. Partial repay didn't reduce future interest accrual.
+        // Total borrower outlay should be STRICTLY LESS than the no-amort baseline since the partial
+        // covered Phase-1 accrual and reduced principal, lowering future interest.
         uint256 totalPaid = borrowerBefore - borrowToken.balanceOf(borrower);
-        assertEq(totalPaid, expectedTotalAtClose, "total cost = totalOwedNow at close, no amortization benefit");
+        assertLt(totalPaid, noAmortCost, "amortization should save interest vs naive simple-interest baseline");
     }
 
     // -------------------------------------------------------------------------
@@ -223,7 +225,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         // Liquidate flex loan
         bytes32 paramHash = lending.getParamHash(flexLoan);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(flexLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(flexLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
         uint256 flexReportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(flexReportId);
 
@@ -240,7 +242,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         // Liquidate fixed loan, same shape. Read timestamps from oracle storage to defeat via_ir block.timestamp hoisting.
         paramHash = lending.getParamHash(fixedLoan);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(fixedLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(fixedLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
         uint256 fixedReportId = oracle.nextReportId() - 1;
         (stateHash,,,,,,) = oracle.extraData(fixedReportId);
 

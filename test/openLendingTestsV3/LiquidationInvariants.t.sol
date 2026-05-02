@@ -108,7 +108,7 @@ contract LiquidationInvariantHandler is Test {
         if (loan.cancelled || loan.active || loan.finished || !loan.curveOpen) return;
 
         vm.startPrank(lender1);
-        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true) {} catch {}
+        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6) {} catch {}
         vm.stopPrank();
     }
 
@@ -125,7 +125,7 @@ contract LiquidationInvariantHandler is Test {
         bytes32 paramHash = lending.getParamHash(lendingId);
 
         vm.startPrank(liquidator);
-        try lending.liquidate{value: 1e15}(lendingId, priceRatio, type(uint128).max, paramHash, 0) {
+        try lending.liquidate{value: 1e15}(lendingId, priceRatio, type(uint128).max, paramHash, 0, 1e15) {
             uint256 reportId = oracle.nextReportId() - 1;
             openReportId[lendingId] = reportId;
         } catch {}
@@ -242,18 +242,28 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         );
     }
 
-    /// @notice `repaidDebt` of a settled-and-still-live loan should be zero (post-failed-liq the borrower's debt resets
-    ///          via topUps/repayments; we assert the simpler invariant that a finished loan's repaidDebt obeys the
-    ///          terminal-debt bound).
-    function invariant_repaidDebtBound() public view {
+    /// @notice Amortization-state invariant for loans driven through the liquidation handler:
+    ///         interestPaid is bounded by the lender's interest claim (`max(commitmentInterest, interestAccrued)`)
+    ///         and lastTouch never advances past `start + term`. Note: `principal + interestAccrued` is NOT a lower
+    ///         bound on `interestPaid` — borrowers can prepay into the floor surplus, which is why
+    ///         `_liquidationOwed` clamps explicitly at 0.
+    function invariant_amortStateConsistent() public view {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
             openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-            if (loan.borrowAmount == 0 || loan.rate == 0 || loan.term == 0) continue;
-            uint256 terminal = uint256(loan.borrowAmount)
-                + (uint256(loan.borrowAmount) * uint256(loan.term) * uint256(loan.rate)) / (1e9 * 365 days);
-            assertLe(loan.repaidDebt, terminal, "repaidDebt cannot exceed terminal debt");
+            if (loan.principal == 0 && loan.commitmentInterest == 0) continue;
+
+            uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
+                ? uint256(loan.interestAccrued)
+                : uint256(loan.commitmentInterest);
+            assertLe(uint256(loan.interestPaid), interestClaim,
+                "interestPaid <= max(commitmentInterest, interestAccrued)");
+
+            if (loan.start != 0 && loan.term != 0) {
+                uint256 termEnd = uint256(loan.start) + uint256(loan.term);
+                assertLe(uint256(loan.lastTouch), termEnd, "lastTouch never exceeds start + term");
+            }
         }
     }
 }

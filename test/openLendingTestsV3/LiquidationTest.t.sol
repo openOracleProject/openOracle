@@ -57,11 +57,11 @@ contract LiquidationTest is OpenLendingBaseTest {
         _seedUnrelated(UNRELATED_SUPPLY, UNRELATED_BORROW);
     }
 
-    /// @dev Originate with allowAnyLiquidator = true so any liquidator can run a liq.
-    function _setupLoan(bool allowAnyLiq) internal returns (uint256 lendingId) {
+    /// @dev Originate with the given `liquidatorFraction` (1e7 = 100% to liquidator on buffer split).
+    function _setupLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, allowAnyLiq);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
     }
 
     /// @dev priceRatio = oracleAmount2_target * 1e18 / initialLiquidity. With standard params
@@ -79,7 +79,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
     }
 
     function calculateOwedNow(uint256 principal, uint32 rate, uint48 term, uint256 start)
@@ -99,7 +99,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiquidation_SuccessWithEquityRemaining() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         // oracleAmount2 = 8 → final ratio after disputes will land in equity-remaining territory
@@ -143,7 +143,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     }
 
     function testLiquidation_SuccessNoEquityRemaining() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         _liquidate(liquidator, lendingId, 6 ether);
@@ -171,7 +171,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiquidation_FailsPriceDoesntLiquidate() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         _liquidate(liquidator, lendingId, 12 ether);
@@ -204,22 +204,21 @@ contract LiquidationTest is OpenLendingBaseTest {
     // Permissioning
     // -------------------------------------------------------------------------
 
-    function testLiquidation_OnlyLenderIfNotPublic() public {
-        uint256 lendingId = _setupLoan(false);
+    /// @dev Liquidation is permissionless under the amort model — `liquidatorFraction = 0` only zeroes the
+    ///      buffer-share economic incentive; it does not gate who may call.
+    function testLiquidation_PermissionlessRegardlessOfLiquidatorFraction() public {
+        uint256 lendingId = _setupLoan(0);
         vm.warp(block.timestamp + 10 days);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
 
+        // Non-lender third party can call liquidate even with liquidatorFraction = 0.
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "wrong liquidator"));
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0);
-
-        vm.prank(lender);
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertTrue(loan.inLiquidation, "Lender should be able to liquidate");
-        assertEq(loan.liquidator, lender, "Liquidator field should be the lender");
+        assertTrue(loan.inLiquidation, "third party can liquidate regardless of liquidatorFraction");
+        assertEq(loan.liquidator, liquidator, "liquidator field tracks msg.sender");
     }
 
     // -------------------------------------------------------------------------
@@ -227,29 +226,29 @@ contract LiquidationTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiquidation_CannotLiquidateExpired() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM + 1);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
 
         vm.prank(liquidator);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "arrangement expired"));
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15);
     }
 
     function testLiquidation_CannotRepayOrTopupDuringLiquidation() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         _liquidate(liquidator, lendingId, 8 ether);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.repayDebt(lendingId, 10 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.topUpCollateral(lendingId, 10 ether, bytes32(0), 0, 0);
+        lending.topUpCollateral(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
     }
 
     // -------------------------------------------------------------------------
@@ -257,7 +256,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testGracePeriod_BorrowerCanRepayDuringGrace() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
 
         // Get within the grace-trigger window (resolution within 1800s of maturity)
         vm.warp(block.timestamp + LOAN_TERM - 900);
@@ -279,7 +278,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 timeInGrace = uint256(loan.start) + loan.term + (loan.gracePeriod / 2);
         vm.warp(timeInGrace);
 
-        uint256 totalOwed = calculateOwedNow(loan.borrowAmount, loan.rate, loan.term, loan.start);
+        uint256 totalOwed = calculateOwedNow(loan.principal, loan.rate, loan.term, loan.start);
         uint128 paymentAmount = uint128(totalOwed + 1 ether);
 
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
@@ -287,7 +286,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lenderStakePiece = tokenStake / 2;
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, paymentAmount, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, paymentAmount, bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished after grace-period repay");
@@ -302,7 +301,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     }
 
     function testGracePeriod_LenderCannotClaimDuringGrace() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
 
         vm.warp(block.timestamp + LOAN_TERM - 900);
         _liquidate(liquidator, lendingId, 12 ether);
@@ -324,7 +323,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     }
 
     function testGracePeriod_LenderCanClaimAfterGraceExpires() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
 
         vm.warp(block.timestamp + LOAN_TERM - 900);
 
@@ -376,7 +375,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testLiquidate_RejectsWrongParamHash() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         bytes32 wrongHash = bytes32(uint256(0xdead));
@@ -389,13 +388,13 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             wrongHash,
             0
-        );
+        , 1e15);
     }
 
     /// @dev V3 deliberately doesn't add a local zero-check on oracleAmount2; degenerate priceRatio reverts via
     ///      the openOracle initial-report path. Verify the revert happens cleanly with no state stuck.
     function testLiquidate_TinyPriceRatioRevertsCleanly() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
@@ -409,7 +408,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         // No state should have stuck — liquidator can still call cleanly afterwards
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
@@ -418,7 +417,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     }
 
     function testLiquidate_RejectsAboveMaxInitialLiquidity() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
@@ -432,11 +431,11 @@ contract LiquidationTest is OpenLendingBaseTest {
             1 ether,
             paramHash,
             0
-        );
+        , 1e15);
     }
 
     function testLiquidate_RejectsBelowWorstRatio() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
@@ -450,7 +449,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             type(uint256).max
-        );
+        , 1e15);
     }
 
     /// @dev With oracleGameFee = 0 the liquidate path skips deploying a feeRecipient, and settlement still
@@ -481,7 +480,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 10 days);
 
@@ -493,7 +492,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         // No fee recipient deployed when fee is 0
         openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
@@ -521,7 +520,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     ///      `lending.feeRecipient` updates on the next liquidate, but the old clone still holds (and
     ///      can still distribute) any fees it accrued via `grabOracleGameFeesAny`.
     function testMultipleFeeReceivers_OldOneStillSweepable() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
         // First liquidation — fails (favorable price)
@@ -551,7 +550,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         // We'll re-stage via a second loan instead.
 
         // Second loan — second fee receiver
-        uint256 lendingId2 = _setupLoan(true);
+        uint256 lendingId2 = _setupLoan(5e6);
         vm.warp(block.timestamp + 1 days);
         _liquidate(liquidator, lendingId2, 12 ether);
         address feeRecipient2 = lending.getLending(lendingId2).feeRecipient;
@@ -582,7 +581,7 @@ contract LiquidationTest is OpenLendingBaseTest {
 
     /// @dev V3 explicitly blocks new liquidations whenever gracePeriod != 0.
     function testGracePeriod_CannotLiquidateDuringGrace() public {
-        uint256 lendingId = _setupLoan(true);
+        uint256 lendingId = _setupLoan(5e6);
 
         vm.warp(block.timestamp + LOAN_TERM - 900);
         _liquidate(liquidator, lendingId, 12 ether);
@@ -602,6 +601,6 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         vm.prank(liquidator);
         vm.expectRevert();
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15);
     }
 }

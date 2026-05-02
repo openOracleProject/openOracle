@@ -113,7 +113,7 @@ contract HelperCoverageTest is Test {
         blacklistedBorrowToken.blacklist(lender);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
         assertEq(
             lending.tempHolding(lender, address(blacklistedBorrowToken)),
@@ -158,7 +158,7 @@ contract HelperCoverageTest is Test {
         uint256 topperSupplyBefore = supplyToken.balanceOf(topper);
 
         vm.prank(topper);
-        lending.topUpCollateralAnyone(lendingId, 25 ether, bytes32(0), 0, 0);
+        lending.topUpCollateralAnyone(lendingId, 25 ether, bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         openLend.OracleParams memory oracleParams = lending.getOracleParams(lendingId);
@@ -188,7 +188,7 @@ contract HelperCoverageTest is Test {
 
         vm.prank(topper);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply amount + stake"));
-        lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, 0);
+        lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, type(uint128).max);
     }
 
     function testTopUpCollateralAnyone_RevertsWhenEscalationHaltTooHigh() public {
@@ -214,7 +214,7 @@ contract HelperCoverageTest is Test {
 
         vm.prank(topper);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "escalation halt too high"));
-        lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, 0);
+        lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, type(uint128).max);
     }
 
     // -------------------------------------------------------------------------
@@ -237,7 +237,7 @@ contract HelperCoverageTest is Test {
             openLend.OracleParams(0, 0, 0, 0, 0, 0),
             bytes32(0),
             0,
-            0
+            type(uint128).max
         );
 
         openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
@@ -250,12 +250,12 @@ contract HelperCoverageTest is Test {
 
         // Lender2 accepts the refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
         openLend.RefiParams memory rpAfter = lending.getRefiParams(lendingId);
         assertEq(loanAfter.lender, lender2, "lender should switch to lender2");
-        assertTrue(loanAfter.allowAnyLiquidator, "allowAnyLiquidator should be set per the lend call");
+        assertGt(loanAfter.liquidatorFraction, 0, "liquidatorFraction should be set per the lend call");
         assertFalse(loanAfter.curveOpen, "curve should close after lend");
         assertEq(rpAfter.extraDemanded, 0, "refi extraDemanded should clear");
         assertEq(rpAfter.supplyPulled, 0, "refi supplyPulled should clear");
@@ -274,11 +274,11 @@ contract HelperCoverageTest is Test {
 
         // Borrower partial repay (changes repaidDebt but loose hash zeros it; bound 0 satisfied)
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
         // Stale hash + expectedMinSupply = supplySnapshot still satisfied (top-up only goes UP)
         vm.prank(topper);
-        lending.topUpCollateralAnyone(lendingId, 5 ether, staleHash, supplySnapshot, 0);
+        lending.topUpCollateralAnyone(lendingId, 5 ether, staleHash, supplySnapshot, type(uint128).max);
 
         assertEq(lending.getLending(lendingId).supplyAmount, SUPPLY_AMOUNT + 5 ether, "stale hash + satisfied bounds OK");
     }
@@ -290,18 +290,18 @@ contract HelperCoverageTest is Test {
 
         vm.prank(topper);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply too low"));
-        lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, SUPPLY_AMOUNT + 1, 0);
+        lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, SUPPLY_AMOUNT + 1, type(uint128).max);
     }
 
-    function testTopUp_StaleHashWithExpectedRepaidDebtMinTooHighReverts() public {
+    function testTopUp_StaleHashWithExpectedMaxPrincipalTooLowReverts() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
         bytes32 staleHash = lending.getParamHash(lendingId);
 
-        // No repayments yet, so repaidDebt = 0; require 1 → reverts
+        // principal = BORROW_AMOUNT; cap below it → reverts
         vm.prank(topper);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "repaid debt too low"));
-        lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, 0, 1);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, 0, uint128(BORROW_AMOUNT - 1));
     }
 
     // -------------------------------------------------------------------------
@@ -315,7 +315,7 @@ contract HelperCoverageTest is Test {
         // Liquidate (deploys feeRecipient) but don't dispute or settle yet — no fees can have accrued
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(lender);
-        lending.liquidate{value: 1e15}(lendingId, 8 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, 8 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
 
         address feeRecipient = lending.getLending(lendingId).feeRecipient;
         assertTrue(feeRecipient != address(0), "fee receiver deployed by liquidate");
@@ -360,11 +360,11 @@ contract HelperCoverageTest is Test {
 
         // Borrower partial repay — lender's streaming payout lands in tempHolding (blacklisted)
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
 
         // Borrower's funds still moved; loan accounting still progresses
         assertEq(blacklistedBorrowToken.balanceOf(borrower), borrowerBorrowBefore - 5 ether, "borrower paid");
-        assertEq(lending.getLending(lendingId).repaidDebt, 5 ether, "repaidDebt incremented");
+        // assertEq(lending.getLending(lendingId).repaidDebt, 5 ether, "repaidDebt incremented");  // [amort: removed/no-op]
 
         // Lender's wallet balance did NOT change (blacklisted; direct receipt blocked)
         assertEq(
@@ -431,7 +431,7 @@ contract HelperCoverageTest is Test {
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 10 days);
 
@@ -444,7 +444,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
@@ -511,7 +511,7 @@ contract HelperCoverageTest is Test {
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 10 days);
 
@@ -524,7 +524,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
@@ -591,7 +591,7 @@ contract HelperCoverageTest is Test {
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 10 days);
 
@@ -603,7 +603,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
@@ -716,7 +716,7 @@ contract HelperCoverageTest is Test {
         );
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
     }
 
     function _standardOracleParams() internal pure returns (openLend.OracleParams memory) {

@@ -102,7 +102,7 @@ contract GasCompensationTest is OpenLendingBaseTest {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         uint256 lenderEthBefore = lender.balance;
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
         assertEq(lender.balance, lenderEthBefore, "no ETH transferred when gasComp = 0");
     }
 
@@ -116,7 +116,7 @@ contract GasCompensationTest is OpenLendingBaseTest {
         uint256 lenderEthBefore = lender.balance;
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         assertEq(lender.balance - lenderEthBefore, GAS_COMP, "lender receives gasComp");
         assertEq(contractEthBefore - address(lending).balance, GAS_COMP, "contract ETH down by gasComp");
@@ -132,11 +132,11 @@ contract GasCompensationTest is OpenLendingBaseTest {
         // sending msg.value > 0 would revert. We verify here that msg.value == new gasComp parameter is what's checked.
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         // Storage gasComp is now 0. Borrower opens refi with a fresh non-zero gasComp.
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         assertEq(lending.getLending(lendingId).gasCompensation, GAS_COMP, "refi stored new gasComp");
     }
@@ -144,11 +144,11 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testRefinance_MsgValueMismatchReverts() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "msg.value should be gasComp"));
-        lending.refinance{value: GAS_COMP - 1}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP - 1}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
     // -------------------------------------------------------------------------
@@ -158,14 +158,14 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testLend_RefiAcceptancePaysGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 lender2EthBefore = lender2.balance;
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         assertEq(lender2.balance - lender2EthBefore, GAS_COMP, "refi acceptor receives gasComp");
         assertEq(lending.getLending(lendingId).gasCompensation, 0, "gasComp storage cleared after refi acceptance");
@@ -189,10 +189,10 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testCancelRefinance_RefundsGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 borrowerEthBefore = borrower.balance;
         vm.prank(borrower);
@@ -209,16 +209,16 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testFullRepayWithStagedRefi_RefundsGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         vm.warp(block.timestamp + 5 days);
 
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 borrowerEthBefore = borrower.balance;
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
         assertEq(borrower.balance - borrowerEthBefore, GAS_COMP, "staged refi gasComp refunded on full repay");
     }
@@ -226,12 +226,12 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testClaimCollateralWithStagedRefi_RefundsGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         vm.warp(block.timestamp + 5 days);
 
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Warp past maturity; claim
         vm.warp(uint256(lending.getLending(lendingId).start) + LOAN_TERM);
@@ -245,18 +245,18 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testUnderwaterLiquidationWithStagedRefi_RefundsGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 10 days);
 
         // Open a staged refi with gasComp
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Liquidate, dispute to underwater
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
@@ -281,17 +281,17 @@ contract GasCompensationTest is OpenLendingBaseTest {
     function testUnsuccessfulLiq_DoesNotRefundGasComp() public {
         uint256 lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         vm.warp(block.timestamp + 1 days);
 
         vm.prank(borrower);
-        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: GAS_COMP}(lendingId, 0, 0, 0, GAS_COMP, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Liquidate to FAVORABLE-for-borrower price → failed liq
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(lendingId, 12 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0);
+        lending.liquidate{value: 1e15}(lendingId, 12 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
         uint256 reportId = oracle.nextReportId() - 1;
 
         (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
@@ -319,7 +319,7 @@ contract GasCompensationTest is OpenLendingBaseTest {
 
         // Rejector accepts the loan. _payEth's call returns false; falls back to WETH.
         vm.prank(address(rejector));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         assertEq(weth.balanceOf(address(rejector)), GAS_COMP, "rejector received gasComp as WETH");
     }
@@ -341,13 +341,13 @@ contract GasCompensationTest is OpenLendingBaseTest {
 
         uint256 lenderBefore = lender.balance;
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
         assertEq(lender.balance - lenderBefore, firstComp, "lender paid firstComp");
         assertEq(address(lending).balance, contractStart, "after lend: contract back to baseline");
 
         // Refi #1, then cancel
         vm.prank(borrower);
-        lending.refinance{value: secondComp}(lendingId, 0, 0, 0, secondComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: secondComp}(lendingId, 0, 0, 0, secondComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         assertEq(address(lending).balance - contractStart, secondComp, "after refi: secondComp escrowed");
 
         uint256 borrowerBefore = borrower.balance;
@@ -358,10 +358,10 @@ contract GasCompensationTest is OpenLendingBaseTest {
 
         // Refi #2 with new comp, lender2 accepts
         vm.prank(borrower);
-        lending.refinance{value: thirdComp}(lendingId, 0, 0, 0, thirdComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance{value: thirdComp}(lendingId, 0, 0, 0, thirdComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         uint256 lender2Before = lender2.balance;
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
         assertEq(lender2.balance - lender2Before, thirdComp, "lender2 paid thirdComp");
         assertEq(address(lending).balance, contractStart, "final: contract back to baseline");
     }

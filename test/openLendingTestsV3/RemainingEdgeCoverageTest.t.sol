@@ -62,19 +62,19 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
     /// @dev `_repayDebt` reverts at `currentTime >= start + term + gracePeriod`. So exactly at the boundary reverts.
     function testRepayDebt_AtExactExpiry_Reverts() public {
-        uint256 lendingId = _setupActiveLoan(false);
+        uint256 lendingId = _setupActiveLoan(0);
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
     }
 
     /// @dev `liquidate` reverts at `currentTime > start + term` (strict gt). So exactly at maturity is allowed.
     function testLiquidate_AtExactTerm_Succeeds() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term);
@@ -87,14 +87,14 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         assertTrue(lending.getLending(lendingId).inLiquidation, "exact-term liquidation should succeed");
     }
 
     /// @dev `claimCollateral` reverts at `currentTime < start + term + gracePeriod`. At exact boundary the claim succeeds.
     function testClaimCollateral_AtExactGraceBoundary_Succeeds() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
 
         // Trigger a near-maturity liquidation that fails so a grace period gets set
@@ -108,7 +108,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         uint256 reportId = oracle.nextReportId() - 1;
         vm.warp(block.timestamp + 301);
@@ -136,7 +136,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     // ---------------- fee receiver clone wiring ----------------
 
     function testLiquidate_InitializesCloneFeeReceiver() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
 
         assertEq(loanBefore.feeRecipient, address(0), "fee recipient should stay unset before liquidation");
@@ -149,7 +149,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         openLend.LendingArrangement memory loanDuring = lending.getLending(lendingId);
         assertTrue(loanDuring.feeRecipient != address(0), "liquidation should deploy a fee receiver");
@@ -164,7 +164,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
     /// @dev Refinance does NOT deploy a fee receiver; only liquidate does. Cleared on lend-refi.
     function testRefinance_LeavesFeeRecipientUnsetUntilLiquidation() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
         assertEq(lending.getLending(lendingId).feeRecipient, address(0), "fee recipient should start unset");
 
         // Borrower opens refi
@@ -179,12 +179,12 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             _zeroOracleParams(),
             bytes32(0),
             0,
-            0
+            type(uint128).max
         );
 
         // Lender2 accepts
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertEq(loan.feeRecipient, address(0), "refi should not deploy a fee receiver");
@@ -193,7 +193,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     // ---------------- grab oracle game fees ----------------
 
     function testGrabOracleGameFeesAny_SweepsBorrowFeesAndSecondSweepIsNoOp() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
 
         vm.warp(block.timestamp + 10 days);
 
@@ -205,7 +205,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         address feeRecipient = lending.getLending(lendingId).feeRecipient;
         uint256 reportId = oracle.nextReportId() - 1;
@@ -242,7 +242,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     }
 
     function testGrabOracleGameFeesAny_RevertsForWrongLendingId() public {
-        uint256 lendingId = _setupActiveLoan(true);
+        uint256 lendingId = _setupActiveLoan(5e6);
 
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
@@ -252,12 +252,12 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         address feeRecipient = lending.getLending(lendingId).feeRecipient;
 
         // Set up a second loan to obtain a "wrong" lendingId that exists
-        uint256 otherLendingId = _setupActiveLoan(true);
+        uint256 otherLendingId = _setupActiveLoan(5e6);
         assertTrue(otherLendingId != lendingId, "two distinct lending ids");
 
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
@@ -269,14 +269,14 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     /// @dev `refinance` reverts at `currentTime >= start + term + gracePeriod` (when not inLiquidation).
     ///      With gracePeriod = 0 this is `>= start + term`, so EXACTLY at maturity reverts.
     function testRefinance_AtExactMaturity_Reverts() public {
-        uint256 lendingId = _setupActiveLoan(false);
+        uint256 lendingId = _setupActiveLoan(0);
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
     /// @dev `lend` (active loan branch) reverts at `currentTime >= start + term + gracePeriod`.
@@ -292,7 +292,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
     }
 
     /// @dev `lend` (active loan branch) succeeds one second BEFORE grace end.
@@ -304,14 +304,14 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod - 1);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         assertEq(lending.getLending(lendingId).lender, lender2, "should accept refi 1s before grace end");
     }
 
     /// @dev Helper: originate, force a near-maturity failed liq to set gracePeriod, then open a refi during grace.
     function _setupActiveLoanForGrace() internal returns (uint256 lendingId) {
-        lendingId = _setupActiveLoan(true);
+        lendingId = _setupActiveLoan(5e6);
 
         // Get into the grace-trigger window
         vm.warp(block.timestamp + LOAN_TERM - 900);
@@ -324,7 +324,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
 
         uint256 reportId = oracle.nextReportId() - 1;
         vm.warp(block.timestamp + 301);
@@ -333,7 +333,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         // Now gracePeriod > 0. Open a refi so a `lend` accept path exists
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
     // ---------------- interest rate params validation ----------------
@@ -632,9 +632,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         return oracleAmount2Target * 1e18 / 10 ether;
     }
 
-    function _setupActiveLoan(bool allowAnyLiquidator) internal returns (uint256 lendingId) {
+    function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, allowAnyLiquidator);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
     }
 }

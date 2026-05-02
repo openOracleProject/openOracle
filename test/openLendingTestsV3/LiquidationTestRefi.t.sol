@@ -60,22 +60,22 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         return oracleAmount2Target * 1e18 / (supplyForLiq * 10 / 100);
     }
 
-    /// @dev Originate a loan with allowAnyLiquidator = true so any liquidator can run a liq.
+    /// @dev Originate a loan with liquidatorFraction = true so any liquidator can run a liq.
     function _setupActiveLoanAllowAnyLiq() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender1);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
-    /// @dev Originate, then refi to lender2 with allowAnyLiquidator on the refi acceptance.
+    /// @dev Originate, then refi to lender2 with liquidatorFraction on the refi acceptance.
     function _setupRefiLoan() internal returns (uint256 lendingId) {
         lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
     function _liquidate(address who, uint256 lendingId, uint256 oracleAmount2Target) internal {
@@ -88,7 +88,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0
-        );
+        , 1e15);
     }
 
     // ---------------- liquidation on a refi'd loan ----------------
@@ -166,11 +166,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, 0);
+        lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
     }
 
     // ---------------- refi-during-liquidation ----------------
@@ -185,7 +185,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Borrower opens a refi while liquidation is in flight
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
         assertTrue(midLoan.curveOpen, "refi curve should open mid-liquidation");
@@ -194,7 +194,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         // A lender attempting to fill the refi curve is blocked by the inLiquidation gate in lend()
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         // Resolve liquidation as failed
         uint256 reportId = oracle.nextReportId() - 1;
@@ -218,7 +218,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Now lender2 can accept the refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         assertEq(lending.getLending(lendingId).lender, lender2, "lender2 should be the new lender");
     }
@@ -243,13 +243,13 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Borrower opens refi while past maturity AND inLiquidation — V3 explicitly allows this
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         assertTrue(lending.getLending(lendingId).curveOpen, "refi curve should open past maturity during liq");
 
         // lend() blocked by inLiquidation
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         // Settle (no dispute — the liquidator's initial favorable price stands → failed liq)
         uint256 reportId = oracle.nextReportId() - 1;
@@ -270,7 +270,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Lender2 accepts the refi within grace
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory finalLoan = lending.getLending(lendingId);
         assertEq(finalLoan.lender, lender2, "lender2 should be new lender");
@@ -286,7 +286,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.warp(block.timestamp + 1 days);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         uint48 requestStartBefore = lending.getLending(lendingId).requestStart;
 
         // Tick curve a bit to confirm reset on settle
@@ -297,7 +297,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         // lend() blocked while inLiquidation
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         // Resolve as failed — no dispute, settle to liquidator's favorable price
         uint256 reportId = oracle.nextReportId() - 1;
@@ -317,7 +317,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Lender2 can still accept the (re-anchored) refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
         assertEq(lending.getLending(lendingId).lender, lender2, "lender2 accepted post-settle refi");
     }
 
@@ -328,7 +328,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         assertTrue(lending.getLending(lendingId).curveOpen, "curve open before liq");
 
         _liquidate(liquidator, lendingId, 6 ether);
@@ -367,7 +367,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Borrower opens refi mid-liq, then cancels it
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         assertTrue(lending.getLending(lendingId).curveOpen, "curve open after refinance");
 
         vm.prank(borrower);
@@ -385,42 +385,48 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertEq(afterLiq.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Borrower can repay during grace
-        uint128 totalOwed = _calculateOwedAtMaturity(afterLiq.borrowAmount, afterLiq.rate, afterLiq.term);
+        uint128 totalOwed = _calculateOwedAtMaturity(afterLiq.principal, afterLiq.rate, afterLiq.term);
         vm.warp(uint256(afterLiq.start) + afterLiq.term + (afterLiq.gracePeriod / 2));
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed + 1 ether, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, totalOwed + 1 ether, bytes32(0), 0, type(uint128).max);
         assertTrue(lending.getLending(lendingId).finished, "repay during grace should finish loan");
     }
 
     // ---------------- partial repay then refi (with extraDemanded) ----------------
 
     /// @dev Borrower partially repays, opens refi with extraDemanded, lender accepts.
-    ///      newBorrowAmount = owedAtMaturity - repaidDebt + extraDemanded.
+    ///      newBorrowAmount = principal + max(interestAccrued, commitmentInterest) - interestPaid + extraDemanded
+    ///      (the amortization residual claim, computed from actual struct state).
     function testPartialRepayThenRefi_NewBorrowAmountMath() public {
         uint256 lendingId = _setupActiveLoanAllowAnyLiq();
-        uint32 origRate = lending.getLending(lendingId).rate;
 
         uint128 partialAmt = 7 ether;
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
 
         // Now open refi with extra demand
         uint128 extra = 3 ether;
         vm.prank(borrower);
-        lending.refinance(lendingId, extra, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, extra, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
+
+        // Compute expected new principal from the actual post-repay amort state
+        openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+        uint256 interestClaim = pre.interestAccrued > pre.commitmentInterest
+            ? uint256(pre.interestAccrued)
+            : uint256(pre.commitmentInterest);
+        uint128 expectedNewBorrow = uint128(
+            uint256(pre.principal) + interestClaim - uint256(pre.interestPaid) + uint256(extra)
+        );
 
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
-
-        uint128 owedAtMaturity = _calculateOwedAtMaturity(BORROW_AMOUNT, origRate, LOAN_TERM);
-        uint128 expectedNewBorrow = owedAtMaturity - partialAmt + extra;
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.borrowAmount, expectedNewBorrow, "newBorrowAmount = owedAtMaturity - repaidDebt + extra");
-        assertEq(loan.repaidDebt, 0, "repaidDebt resets on refi");
+        assertEq(loan.principal, expectedNewBorrow,
+            "newBorrowAmount = principal + max(accrued, commitInt) - interestPaid + extra");
 
         // Lender2 funded newBorrowAmount
         assertEq(
@@ -445,7 +451,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 6 ether);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Resolve as underwater (loan finishes)
         uint256 reportId = oracle.nextReportId() - 1;
@@ -465,6 +471,6 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         // Even if curveOpen had stayed true, `finished` blocks lend(); double-check
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "finished"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
     }
 }

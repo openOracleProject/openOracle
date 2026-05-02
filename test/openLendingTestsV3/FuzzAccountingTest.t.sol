@@ -48,10 +48,9 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         uint256 contractBorrowBefore = borrowToken.balanceOf(address(lending));
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.repaidDebt, repayAmount, "repaidDebt should equal partial payment");
         assertFalse(loan.finished, "partial repayment should not finish the loan");
         assertEq(
             borrowToken.balanceOf(borrower), borrowerBorrowBefore - repayAmount, "borrower should spend exact amount"
@@ -81,7 +80,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender1);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertTrue(loan.finished, "full repayment branch should finish the loan");
@@ -106,7 +105,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         uint256 contractSupplyBefore = supplyToken.balanceOf(address(lending));
 
         vm.prank(topper);
-        lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, 0);
+        lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + topUpAmount, "supplyAmount should increase by top-up");
@@ -118,27 +117,109 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         );
     }
 
-    /// @dev V3 refi: when a lender accepts the refi curve, newBorrowAmount = owedAtMaturity - repaidDebt + extraDemanded.
-    function testFuzz_RefiNewBorrowAmountMatchesOwedPlusExtra(uint96 extraRaw) public {
+    /// @dev Refi accept (V3, amort-aware): newPrincipal = principal + max(interestAccrued, commitmentInterest)
+    ///      - interestPaid + extraDemanded — read directly from the amort struct rather than the legacy
+    ///      "owedAtMaturity - repaidDebt + extra" form, which only matched under full-term commitment.
+    function testFuzz_RefiNewBorrowAmountFromAmortState(uint96 extraRaw) public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 origRate = lending.getLending(lendingId).rate;
 
         uint128 extraDemanded = uint128(bound(extraRaw, 0, 200 ether));
 
         // Borrower opens refi curve with extraDemanded
         vm.prank(borrower);
-        lending.refinance(lendingId, extraDemanded, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, extraDemanded, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        // Lender2 accepts the refi at the current curve rate
+        // Snapshot pre-accept amort state
+        openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+        uint256 interestClaim = pre.interestAccrued > pre.commitmentInterest
+            ? uint256(pre.interestAccrued)
+            : uint256(pre.commitmentInterest);
+        uint128 expectedNewBorrow = uint128(
+            uint256(pre.principal) + interestClaim - uint256(pre.interestPaid) + uint256(extraDemanded)
+        );
+
+        // Lender2 accepts at the current curve
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, false);
-
-        uint128 expectedOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, origRate, LOAN_TERM);
-        uint128 expectedNewBorrow = expectedOwed + extraDemanded;
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.borrowAmount, expectedNewBorrow, "post-refi borrowAmount = owedAtMaturity + extraDemanded");
+        assertEq(loan.principal, expectedNewBorrow,
+            "post-refi principal = principal + max(accrued, commitInt) - interestPaid + extra");
         assertEq(loan.lender, lender2, "lender2 should be the new lender");
-        assertEq(loan.repaidDebt, 0, "repaidDebt should reset on refi");
+    }
+
+    /// @dev Multi-partial-repay amortization fuzz. Stresses the model along four axes:
+    ///        - commitmentFraction (1..1e7): how much of full-term interest is locked in as a floor
+    ///        - elapsed time between repays: drives interestAccrued growth
+    ///        - partial-repay count (1..5)
+    ///        - repay size per round (jittered, always strictly under residual)
+    ///      Asserts after each round that:
+    ///        - interestPaid <= max(commitmentInterest, interestAccrued) (the lender's interest-claim cap)
+    ///        - cumulative borrower outflow == cumulative lender inflow (streamed-payment conservation)
+    ///        - contract borrow-token balance is unchanged (no buffer accumulation)
+    function testFuzz_AmortMultiPartialRepay(
+        uint24 commitmentFractionRaw,
+        uint8 partialCountRaw,
+        uint96 elapsedSeed,
+        uint96 sizeSeed
+    ) public {
+        uint24 commitmentFraction = uint24(bound(uint256(commitmentFractionRaw), 1, 1e7));
+        uint8 partialCount = uint8(bound(uint256(partialCountRaw), 1, 5));
+
+        uint256 lendingId =
+            _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, commitmentFraction, 0);
+        _lend(lender1, lendingId);
+
+        uint256 lenderBorrowBefore = borrowToken.balanceOf(lender1);
+        uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
+        uint256 contractBorrowBefore = borrowToken.balanceOf(address(lending));
+
+        uint256 totalRepaid;
+        for (uint256 i = 0; i < partialCount; i++) {
+            // jitter elapsed time within a window that keeps us under the term across all rounds
+            uint256 maxJump = uint256(LOAN_TERM) / (uint256(partialCount) + 2);
+            uint256 jump = bound(uint256(uint96(uint256(elapsedSeed) ^ (i * 7919))), 1 hours, maxJump);
+            vm.warp(block.timestamp + jump);
+
+            openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+            if (pre.finished) break;
+
+            uint256 claimPre = pre.interestAccrued > pre.commitmentInterest
+                ? uint256(pre.interestAccrued)
+                : uint256(pre.commitmentInterest);
+            uint256 residual = uint256(pre.principal) + claimPre - uint256(pre.interestPaid);
+            if (residual <= 1) break;
+
+            uint128 amount = uint128(bound(uint256(uint96(uint256(sizeSeed) ^ (i * 9587))), 1, residual - 1));
+
+            vm.prank(borrower);
+            lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max);
+            totalRepaid += amount;
+
+            // Per-round amort invariant: interestPaid never exceeds the lender's interest claim
+            openLend.LendingArrangement memory post = lending.getLending(lendingId);
+            uint256 claimPost = post.interestAccrued > post.commitmentInterest
+                ? uint256(post.interestAccrued)
+                : uint256(post.commitmentInterest);
+            assertLe(uint256(post.interestPaid), claimPost,
+                "interestPaid must stay within max(commitInt, accrued)");
+        }
+
+        // Conservation: every wei the borrower paid was streamed through to the lender
+        assertEq(
+            borrowToken.balanceOf(borrower),
+            borrowerBorrowBefore - totalRepaid,
+            "borrower outflow == sum of partials"
+        );
+        assertEq(
+            borrowToken.balanceOf(lender1),
+            lenderBorrowBefore + totalRepaid,
+            "lender inflow == sum of partials (streaming)"
+        );
+        assertEq(
+            borrowToken.balanceOf(address(lending)),
+            contractBorrowBefore,
+            "contract holds no buffer under streaming"
+        );
     }
 }

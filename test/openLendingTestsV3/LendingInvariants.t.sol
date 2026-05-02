@@ -97,7 +97,7 @@ contract LendingInvariantHandler is Test {
         vm.stopPrank();
     }
 
-    function lendLoan(uint256 loanSeed, bool allowAnyLiquidator) external {
+    function lendLoan(uint256 loanSeed, uint24 liquidatorFraction) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
@@ -105,7 +105,7 @@ contract LendingInvariantHandler is Test {
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
-        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, allowAnyLiquidator) {} catch {}
+        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction) {} catch {}
         vm.stopPrank();
     }
 
@@ -115,14 +115,14 @@ contract LendingInvariantHandler is Test {
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
 
-        uint128 totalOwed = _calculateOwedAtMaturity(loan.borrowAmount, loan.rate, loan.term);
-        uint128 repaid = loan.repaidDebt;
+        uint128 totalOwed = _calculateOwedAtMaturity(loan.principal, loan.rate, loan.term);
+        uint128 repaid = 0; // .repaidDebt removed under amort
         if (repaid >= totalOwed) return;
         uint128 maxRepay = totalOwed - repaid;
         uint128 amount = uint128(bound(repaySeed, 1, maxRepay));
 
         vm.startPrank(borrower);
-        try lending.repayDebt(lendingId, amount, bytes32(0), 0, 0) {} catch {}
+        try lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
         vm.stopPrank();
     }
 
@@ -135,7 +135,7 @@ contract LendingInvariantHandler is Test {
         uint128 amount = uint128(bound(topUpSeed, 1, 1_000 ether));
 
         vm.startPrank(topper);
-        try lending.topUpCollateralAnyone(lendingId, amount, bytes32(0), 0, 0) {} catch {}
+        try lending.topUpCollateralAnyone(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
         vm.stopPrank();
     }
 
@@ -150,11 +150,11 @@ contract LendingInvariantHandler is Test {
         uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
 
         vm.startPrank(borrower);
-        try lending.refinance{value: gasComp}(lendingId, extraDemanded, supplyPulled, 0, gasComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0) {} catch {}
+        try lending.refinance{value: gasComp}(lendingId, extraDemanded, supplyPulled, 0, gasComp, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max) {} catch {}
         vm.stopPrank();
     }
 
-    function acceptRefi(uint256 loanSeed, bool allowAnyLiquidator) external {
+    function acceptRefi(uint256 loanSeed, uint24 liquidatorFraction) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
@@ -162,7 +162,7 @@ contract LendingInvariantHandler is Test {
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
-        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, allowAnyLiquidator) {} catch {}
+        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction) {} catch {}
         vm.stopPrank();
     }
 
@@ -188,15 +188,15 @@ contract LendingInvariantHandler is Test {
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
 
-        uint128 totalOwed = _calculateOwedAtMaturity(loan.borrowAmount, loan.rate, loan.term);
-        uint128 repaid = loan.repaidDebt;
+        uint128 totalOwed = _calculateOwedAtMaturity(loan.principal, loan.rate, loan.term);
+        uint128 repaid = 0; // .repaidDebt removed under amort
         if (repaid >= totalOwed) return;
         uint128 maxRepay = totalOwed - repaid;
         uint128 amount = uint128(bound(repaySeed, 1, maxRepay));
 
         // topper acts as the third-party payer
         vm.startPrank(topper);
-        try lending.repayAnyDebt(lendingId, amount, bytes32(0), 0, 0) {} catch {}
+        try lending.repayAnyDebt(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
         vm.stopPrank();
     }
 
@@ -253,6 +253,11 @@ contract LendingInvariantsTest is StdInvariant, Test {
     MockERC20 internal borrowToken;
     LendingInvariantHandler internal handler;
 
+    /// @dev Total borrow-token supply held across the handler's known actor set + the lending contract,
+    ///      captured immediately after setUp. Conservation: ERC20 transfers cannot mint or burn, so the
+    ///      sum across this closed set must remain constant for all subsequent operations.
+    uint256 internal initialBorrowTotal;
+
     function setUp() public {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
@@ -265,6 +270,17 @@ contract LendingInvariantsTest is StdInvariant, Test {
         borrowToken.transfer(address(handler), 400_000 ether);
         handler.prime();
         targetContract(address(handler));
+
+        initialBorrowTotal = _borrowTotalAcrossActors();
+    }
+
+    function _borrowTotalAcrossActors() internal view returns (uint256) {
+        return borrowToken.balanceOf(handler.borrower())
+            + borrowToken.balanceOf(handler.lender1())
+            + borrowToken.balanceOf(handler.lender2())
+            + borrowToken.balanceOf(handler.topper())
+            + borrowToken.balanceOf(address(lending))
+            + borrowToken.balanceOf(address(handler));
     }
 
     /// @notice A finished loan must not still be in liquidation.
@@ -279,17 +295,41 @@ contract LendingInvariantsTest is StdInvariant, Test {
         }
     }
 
-    /// @notice repaidDebt should never exceed the maturity-equivalent terminal debt of the loan.
-    function invariant_repaidDebtNeverExceedsTerminalDebt() public view {
+    /// @notice Amortization invariant: payments toward the lender's interest claim never exceed the claim
+    ///         (`max(commitmentInterest, interestAccrued)`), and `lastTouch` never advances past the loan's
+    ///         maturity (touch caps accrual at `start + term`). Note: `principal + interestAccrued` is NOT
+    ///         a lower bound on `interestPaid` — a borrower can prepay into the floor surplus, which is why
+    ///         `_liquidationOwed` clamps explicitly at 0.
+    function invariant_amortStateConsistent() public view {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
             openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-            if (loan.borrowAmount == 0 || loan.rate == 0 || loan.term == 0) continue;
-            uint256 terminalDebt = uint256(loan.borrowAmount)
-                + (uint256(loan.borrowAmount) * uint256(loan.term) * uint256(loan.rate)) / (1e9 * 365 days);
-            assertLe(loan.repaidDebt, terminalDebt, "repaidDebt cannot exceed terminal debt");
+            if (loan.principal == 0 && loan.commitmentInterest == 0) continue;
+
+            uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
+                ? uint256(loan.interestAccrued)
+                : uint256(loan.commitmentInterest);
+            assertLe(uint256(loan.interestPaid), interestClaim,
+                "interestPaid <= max(commitmentInterest, interestAccrued)");
+
+            if (loan.start != 0 && loan.term != 0) {
+                uint256 termEnd = uint256(loan.start) + uint256(loan.term);
+                assertLe(uint256(loan.lastTouch), termEnd, "lastTouch never exceeds start + term");
+            }
         }
+    }
+
+    /// @notice Borrow-token conservation: the handler exercises a closed actor set (borrower, lenders, topper,
+    ///         the lending contract, and the handler itself). ERC20 transfers cannot mint or burn, so the
+    ///         total balance across this set must equal whatever it was at setUp time. Streamed partial
+    ///         repayments, refi fundings, and third-party `repayAnyDebt` flows must all preserve this sum.
+    function invariant_borrowTokenConservation() public view {
+        assertEq(
+            _borrowTotalAcrossActors(),
+            initialBorrowTotal,
+            "borrow-token total across actor set must be conserved"
+        );
     }
 
     /// @notice Contract supply balance must back all live loans plus any in-flight liquidator stakes.

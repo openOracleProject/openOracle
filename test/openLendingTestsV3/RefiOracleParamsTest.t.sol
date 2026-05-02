@@ -33,7 +33,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
     function _setup() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
     function _newOracleParams() internal pure returns (openLend.OracleParams memory) {
@@ -57,7 +57,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory original = lending.getOracleParams(lendingId);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         openLend.OracleParams memory afterOpen = lending.getOracleParams(lendingId);
         assertEq(
@@ -76,10 +76,10 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory original = lending.getOracleParams(lendingId);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         openLend.OracleParams memory afterAcceptance = lending.getOracleParams(lendingId);
         assertEq(
@@ -99,7 +99,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory newParams = _newOracleParams();
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, type(uint128).max);
 
         // Live oracleParams unchanged at refi-open
         openLend.OracleParams memory mid = lending.getOracleParams(lendingId);
@@ -123,10 +123,10 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory newParams = _newOracleParams();
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         openLend.OracleParams memory live = lending.getOracleParams(lendingId);
         assertEq(
@@ -139,10 +139,10 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
     function testStaging_AcceptanceClearsStagedParams() public {
         uint256 lendingId = _setup();
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
         assertEq(rp.oracleParams.settlementTime, 0, "staged params cleared after acceptance");
@@ -161,7 +161,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "oracleParams"));
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bad, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), bad, bytes32(0), 0, type(uint128).max);
     }
 
     function testStaging_SentinelSkipsValidation() public {
@@ -178,7 +178,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         // Does NOT revert despite garbage fields — sentinel bypasses validation
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), garbage, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), garbage, bytes32(0), 0, type(uint128).max);
 
         // Garbage params NOT staged (sentinel branch)
         openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
@@ -201,7 +201,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory newParams = _newOracleParams();
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, SUPPLY_AMOUNT - 1 ether, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, SUPPLY_AMOUNT - 1 ether, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, type(uint128).max);
 
         // No revert means validation against post-refi supply (1 ether) succeeded.
         openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
@@ -252,7 +252,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
         // Refi staging: escFactor=1000 → refi-time escHalt = 3.4e38 (fits)
         openLend.OracleParams memory hot = openLend.OracleParams({
@@ -265,16 +265,16 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         });
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), hot, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), hot, bytes32(0), 0, type(uint128).max);
 
         // Third party tops up collateral by 5e36, pushing live supply from 3.4e37 to 3.9e37
         vm.prank(topper);
-        lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, 0);
+        lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
 
         // lend acceptance: recheck escHalt = 3.9e37 * 1000 / 100 = 3.9e38 > uint128.max → revert
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "new esc halt too high"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
     }
 
     // -------------------------------------------------------------------------
@@ -286,7 +286,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory original = lending.getOracleParams(lendingId);
 
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Staged params present
         assertEq(lending.getRefiParams(lendingId).oracleParams.settlementTime, 600, "staged before cancel");
@@ -315,12 +315,12 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 5 days);
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, type(uint128).max);
         assertEq(lending.getRefiParams(lendingId).oracleParams.settlementTime, 600, "staged before full repay");
 
         // Borrower fully repays — finishes the loan, _clearRefiCurve fires
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, 0);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
         assertEq(
             lending.getRefiParams(lendingId).oracleParams.settlementTime,
@@ -334,7 +334,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 5 days);
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, type(uint128).max);
         assertEq(lending.getRefiParams(lendingId).oracleParams.settlementTime, 600, "staged before claim");
 
         // Warp past maturity, lender claims
@@ -358,7 +358,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         // Borrower opens refi with paramsA. Lender quotes a paramHash against this state.
         openLend.OracleParams memory paramsA = _newOracleParams();
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), paramsA, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), paramsA, bytes32(0), 0, type(uint128).max);
 
         bytes32 quotedHash = lending.getParamHash(lendingId);
 
@@ -369,12 +369,12 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         openLend.OracleParams memory paramsB = _newOracleParams();
         paramsB.settlementTime = 1200; // distinguishable
         vm.prank(borrower);
-        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), paramsB, bytes32(0), 0, 0);
+        lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), paramsB, bytes32(0), 0, type(uint128).max);
 
         // Lender's lend with the original paramHash reverts — staged params changed, so loose hash mismatches
         vm.prank(lender2);
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
-        lending.lend(lendingId, quotedHash, 0, type(uint128).max, 0, 0, true);
+        lending.lend(lendingId, quotedHash, 0, type(uint128).max, 0, 0, 5e6);
     }
 
     // -------------------------------------------------------------------------
