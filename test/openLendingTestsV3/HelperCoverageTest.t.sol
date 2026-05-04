@@ -6,6 +6,7 @@ import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "../utils/MockWETH.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 contract MintableERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
@@ -317,8 +318,11 @@ contract HelperCoverageTest is Test {
         vm.prank(lender);
         lending.liquidate{value: 1e15}(lendingId, 8 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15);
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
-        assertTrue(feeRecipient != address(0), "fee receiver deployed by liquidate");
+        uint256 reportId = oracle.nextReportId() - 1;
+        address feeRecipient = Clones.predictDeterministicAddress(
+            lending.feeReceiverImpl(), bytes32(reportId), address(lending)
+        );
+        assertTrue(feeRecipient.code.length > 0, "fee receiver deployed by liquidate");
 
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);

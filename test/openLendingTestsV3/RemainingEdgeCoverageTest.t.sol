@@ -137,9 +137,6 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
     function testLiquidate_InitializesCloneFeeReceiver() public {
         uint256 lendingId = _setupActiveLoan(5e6);
-        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
-
-        assertEq(loanBefore.feeRecipient, address(0), "fee recipient should stay unset before liquidation");
 
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
@@ -151,10 +148,10 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             0
         , 1e15);
 
-        openLend.LendingArrangement memory loanDuring = lending.getLending(lendingId);
-        assertTrue(loanDuring.feeRecipient != address(0), "liquidation should deploy a fee receiver");
+        address predicted = _predictFeeReceiver(_latestReportId());
+        assertTrue(predicted.code.length > 0, "liquidation should deploy a fee receiver");
 
-        oracleFeeReceiver feeReceiver = oracleFeeReceiver(loanDuring.feeRecipient);
+        oracleFeeReceiver feeReceiver = oracleFeeReceiver(predicted);
         assertEq(feeReceiver.owner(), address(lending), "clone owner mismatch");
         assertEq(feeReceiver.gameId(), lendingId, "clone gameId mismatch");
         assertEq(address(feeReceiver.oracle()), address(oracle), "clone oracle mismatch");
@@ -165,7 +162,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     /// @dev Refinance does NOT deploy a fee receiver; only liquidate does. Cleared on lend-refi.
     function testRefinance_LeavesFeeRecipientUnsetUntilLiquidation() public {
         uint256 lendingId = _setupActiveLoan(5e6);
-        assertEq(lending.getLending(lendingId).feeRecipient, address(0), "fee recipient should start unset");
+        assertEq(lending.lendingToReportId(lendingId), 0, "no report yet (no liquidation)");
 
         // Borrower opens refi
         vm.prank(borrower);
@@ -186,8 +183,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         vm.prank(lender2);
         lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertEq(loan.feeRecipient, address(0), "refi should not deploy a fee receiver");
+        assertEq(lending.lendingToReportId(lendingId), 0, "refi should not deploy a fee receiver");
     }
 
     // ---------------- grab oracle game fees ----------------
@@ -207,8 +203,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             0
         , 1e15);
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
         uint256 reportId = oracle.nextReportId() - 1;
+        address feeRecipient = _predictFeeReceiver(reportId);
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
 
         vm.warp(block.timestamp + 120);
@@ -254,7 +250,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             0
         , 1e15);
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
+        address feeRecipient = _predictFeeReceiver(_latestReportId());
 
         // Set up a second loan to obtain a "wrong" lendingId that exists
         uint256 otherLendingId = _setupActiveLoan(5e6);

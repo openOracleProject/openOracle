@@ -109,7 +109,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanDuring = lending.getLending(lendingId);
         assertTrue(loanDuring.inLiquidation, "Loan should be in liquidation");
         assertEq(loanDuring.liquidator, liquidator, "Liquidator should be set");
-        assertTrue(loanDuring.feeRecipient != address(0), "fee receiver should be created");
+        assertTrue(_predictFeeReceiver(_latestReportId()).code.length > 0, "fee receiver should be deployed");
 
         uint256 reportId = oracle.nextReportId() - 1;
         (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
@@ -391,6 +391,25 @@ contract LiquidationTest is OpenLendingBaseTest {
         , 1e15);
     }
 
+    /// @dev `paramHashExpected = bytes32(0)` is intentionally a skip sentinel — liquidate must succeed without
+    ///      any param-hash check.
+    function testLiquidate_AcceptsZeroParamHashAsSkip() public {
+        uint256 lendingId = _setupLoan(5e6);
+        vm.warp(block.timestamp + 10 days);
+
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            _priceRatioFor(8 ether),
+            type(uint128).max,
+            bytes32(0),
+            0
+        , 1e15);
+
+        assertTrue(lending.getLending(lendingId).inLiquidation,
+            "liquidate succeeds with bytes32(0) paramHash (skip sentinel)");
+    }
+
     /// @dev V3 deliberately doesn't add a local zero-check on oracleAmount2; degenerate priceRatio reverts via
     ///      the openOracle initial-report path. Verify the revert happens cleanly with no state stuck.
     function testLiquidate_TinyPriceRatioRevertsCleanly() public {
@@ -413,7 +432,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         // No state should have stuck — liquidator can still call cleanly afterwards
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
         assertFalse(loan.inLiquidation, "should not be in liquidation after revert");
-        assertEq(loan.feeRecipient, address(0), "feeRecipient should not be set after revert");
+        assertEq(lending.lendingToReportId(lendingId), 0, "no reportId after revert");
     }
 
     function testLiquidate_RejectsAboveMaxInitialLiquidity() public {
@@ -496,7 +515,7 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         // No fee recipient deployed when fee is 0
         openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
-        assertEq(midLoan.feeRecipient, address(0), "feeRecipient should stay zero when oracleGameFee == 0");
+        assertEq(_predictFeeReceiver(_latestReportId()).code.length, 0, "no clone deployed when oracleGameFee == 0");
         assertTrue(midLoan.inLiquidation, "inLiquidation set");
 
         // Drive to underwater
@@ -525,8 +544,8 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         // First liquidation — fails (favorable price)
         _liquidate(liquidator, lendingId, 12 ether);
-        address feeRecipient1 = lending.getLending(lendingId).feeRecipient;
-        assertTrue(feeRecipient1 != address(0), "first feeRecipient deployed");
+        address feeRecipient1 = _predictFeeReceiver(_latestReportId());
+        assertTrue(feeRecipient1.code.length > 0, "first feeRecipient deployed");
 
         // Generate fees on receiver #1 via dispute, then settle to fail
         uint256 reportId1 = oracle.nextReportId() - 1;
@@ -553,8 +572,8 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId2 = _setupLoan(5e6);
         vm.warp(block.timestamp + 1 days);
         _liquidate(liquidator, lendingId2, 12 ether);
-        address feeRecipient2 = lending.getLending(lendingId2).feeRecipient;
-        assertTrue(feeRecipient2 != address(0), "second feeRecipient deployed");
+        address feeRecipient2 = _predictFeeReceiver(_latestReportId());
+        assertTrue(feeRecipient2.code.length > 0, "second feeRecipient deployed");
         assertTrue(feeRecipient2 != feeRecipient1, "fee receivers should be distinct clones");
 
         // Beneficiaries on receiver #2 are independent

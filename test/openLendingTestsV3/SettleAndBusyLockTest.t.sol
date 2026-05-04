@@ -287,7 +287,6 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanRecovered = lending.getLending(lendingId);
         assertFalse(loanRecovered.inLiquidation, "recover cleared inLiquidation");
         assertEq(loanRecovered.liquidator, address(0), "recover cleared liquidator");
-        assertEq(loanRecovered.feeRecipient, address(0), "recover cleared feeRecipient");
         assertEq(lending.reportIdToLending(reportId), 0, "recover cleared reportIdToLending");
         assertEq(lending.lendingToReportId(lendingId), 0, "recover cleared lendingToReportId");
         // recover doesn't pay a settler reward — its own settler-reward forwarding only fires when settle
@@ -461,7 +460,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidateEvil(lendingId, evil);
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
+        address feeRecipient = _predictFeeReceiver(reportId);
 
         (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
@@ -497,7 +496,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint256 reportIdA = _liquidateEvil(lendingIdA, evil);
         uint256 reportIdB = _liquidateEvil(lendingIdB, evil);
 
-        address feeRecipientA = lending.getLending(lendingIdA).feeRecipient;
+        address feeRecipientA = _predictFeeReceiver(reportIdA);
 
         // Dispute A using evil-supply as the swap-in token to populate fees in receiverA. Evil hook is silent
         // here (no payload set yet).
@@ -555,7 +554,6 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanBRecovered = lending.getLending(lendingIdB);
         assertFalse(loanBRecovered.inLiquidation, "recover cleared B's inLiquidation");
         assertEq(loanBRecovered.liquidator, address(0), "recover cleared B's liquidator");
-        assertEq(loanBRecovered.feeRecipient, address(0), "recover cleared B's feeRecipient");
         assertEq(lending.reportIdToLending(reportIdB), 0, "recover cleared B's reportId mapping");
         assertEq(lending.lendingToReportId(lendingIdB), 0, "recover cleared B's reverse mapping");
     }

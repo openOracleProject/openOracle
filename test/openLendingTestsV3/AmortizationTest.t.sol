@@ -195,12 +195,12 @@ contract AmortizationTest is OpenLendingBaseTest {
     // 2. Liquidation debt
     // -------------------------------------------------------------------------
 
-    /// @dev Paying into the commitment floor reduces _liquidationOwed even if principal is unchanged.
-    ///      Verified end-to-end: a small loan whose floor exceeds principal can be paid down to zero
-    ///      net liquidation exposure, which makes a subsequent liquidate() revert "no net borrow".
-    function testLiqDebt_PrepaidFloor_ZeroLiquidationOwedBlocksLiquidate() public {
-        // Custom loan where commitInt >= principal so we can drive _liquidationOwed to 0 without finishing.
-        // principal = 0.5e18, rate = 2e9 (200% APR), term = 365 days, commitFrac = 1e7 → commitInt = principal.
+    /// @dev Liquidation debt is the symmetric `_residualDebt` (= principal + max(accrued, commitInt) - paid),
+    ///      so paying into the commitment floor cannot drive liquidation owed to zero — the floor is part of
+    ///      the lender's claim and remains liquidatable. This guards against any regression to the old
+    ///      mark-to-market `_liquidationOwed` that clamped at zero.
+    function testLiqDebt_FloorIncludedInLiquidationDebt() public {
+        // principal = 0.5 ether, rate = 2e9 (200% APR), term = 365 days, commitFrac = 1e7 → commitInt = 1 ether.
         openLend.InterestRateParams memory ir = _standardInterestRateParams();
         ir.maxRate = 2e9;
         ir.startingRate = 2e9;
@@ -220,39 +220,34 @@ contract AmortizationTest is OpenLendingBaseTest {
         );
         _lendWithFraction(lender, lendingId, 0);
 
-        // Pay exactly principal: payInt caps at commitInt = 0.5e18; principal unchanged.
+        // Pay 0.5 ether into the floor: payInt caps at commitInt; principal unchanged.
         vm.prank(borrower);
         lending.repayDebt(lendingId, uint128(0.5 ether), bytes32(0), 0, type(uint128).max);
 
-        // _liquidationOwed = principal(0.5) + accrued(0) - interestPaid(0.5) → clamps to 0.
+        // _residualDebt = principal(0.5) + commitInt(1.0) - paid(0.5) = 1 ether → still liquidatable.
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "no net borrow"));
         lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(0.06 ether), type(uint128).max, paramHash, 0, 1e15);
+
+        assertTrue(lending.getLending(lendingId).inLiquidation,
+            "liquidation succeeded; commitment floor counted toward liquidation debt");
     }
 
-    /// @dev Liquidation borrowValue uses mark-to-market accrued interest, not the commitment floor.
-    ///      Setup a loan early in life where accrued interest is well below commitInt; the failed-liq path
-    ///      fires for a price that would mark the position underwater under commitInt-inclusive math.
-    function testLiqDebt_UsesMarkToMarketNotCommitmentFloor() public {
+    /// @dev Healthy-position liquidation attempt resolves as failed-liq when collateral comfortably covers
+    ///      the commitment-inclusive residual debt. (Liquidation debt = principal + max(accrued, commitInt) - paid.)
+    function testLiqDebt_HealthyPositionFailedLiquidation() public {
         uint256 lendingId = _setupActiveLoan(0);
-        // Liquidate immediately at a price that would trip an underwater determination if the debt was
-        // inflated by the commitment floor — but actually leaves room because accrued is ~0.
-        // borrowValueInSupplyTerms = mark-to-market debt * oracleAmount1 / oracleAmount2.
-        // Pick oracleAmount2 high so the supply-denominated debt stays below the 80% threshold.
         bytes32 paramHash = lending.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(12 ether), type(uint128).max, paramHash, 0, 1e15);
 
         uint256 reportId = oracle.nextReportId() - 1;
-        // Settle without dispute → resolves to liquidator's favorable price → failed liq, since mark-to-market
-        // debt (≈ principal alone here) doesn't exceed liqThresh (= 80% of supply).
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
         oracle.settle(reportId);
 
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertFalse(loan.finished, "failed-liq because debt valuation ignored commitInt floor");
+        assertFalse(loan.finished, "failed-liq: residual stayed under threshold");
         assertFalse(loan.inLiquidation, "liq cleared");
     }
 
@@ -798,9 +793,12 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(settler);
         oracle.settle(reportId);
 
-        // Read post-settle amort state to reproduce the contract's exact `_liquidationOwed` value.
+        // Read post-settle amort state to reproduce the contract's exact `_residualDebt` value (commitment-inclusive).
         openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        uint256 liqOwed = uint256(loan.principal) + uint256(loan.interestAccrued) - uint256(loan.interestPaid);
+        uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
+            ? uint256(loan.interestAccrued)
+            : uint256(loan.commitmentInterest);
+        uint256 liqOwed = uint256(loan.principal) + interestClaim - uint256(loan.interestPaid);
         uint256 borrowValueInSupplyTerms = liqOwed * 10 ether / 6 ether;     // oracleAmount1=10, oracleAmount2=6
         uint256 buffer = uint256(SUPPLY_AMOUNT) - borrowValueInSupplyTerms;
         uint256 expectedLiquidatorBufferShare = buffer * fraction / 1e7;
@@ -850,8 +848,11 @@ contract AmortizationTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
         assertTrue(loanFinal.finished, "underwater succeeded post-amort");
 
-        // Reproduce contract math from post-settle amort state.
-        uint256 liqOwed = uint256(loanFinal.principal) + uint256(loanFinal.interestAccrued) - uint256(loanFinal.interestPaid);
+        // Reproduce contract math from post-settle amort state (commitment-inclusive residual).
+        uint256 interestClaim = loanFinal.interestAccrued > loanFinal.commitmentInterest
+            ? uint256(loanFinal.interestAccrued)
+            : uint256(loanFinal.commitmentInterest);
+        uint256 liqOwed = uint256(loanFinal.principal) + interestClaim - uint256(loanFinal.interestPaid);
         uint256 borrowValueInSupplyTerms = liqOwed * 10 ether / 5 ether;
 
         uint256 lenderGain = supplyToken.balanceOf(lender) - lenderBefore;

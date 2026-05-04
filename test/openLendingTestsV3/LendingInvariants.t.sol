@@ -9,6 +9,7 @@ import "../../src/OpenOracle.sol";
 import "../../src/oracleFeeReceiver.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 contract LendingInvariantHandler is Test {
     openLend public immutable lending;
@@ -399,11 +400,15 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-            if (loan.feeRecipient == address(0)) continue;
+            uint256 reportId = lending.lendingToReportId(lendingId);
+            if (reportId == 0) continue;
 
-            oracleFeeReceiver feeReceiver = oracleFeeReceiver(loan.feeRecipient);
-            assertEq(feeReceiver.gameId(), lendingId, "fee receiver gameId mismatch");
+            address predicted = Clones.predictDeterministicAddress(
+                lending.feeReceiverImpl(), bytes32(reportId), address(lending)
+            );
+            if (predicted.code.length == 0) continue;
+
+            assertEq(oracleFeeReceiver(predicted).gameId(), lendingId, "fee receiver gameId mismatch");
         }
     }
 }

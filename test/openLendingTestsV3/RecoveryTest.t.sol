@@ -135,7 +135,6 @@ contract RecoveryTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
         assertFalse(loanAfter.inLiquidation, "inLiquidation cleared");
         assertEq(loanAfter.liquidator, address(0), "liquidator cleared");
-        assertEq(loanAfter.feeRecipient, address(0), "feeRecipient cleared");
         assertEq(loanAfter.liquidationStart, 0, "liquidationStart cleared");
         assertEq(lending.reportIdToLending(reportId), 0, "mapping cleared by recover");
 
@@ -239,8 +238,8 @@ contract RecoveryTest is OpenLendingBaseTest {
         vm.prank(disputer);
         oracle.disputeAndSwap(reportId, address(supplyToken), 20 ether, 30 ether, disputer, 8 ether, stateHash);
 
-        address feeRecipient = lending.getLending(lendingId).feeRecipient;
-        assertTrue(feeRecipient != address(0), "fee receiver deployed");
+        address feeRecipient = _predictFeeReceiver(reportId);
+        assertTrue(feeRecipient.code.length > 0, "fee receiver deployed");
 
         _settleWithBrokenCallback(reportId);
 

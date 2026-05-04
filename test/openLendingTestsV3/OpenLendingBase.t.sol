@@ -6,6 +6,7 @@ import "../../src/openLendV3.sol";
 import "../../src/OpenOracle.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 abstract contract OpenLendingBaseTest is Test {
     openLend internal lending;
@@ -186,5 +187,19 @@ abstract contract OpenLendingBaseTest is Test {
         uint256 year = 365 days;
         uint256 interest = (principal * uint256(term) * uint256(rate)) / (1e9 * year);
         return uint128(principal + interest);
+    }
+
+    /// @dev Predicts the deterministic fee-receiver clone address for a given oracle reportId.
+    function _predictFeeReceiver(uint256 reportId) internal view returns (address) {
+        return Clones.predictDeterministicAddress(
+            lending.feeReceiverImpl(),
+            bytes32(reportId),
+            address(lending)
+        );
+    }
+
+    /// @dev Returns the latest reportId (use right after a liquidate() call).
+    function _latestReportId() internal view returns (uint256) {
+        return oracle.nextReportId() - 1;
     }
 }
