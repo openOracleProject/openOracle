@@ -296,7 +296,7 @@ contract openLend is ReentrancyGuard {
         lending.commitmentFraction = commitmentFraction;
         lending.gasCompensation = gasCompensation;
 
-        IERC20(supplyToken).safeTransferFrom(msg.sender, address(this), supplyAmount);
+        _transferFromExact(supplyToken, msg.sender, address(this), supplyAmount);
 
         emit BorrowRequested(
             msg.sender,
@@ -334,7 +334,7 @@ contract openLend is ReentrancyGuard {
         _clearRefiCurve(lending);
 
         _sendGasComp(lending);
-        IERC20(lending.supplyToken).safeTransfer(msg.sender, lending.supplyAmount);
+        _transferTokens(lending.supplyToken, address(this), msg.sender, lending.supplyAmount);
 
         emit BorrowRequestCancelled(msg.sender, lendingId);
     }
@@ -422,7 +422,7 @@ contract openLend is ReentrancyGuard {
             );
 
             _payEth(msg.sender, gasCompensation);
-            IERC20(borrowToken).safeTransferFrom(msg.sender, borrower, principal);
+            _transferFromExact(borrowToken, msg.sender, borrower, principal);
 
             emit LoanOriginated(
                 lendingId, msg.sender, principal, rate, uint48(currentTime), prevTerm, uint96(gasCompensation), liquidatorFraction
@@ -472,10 +472,10 @@ contract openLend is ReentrancyGuard {
             _clearRefiCurve(lending);
 
             _payEth(msg.sender, gasCompensation);
-            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), newBorrowAmount);
+            _transferFromExact(borrowToken, msg.sender, address(this), newBorrowAmount);
             _transferTokens(borrowToken, address(this), prevLender, netTerminalDebtPrev);
-            if (extraDemanded > 0) IERC20(borrowToken).safeTransfer(borrower, extraDemanded);
-            if (supplyPulled > 0) IERC20(supplyToken).safeTransfer(borrower, supplyPulled);
+            if (extraDemanded > 0) _transferTokens(borrowToken, address(this), borrower, extraDemanded);
+            if (supplyPulled > 0) _transferTokens(supplyToken, address(this), borrower, supplyPulled);
 
             emit LoanRefinanced(
                 lendingId,
@@ -601,7 +601,7 @@ contract openLend is ReentrancyGuard {
         _clearRefiCurve(lending);
 
         _sendGasComp(lending);
-        IERC20(lending.supplyToken).safeTransfer(lending.lender, supplyAmount);
+        _transferTokens(lending.supplyToken, address(this), lending.lender, supplyAmount);
 
         emit CollateralClaimedByLender(lendingId, supplyAmount);
     }
@@ -813,8 +813,8 @@ contract openLend is ReentrancyGuard {
         reportIdToLending[reportId] = lendingId;
         lendingToReportId[lendingId] = reportId;
 
-        IERC20(supplyToken).safeTransferFrom(msg.sender, address(this), initialLiquidity + tokenStake);
-        IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), oracleAmount2);
+        _transferFromExact(supplyToken, msg.sender, address(this), initialLiquidity + tokenStake);
+        _transferFromExact(borrowToken, msg.sender, address(this), oracleAmount2);
 
         _ensureOracleApproval(supplyToken);
         _ensureOracleApproval(borrowToken);
@@ -1073,15 +1073,15 @@ contract openLend is ReentrancyGuard {
             _clearRefiCurve(lending);
 
             _sendGasComp(lending);
-            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), owed);
+            _transferFromExact(borrowToken, msg.sender, address(this), owed);
             _transferTokens(borrowToken, address(this), lender, owed);
-            IERC20(lending.supplyToken).safeTransfer(lending.borrower, supplied);
+            _transferTokens(lending.supplyToken, address(this), lending.borrower, supplied);
             emit DebtRepaid(lendingId, msg.sender, owed, true);
         } else {
 
             _applyAmortPartial(lending, amount);
 
-            IERC20(borrowToken).safeTransferFrom(msg.sender, address(this), amount);
+            _transferFromExact(borrowToken, msg.sender, address(this), amount);
             _transferTokens(borrowToken, address(this), lender, amount);
             emit DebtRepaid(lendingId, msg.sender, amount, false);
         }
@@ -1119,7 +1119,7 @@ contract openLend is ReentrancyGuard {
 
         lending.supplyAmount += amount;
 
-        IERC20(lending.supplyToken).safeTransferFrom(msg.sender, address(this), amount);
+        _transferFromExact(lending.supplyToken, msg.sender, address(this), amount);
 
         emit CollateralToppedOff(lendingId, msg.sender, amount);
     }
@@ -1233,16 +1233,28 @@ contract openLend is ReentrancyGuard {
         emit OracleGameFeesGrabbed(lendingId, feeRecipient, feesSupply, feesBorrow);
     }
 
+    /// @dev Pulls tokens and rejects fee-on-transfer / rebasing behavior that changes the recipient by
+    ///      anything other than `amount`.
+    function _transferFromExact(address token, address from, address to, uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 balanceBefore = IERC20(token).balanceOf(to);
+        IERC20(token).safeTransferFrom(from, to, amount);
+        if (from != to && IERC20(token).balanceOf(to) != balanceBefore + amount) {
+            revert InvalidInput("unsupported token");
+        }
+    }
+
     /**
      * @dev Token transfer with a fallback to per-recipient escrow. When sending from this contract, treats
-     *      both standard bool-true returns and bare empty returns from a contract token as success; on any
-     *      other outcome the amount is credited to `tempHolding` so the recipient can pull it later via
-     *      `getTempHolding`. Transfers from a third-party use the standard SafeERC20 path with no fallback.
+     *      both standard bool-true returns and bare empty returns from a contract token as success only when
+     *      the recipient receives exactly `amount`; fee-on-transfer / rebasing behavior reverts as unsupported.
+     *      Failed outgoing transfers are credited to `tempHolding` so the recipient can pull later.
      */
     function _transferTokens(address token, address from, address to, uint256 amount) internal {
         if (amount == 0) return; // Gas optimization: skip zero transfers
 
         if (from == address(this)) {
+            uint256 balanceBefore = IERC20(token).balanceOf(to);
             (bool success, bytes memory returndata) =
                 token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
 
@@ -1253,12 +1265,15 @@ contract openLend is ReentrancyGuard {
                             || (returndata.length == 0 && address(token).code.length > 0)
                     )
             ) {
+                if (IERC20(token).balanceOf(to) != balanceBefore + amount) {
+                    revert InvalidInput("unsupported token");
+                }
                 return;
             }
 
             tempHolding[to][token] += amount;
         } else {
-            IERC20(token).safeTransferFrom(from, to, amount);
+            _transferFromExact(token, from, to, amount);
         }
     }
 
@@ -1490,4 +1505,3 @@ contract openLend is ReentrancyGuard {
         return keccak256(abi.encode(copy));
     }
 }
-

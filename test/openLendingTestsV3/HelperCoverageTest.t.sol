@@ -46,6 +46,43 @@ contract BlacklistableMintableERC20 is ERC20 {
     }
 }
 
+contract FeeOnTransferMintableERC20 is ERC20 {
+    uint16 public feeBps;
+    address public feeRecipient = address(0xFEE);
+
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setFeeBps(uint16 _feeBps) external {
+        require(_feeBps <= 10_000, "fee too high");
+        feeBps = _feeBps;
+    }
+
+    function transfer(address to, uint256 amount) public override returns (bool) {
+        _transferWithFee(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        _spendAllowance(from, msg.sender, amount);
+        _transferWithFee(from, to, amount);
+        return true;
+    }
+
+    function _transferWithFee(address from, address to, uint256 amount) internal {
+        uint256 fee = uint256(amount) * feeBps / 10_000;
+        if (fee > 0) {
+            super._transfer(from, feeRecipient, fee);
+            super._transfer(from, to, amount - fee);
+        } else {
+            super._transfer(from, to, amount);
+        }
+    }
+}
+
 /// @notice Coverage for the helper / view / fallback paths in V3 that aren't naturally exercised by lifecycle tests.
 contract HelperCoverageTest is Test {
     openLend internal lending;
@@ -146,6 +183,160 @@ contract HelperCoverageTest is Test {
             lenderBorrowBefore + totalOwed,
             "lender should recover withheld funds"
         );
+    }
+
+    function testTempHolding_BlacklistedBorrowerCollateralOnFullRepay() public {
+        BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
+        _setupBlacklistableSupplyAccounts(bSupply);
+
+        uint256 lendingId =
+            _setupActiveLoan(address(bSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
+        uint32 rate = lending.getLending(lendingId).rate;
+        uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
+
+        uint256 borrowerSupplyBefore = bSupply.balanceOf(borrower);
+        bSupply.blacklist(borrower);
+
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertTrue(loan.finished, "loan should finish even when borrower cannot receive collateral");
+        assertEq(bSupply.balanceOf(borrower), borrowerSupplyBefore, "borrower direct receipt blocked");
+        assertEq(
+            lending.tempHolding(borrower, address(bSupply)), SUPPLY_AMOUNT, "borrower's collateral should be escrowed"
+        );
+
+        bSupply.unblacklist(borrower);
+        vm.prank(borrower);
+        lending.getTempHolding(address(bSupply));
+
+        assertEq(lending.tempHolding(borrower, address(bSupply)), 0, "borrower escrow cleared");
+        assertEq(bSupply.balanceOf(borrower), borrowerSupplyBefore + SUPPLY_AMOUNT, "borrower recovered collateral");
+    }
+
+    function testTempHolding_BlacklistedLenderClaimCollateral() public {
+        BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
+        _setupBlacklistableSupplyAccounts(bSupply);
+
+        uint256 lendingId =
+            _setupActiveLoan(address(bSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
+        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
+
+        bSupply.blacklist(lender);
+        uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
+
+        vm.warp(uint256(loanBefore.start) + loanBefore.term + 1);
+        lending.claimCollateral(lendingId);
+
+        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        assertTrue(loanAfter.finished, "claim should finish even when lender cannot receive collateral");
+        assertEq(bSupply.balanceOf(lender), lenderSupplyBefore, "lender direct receipt blocked");
+        assertEq(lending.tempHolding(lender, address(bSupply)), SUPPLY_AMOUNT, "lender collateral escrowed");
+
+        bSupply.unblacklist(lender);
+        vm.prank(lender);
+        lending.getTempHolding(address(bSupply));
+
+        assertEq(lending.tempHolding(lender, address(bSupply)), 0, "lender escrow cleared");
+        assertEq(bSupply.balanceOf(lender), lenderSupplyBefore + SUPPLY_AMOUNT, "lender recovered collateral");
+    }
+
+    // -------------------------------------------------------------------------
+    // Unsupported token accounting
+    // -------------------------------------------------------------------------
+
+    function testFeeOnTransferSupplyRejectedOnRequestBorrow() public {
+        FeeOnTransferMintableERC20 feeSupply = new FeeOnTransferMintableERC20("Fee Supply", "FSUP");
+        feeSupply.mint(borrower, 10_000 ether);
+        feeSupply.setFeeBps(100);
+
+        vm.prank(borrower);
+        feeSupply.approve(address(lending), type(uint256).max);
+
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "unsupported token"));
+        vm.prank(borrower);
+        lending.requestBorrow(
+            LOAN_TERM,
+            address(feeSupply),
+            address(borrowToken),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            _standardInterestRateParams()
+        );
+    }
+
+    function testFeeOnTransferBorrowRejectedOnOrigination() public {
+        FeeOnTransferMintableERC20 feeBorrow = new FeeOnTransferMintableERC20("Fee Borrow", "FBOR");
+        feeBorrow.mint(lender, 10_000 ether);
+        feeBorrow.setFeeBps(100);
+
+        vm.prank(lender);
+        feeBorrow.approve(address(lending), type(uint256).max);
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(supplyToken),
+            address(feeBorrow),
+            LIQUIDATION_THRESHOLD,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            0,
+            _standardOracleParams(),
+            _standardInterestRateParams()
+        );
+
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "unsupported token"));
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+    }
+
+    function testFeeOnTransferBorrowRejectedOnRepay() public {
+        FeeOnTransferMintableERC20 feeBorrow = new FeeOnTransferMintableERC20("Fee Borrow", "FBOR");
+        feeBorrow.mint(lender, 10_000 ether);
+        feeBorrow.mint(borrower, 10_000 ether);
+
+        vm.prank(lender);
+        feeBorrow.approve(address(lending), type(uint256).max);
+        vm.prank(borrower);
+        feeBorrow.approve(address(lending), type(uint256).max);
+
+        uint256 lendingId =
+            _setupActiveLoan(address(supplyToken), address(feeBorrow), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
+
+        feeBorrow.setFeeBps(100);
+
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "unsupported token"));
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+    }
+
+    function testFeeOnTransferSupplyRejectedOnTopUp() public {
+        FeeOnTransferMintableERC20 feeSupply = new FeeOnTransferMintableERC20("Fee Supply", "FSUP");
+        feeSupply.mint(borrower, 10_000 ether);
+        feeSupply.mint(topper, 10_000 ether);
+
+        vm.prank(borrower);
+        feeSupply.approve(address(lending), type(uint256).max);
+        vm.prank(topper);
+        feeSupply.approve(address(lending), type(uint256).max);
+
+        uint256 lendingId =
+            _setupActiveLoan(address(feeSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
+
+        feeSupply.setFeeBps(100);
+
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "unsupported token"));
+        vm.prank(topper);
+        lending.topUpCollateralAnyone(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
     }
 
     // -------------------------------------------------------------------------
