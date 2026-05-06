@@ -13,9 +13,11 @@ import "../utils/MockERC20.sol";
  * maxGameTime allows bailout if oracle game takes too long.
  * Condition: block.timestamp - s.start > s.oracleParams.maxGameTime
  *
- * This is independent of:
- * - isLatent (no initial report within latencyBailout)
- * - isDistributed (oracle already distributed but callback failed)
+ * Ordering note: bailOut checks `rs.settlementTimestamp != 0` first and routes to
+ * _executeSwap (executing the swap at the discovered price) when the oracle has
+ * settled. The maxGameTime → refund branch only fires when the oracle has NOT
+ * settled. So a swap whose oracle settled but whose callback failed is finalized
+ * via bailOut even after maxGameTime has elapsed.
  */
 contract OpenSwapMaxGameTimeTest is Test {
     OpenOracle internal oracle;

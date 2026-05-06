@@ -333,10 +333,12 @@ contract OpenSwapCancellationTest is Test {
     }
 
     function testBailOut_OracleDistributedButCallbackFails() public {
-        // Edge case: oracle settles (isDistributed=true) but callback fails
-        // This leaves swap.finished = false, so bailout should work
+        // Edge case: oracle settles (settlementTimestamp != 0) but callback fails.
+        // bailOut now executes the swap at the discovered price rather than refunding,
+        // so that a stuck callback can't be used as a free escape hatch.
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
+        uint256 matcherSellBefore = sellToken.balanceOf(matcher);
         uint256 matcherBuyBefore = buyToken.balanceOf(matcher);
 
         uint256 swapId = _createSwap();
@@ -344,11 +346,6 @@ contract OpenSwapCancellationTest is Test {
 
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
         uint256 reportId = s.reportId;
-
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
-
-        vm.startPrank(initialReporter);
-        vm.stopPrank();
 
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
@@ -360,30 +357,98 @@ contract OpenSwapCancellationTest is Test {
             "callback failed"
         );
 
-        // Settle oracle - callback will fail but oracle still marks isDistributed = true
+        // Settle oracle - callback will fail but oracle still marks settlementTimestamp
         oracle.settle(reportId);
 
-        // Clear the mock
+        // Clear the mock so bailOut's _executeSwap can run normally
         vm.clearMockedCalls();
 
-        // Verify oracle is distributed (settlementTimestamp != 0 means distributed)
+        // Verify oracle is settled
         (,,,, uint48 rsSettlementTimestamp,,) = oracle.reportStatus(reportId);
-        assertTrue(rsSettlementTimestamp != 0, "Oracle should be distributed");
+        assertTrue(rsSettlementTimestamp != 0, "Oracle should be settled");
 
         // Verify swap is NOT finished (callback failed)
         openSwapV2Permit.Swap memory sAfter = swapContract.getSwap(swapId);
         assertFalse(sAfter.finished, "Swap should NOT be finished since callback failed");
 
-        // Now bailout should work via the isDistributed path
+        // bailOut now executes the swap at the discovered price
         swapContract.bailOut(swapId);
 
         // Verify swap is now finished
         openSwapV2Permit.Swap memory sFinal = swapContract.getSwap(swapId);
         assertTrue(sFinal.finished, "Swap should be finished after bailout");
 
-        // Verify refunds happened
-        assertEq(sellToken.balanceOf(swapper), swapperSellBefore, "Swapper should have sellToken back");
-        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore, "Matcher should have buyToken back");
+        // price = INITIAL_LIQUIDITY * 1e18 / amount2 = 1e18 * 1e18 / 2000e18 = 5e14 (matches priceTolerated)
+        // raw fulfillAmt = SELL_AMT * amount2 / INITIAL_LIQUIDITY = 10e18 * 2000e18 / 1e18 = 20000e18
+        // fulfillmentFee at match time = STARTING_FEE = 10000 (1e7 denom = 0.1%)
+        // fulfillAmt -= 20000e18 * 10000 / 1e7 = 20e18  →  19980e18
+        uint256 expectedFulfillAmt = 19980e18;
+
+        // Swap executed: swapper sold SELL_AMT, received expectedFulfillAmt of buyToken
+        assertEq(sellToken.balanceOf(swapper), swapperSellBefore - SELL_AMT, "Swapper should have sold SELL_AMT");
+        assertEq(buyToken.balanceOf(swapper), expectedFulfillAmt, "Swapper should have received fulfillAmt of buyToken");
+
+        // Matcher: oracle returned the initialLiquidity sellToken stake (no disputes), then _executeSwap
+        // transferred SELL_AMT of sellToken from openSwap → matcher. Net sellToken change = +SELL_AMT.
+        assertEq(sellToken.balanceOf(matcher), matcherSellBefore + SELL_AMT, "Matcher should have received SELL_AMT of sellToken");
+        // Matcher buyToken net change = -fulfillAmt (rest was returned by oracle and by _executeSwap residual)
+        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore - expectedFulfillAmt, "Matcher should be net out fulfillAmt of buyToken");
+    }
+
+    function testBailOut_SettledTakesPriorityOverMaxGameTime() public {
+        // Regression: even when maxGameTime has elapsed, a settled-but-callback-failed
+        // swap is finalized via _executeSwap (not refunded). The settlementTimestamp
+        // branch in bailOut takes priority over the isGameTooLong branch.
+
+        uint256 swapperSellBefore = sellToken.balanceOf(swapper);
+        uint256 matcherSellBefore = sellToken.balanceOf(matcher);
+        uint256 matcherBuyBefore = buyToken.balanceOf(matcher);
+
+        uint256 swapId = _createSwap();
+        _matchSwap(swapId);
+
+        openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
+        uint256 reportId = s.reportId;
+        uint256 matchTime = s.start;
+
+        // Advance just past settlementTime so the oracle is settleable.
+        // Roll blocks consistent with blocksPerSecond=500 (i.e. 0.5 blocks/sec)
+        // so impliedBlocksPerSecond stays in tolerance once we hit _executeSwap.
+        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+
+        // Mock onSettle to revert during oracle.settle so the report is marked
+        // settled while the swap stays in `matched && !finished` state.
+        vm.mockCallRevert(
+            address(swapContract),
+            abi.encodeWithSelector(openSwapV2Permit.onSettle.selector),
+            "callback failed"
+        );
+        oracle.settle(reportId);
+        vm.clearMockedCalls();
+
+        // Warp the rest of the way past maxGameTime, again maintaining the block ratio.
+        uint256 additionalSecs = MAX_GAME_TIME - SETTLEMENT_TIME;
+        vm.warp(block.timestamp + additionalSecs);
+        vm.roll(block.number + additionalSecs / 2);
+
+        // Sanity: both branches' triggering conditions hold.
+        (,,,, uint48 rsSettlementTimestamp,,) = oracle.reportStatus(reportId);
+        assertTrue(rsSettlementTimestamp != 0, "Oracle should be settled");
+        assertTrue(block.timestamp - matchTime > MAX_GAME_TIME, "maxGameTime should be exceeded");
+
+        swapContract.bailOut(swapId);
+
+        openSwapV2Permit.Swap memory sFinal = swapContract.getSwap(swapId);
+        assertTrue(sFinal.finished, "Swap should be finished");
+
+        // Asserts the settled branch ran, NOT the maxGameTime refund branch.
+        // Refund would have left swapper holding the original sellToken balance; execute does not.
+        uint256 expectedFulfillAmt = 19980e18;
+        assertEq(sellToken.balanceOf(swapper), swapperSellBefore - SELL_AMT, "Swapper should have sold SELL_AMT (executed, not refunded)");
+        assertEq(buyToken.balanceOf(swapper), expectedFulfillAmt, "Swapper should have received fulfillAmt of buyToken");
+        assertEq(sellToken.balanceOf(matcher), matcherSellBefore + SELL_AMT, "Matcher should have received SELL_AMT of sellToken");
+        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore - expectedFulfillAmt, "Matcher should be net out fulfillAmt of buyToken");
     }
 
     function testBailOut_FailsIfReportIdZero() public {

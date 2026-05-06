@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../../src/OpenOracle.sol";
 import "../../src/openSwapV2.sol";
 import "../utils/MockERC20.sol";
+import "../utils/MaliciousReentrantToken.sol";
 
 /**
  * @title OpenSwapOnSettleTest
@@ -233,11 +234,12 @@ contract OpenSwapOnSettleTest is Test {
     }
 
     function testOnSettle_ZeroReportIdReverts() public {
-        // reportId 0 doesn't map to any swap
-        // This causes division by zero when trying to calculate fulfillAmt
-        // because the swap doesn't exist and oracleAmount1 = 0
+        // reportId 0 doesn't map to any swap, so swaps[reportIdToSwapId[0]] returns
+        // a zero-initialized Swap. With osrf6, _executeSwap reads oracle.reportStatus
+        // first and reverts on the explicit "not settled" guard before any division
+        // is attempted, since reportStatus(0).settlementTimestamp is also 0.
         vm.prank(address(oracle));
-        vm.expectRevert(); // Panics with division by zero
+        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "not settled"));
         swapContract.onSettle(0, 5e14, 0, address(sellToken), address(buyToken));
     }
 
@@ -340,12 +342,112 @@ contract OpenSwapOnSettleTest is Test {
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
 
-        // Directly call onSettle as oracle (bypassing oracle.settle)
-        // This simulates what the oracle does internally
+        // _executeSwap requires oracle.reportStatus(id).settlementTimestamp != 0.
+        // Settle the oracle for real, but suppress its automatic callback so we can
+        // exercise the direct onSettle path afterwards.
+        vm.mockCallRevert(
+            address(swapContract),
+            abi.encodeWithSelector(openSwapV2Permit.onSettle.selector),
+            "skipped"
+        );
+        oracle.settle(reportId);
+        vm.clearMockedCalls();
+
+        // Directly call onSettle as oracle (simulating what the oracle does internally)
         vm.prank(address(oracle));
         swapContract.onSettle(reportId, 5e14, block.timestamp, address(sellToken), address(buyToken));
 
         openSwapV2Permit.Swap memory sAfter = swapContract.getSwap(swapId);
         assertTrue(sAfter.finished, "Direct oracle call should work");
+    }
+
+    /// @notice Reproduces the original v2 grief: an attacker calls swap() with a
+    /// hook-bearing token whose transferFrom calls oracle.settle(targetReportId)
+    /// while openSwap's nonReentrant lock is held by the outer swap() call.
+    /// In v2 (nonReentrant on onSettle), the inner callback would silently fail
+    /// and leave the target swap stuck (refundable via bailOut → effective cancel).
+    /// In osrf6 (nonReentrant removed from onSettle), the callback succeeds and
+    /// the target swap is finalized at the discovered price.
+    function testReentrancy_OnSettleNotBlockedByOuterSwap() public {
+        // 1. Set up target swap A and match it.
+        uint256 swapperSellBefore = sellToken.balanceOf(swapper);
+        uint256 matcherSellBefore = sellToken.balanceOf(matcher);
+        uint256 matcherBuyBefore = buyToken.balanceOf(matcher);
+
+        uint256 swapA = _createSwap();
+        _matchSwap(swapA);
+
+        openSwapV2Permit.Swap memory sA = swapContract.getSwap(swapA);
+        uint256 reportIdA = sA.reportId;
+
+        // Advance past settlementTime so oracle.settle(reportIdA) is callable.
+        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+
+        // 2. Deploy malicious token, fund attacker, configure hook to fire on next transferFrom.
+        MaliciousReentrantToken mal = new MaliciousReentrantToken();
+        address attacker = address(0x99);
+        vm.deal(attacker, 10 ether);
+        mal.transfer(attacker, 100e18);
+        vm.prank(attacker);
+        mal.approve(address(swapContract), type(uint256).max);
+        mal.armHook(oracle, reportIdA);
+
+        // 3. Attacker calls swap() with mal as sellToken. While inside swap(),
+        // openSwap's nonReentrant is held; the malicious token's transferFrom
+        // hook calls oracle.settle(reportIdA), which calls back into onSettle(A).
+        openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
+            settlerReward: uint88(SETTLER_REWARD),
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            maxGameTime: MAX_GAME_TIME,
+            blocksPerSecond: uint16(500),
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true
+        });
+        openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
+            priceTolerated: 5e14,
+            toleranceRange: 1e7 - 1
+        });
+        openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+
+        vm.prank(attacker);
+        swapContract.swap{value: GAS_COMPENSATION + SETTLER_REWARD}(
+            SELL_AMT,
+            address(mal),
+            MIN_OUT,
+            address(buyToken),
+            MIN_FULFILL_LIQUIDITY,
+            uint48(block.timestamp + 1 hours),
+            GAS_COMPENSATION,
+            oracleParams,
+            slippageParams,
+            fulfillFeeParams,
+            openSwapV2Permit.PermitParams(0, 0, 0, bytes32(0), bytes32(0))
+        );
+
+        // 4. Confirm: hook actually fired (consumed) — proves the reentry path was exercised.
+        assertFalse(mal.hookArmed(), "Hook should have fired during attacker's swap()");
+
+        // 5. Critical assertion: swap A was finalized in-line by the inner callback.
+        // In v2 it would still be matched-but-not-finished here (callback bricked by lock).
+        openSwapV2Permit.Swap memory sAFinal = swapContract.getSwap(swapA);
+        assertTrue(sAFinal.finished, "Target swap A should be finalized via inner callback");
+
+        // 6. And finalized via execute (not refund) — a no-bailout, full settlement at oracle price.
+        uint256 expectedFulfillAmt = 19980e18;
+        assertEq(sellToken.balanceOf(swapper), swapperSellBefore - SELL_AMT, "Swapper sold SELL_AMT");
+        assertEq(buyToken.balanceOf(swapper), expectedFulfillAmt, "Swapper received fulfillAmt");
+        assertEq(sellToken.balanceOf(matcher), matcherSellBefore + SELL_AMT, "Matcher received sellToken");
+        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore - expectedFulfillAmt, "Matcher net out fulfillAmt");
     }
 }

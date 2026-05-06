@@ -244,6 +244,47 @@ contract OpenSwapFulfillFeeParamsTest is Test {
         vm.stopPrank();
     }
 
+    function testFulfillFeeParams_MaxRoundsAt100_Succeeds() public {
+        // Boundary: 100 rounds is allowed. Bounds calcFee's loop to a gas-safe budget.
+        openSwapV2Permit.FulfillFeeParams memory params = openSwapV2Permit.FulfillFeeParams({
+            maxFee: 10000,
+            startingFee: 10000,
+            roundLength: 60,
+            growthRate: 15000,
+            maxRounds: 100
+        });
+
+        vm.startPrank(swapper);
+        uint256 swapId = swapContract.swap{value: GAS_COMPENSATION + SETTLER_REWARD}(
+            SELL_AMT, address(sellToken), MIN_OUT, address(buyToken),
+            MIN_FULFILL_LIQUIDITY, uint48(block.timestamp + 1 hours), GAS_COMPENSATION,
+            _getOracleParams(), _getSlippageParams(), params, openSwapV2Permit.PermitParams(0, 0, 0, bytes32(0), bytes32(0))
+        );
+        vm.stopPrank();
+        assertGt(swapId, 0, "Swap with maxRounds=100 should be created");
+    }
+
+    function testFulfillFeeParams_MaxRoundsAbove100_Reverts() public {
+        // Above the cap: 101 must revert at swap creation, not silently push the matcher
+        // into a 65535-iteration loop in calcFee at match time.
+        openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
+            maxFee: 10000,
+            startingFee: 10000,
+            roundLength: 60,
+            growthRate: 15000,
+            maxRounds: 101
+        });
+
+        vm.startPrank(swapper);
+        vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "fulfillFeeParams"));
+        swapContract.swap{value: GAS_COMPENSATION + SETTLER_REWARD}(
+            SELL_AMT, address(sellToken), MIN_OUT, address(buyToken),
+            MIN_FULFILL_LIQUIDITY, uint48(block.timestamp + 1 hours), GAS_COMPENSATION,
+            _getOracleParams(), _getSlippageParams(), badParams, openSwapV2Permit.PermitParams(0, 0, 0, bytes32(0), bytes32(0))
+        );
+        vm.stopPrank();
+    }
+
     function testFulfillFeeParams_RoundLengthZero_Reverts() public {
         openSwapV2Permit.FulfillFeeParams memory badParams = openSwapV2Permit.FulfillFeeParams({
             maxFee: 10000,

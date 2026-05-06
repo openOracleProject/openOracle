@@ -470,6 +470,127 @@ contract OpenSwapTempHoldingTest is Test {
         assertEq(swapContract.tempHolding(swapper, address(blacklistSellToken)), 0, "TempHolding cleared");
     }
 
+    // Internal helper: deploys a blacklist sellToken, funds + approves swapper, and
+    // creates a swap with it. Returns (swapId, the blacklist token).
+    function _createSwapWithBlacklistSellToken() internal returns (uint256 swapId, BlacklistToken blacklistSellToken) {
+        blacklistSellToken = new BlacklistToken("BlacklistSell", "BSELL");
+        blacklistSellToken.transfer(swapper, 100e18);
+
+        vm.prank(swapper);
+        blacklistSellToken.approve(address(swapContract), type(uint256).max);
+
+        vm.startPrank(swapper);
+        openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
+            settlerReward: uint88(SETTLER_REWARD),
+            initialLiquidity: INITIAL_LIQUIDITY,
+            escalationHalt: SELL_AMT * 2,
+            settlementTime: SETTLEMENT_TIME,
+            maxGameTime: MAX_GAME_TIME,
+            blocksPerSecond: uint16(500),
+            disputeDelay: DISPUTE_DELAY,
+            protocolFee: PROTOCOL_FEE,
+            multiplier: uint16(110),
+            timeType: true
+        });
+        openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
+            priceTolerated: 5e14,
+            toleranceRange: 1e7 - 1
+        });
+        openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
+            maxFee: MAX_FEE,
+            startingFee: STARTING_FEE,
+            roundLength: ROUND_LENGTH,
+            growthRate: GROWTH_RATE,
+            maxRounds: MAX_ROUNDS
+        });
+
+        swapId = swapContract.swap{value: GAS_COMPENSATION + SETTLER_REWARD}(
+            SELL_AMT,
+            address(blacklistSellToken),
+            MIN_OUT,
+            address(buyToken),
+            MIN_FULFILL_LIQUIDITY,
+            uint48(block.timestamp + 1 hours),
+            GAS_COMPENSATION,
+            oracleParams,
+            slippageParams,
+            fulfillFeeParams,
+            openSwapV2Permit.PermitParams(0, 0, 0, bytes32(0), bytes32(0))
+        );
+        vm.stopPrank();
+    }
+
+    // Regression for the cancelSwap → _transferTokens change. Previously cancelSwap
+    // used safeTransfer for sellToken refunds, so a blacklisted swapper could not
+    // cancel their own swap (and no third party could either) — funds were stuck
+    // until expiration → bailOut path. Now the failed transfer credits tempHolding
+    // and the cancel completes; swapper recovers via getTempHolding.
+    function testTempHolding_CancelSwap_BlacklistedSwapperGoesToTempHolding() public {
+        (uint256 swapId, BlacklistToken blacklistSellToken) = _createSwapWithBlacklistSellToken();
+
+        uint256 swapperEthBefore = swapper.balance;
+
+        // Blacklist swapper for the sellToken refund.
+        blacklistSellToken.setBlacklisted(swapper, true);
+
+        // Swapper cancels their own (still pre-expiration, still pre-match) swap.
+        vm.prank(swapper);
+        swapContract.cancelSwap(swapId);
+
+        // Cancel completed despite the failing sellToken transfer.
+        openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
+        assertTrue(s.cancelled, "Swap should be cancelled");
+
+        // SellToken refund landed in tempHolding rather than reverting.
+        assertEq(swapContract.tempHolding(swapper, address(blacklistSellToken)), SELL_AMT, "sellToken refund in tempHolding");
+        assertEq(blacklistSellToken.balanceOf(swapper), 100e18 - SELL_AMT, "Swapper did not receive sellToken directly");
+
+        // ETH refund (gasCompensation + settlerReward, since msg.sender == swapper) still pays.
+        assertEq(swapper.balance, swapperEthBefore + GAS_COMPENSATION + SETTLER_REWARD, "Swapper got ETH refund");
+
+        // Unblacklist and recover.
+        blacklistSellToken.setBlacklisted(swapper, false);
+        swapContract.getTempHolding(address(blacklistSellToken), swapper);
+        assertEq(blacklistSellToken.balanceOf(swapper), 100e18, "Swapper recovered sellToken");
+        assertEq(swapContract.tempHolding(swapper, address(blacklistSellToken)), 0, "TempHolding cleared");
+    }
+
+    // Variant: third party cancels after expiration + 30s. Caller's ETH incentive
+    // still pays even though the swapper's sellToken refund hits tempHolding.
+    function testTempHolding_CancelSwap_ThirdPartyAfterExpiration_BlacklistedSwapper() public {
+        (uint256 swapId, BlacklistToken blacklistSellToken) = _createSwapWithBlacklistSellToken();
+
+        address thirdParty = address(0x77);
+        vm.deal(thirdParty, 0); // start at zero so the gain assertion is unambiguous
+
+        uint256 swapperEthBefore = swapper.balance;
+
+        blacklistSellToken.setBlacklisted(swapper, true);
+
+        openSwapV2Permit.Swap memory sBefore = swapContract.getSwap(swapId);
+        vm.warp(uint256(sBefore.expiration) + 31);
+
+        vm.prank(thirdParty);
+        swapContract.cancelSwap(swapId);
+
+        openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
+        assertTrue(s.cancelled, "Swap should be cancelled");
+
+        // Caller's ETH incentive: gasCompensation / 5.
+        uint256 callerPiece = uint256(GAS_COMPENSATION) / 5;
+        uint256 swapperPiece = uint256(GAS_COMPENSATION) - callerPiece;
+        assertEq(thirdParty.balance, callerPiece, "Caller got 1/5 of gasComp");
+        assertEq(swapper.balance, swapperEthBefore + swapperPiece + SETTLER_REWARD, "Swapper got remaining gasComp + settlerReward");
+
+        // SellToken refund went to tempHolding, not reverting and not blocking the caller payment.
+        assertEq(swapContract.tempHolding(swapper, address(blacklistSellToken)), SELL_AMT, "sellToken refund in tempHolding");
+
+        // Recovery still works.
+        blacklistSellToken.setBlacklisted(swapper, false);
+        swapContract.getTempHolding(address(blacklistSellToken), swapper);
+        assertEq(blacklistSellToken.balanceOf(swapper), 100e18, "Swapper recovered sellToken");
+    }
+
     function testTempHolding_RefundBuyTokenToBlacklistedMatcher() public {
         uint256 swapId = _createSwap();
         _matchSwap(swapId, 2600e18);
