@@ -4,10 +4,11 @@ pragma solidity 0.8.28;
 import {IOpenOracle} from "./interfaces/IOpenOracle.sol";
 import {IERC20}      from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20}   from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /* ------------ Oracle Fee Receiver (Compatible with Clone) ------------ */
 
-contract oracleFeeReceiver {
+contract oracleFeeReceiver is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IOpenOracle public oracle;
@@ -32,7 +33,7 @@ contract oracleFeeReceiver {
         token2 = _token2;
     }
 
-    function sweep(address token) external returns(uint256) {
+    function sweep(address token) external nonReentrant returns(uint256) {
         if (msg.sender != owner) revert("not owner");
         uint256 bal = IERC20(token).balanceOf(address(this));
         if (bal > 0) {
@@ -41,7 +42,7 @@ contract oracleFeeReceiver {
         return bal;
     }
 
-    function collect() external {
+    function collect() external nonReentrant {
         oracle.getProtocolFees(token1);
         oracle.getProtocolFees(token2);
     }
