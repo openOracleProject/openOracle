@@ -43,9 +43,6 @@ contract openLend is ReentrancyGuard {
     error InvalidInput(string);
 
     uint256 nextLendingId = 1;
-    /// @dev 1 = unlocked, 2 = held by `busyLock`.
-    uint256 private _busyStatus;
-
     mapping(uint256 => LendingArrangement) public lendingArrangements;
     mapping(uint256 => mapping(address => Beneficiaries)) public lendingBeneficiaries;
     /// @dev oracle reportId → lendingId. Set in liquidate, cleared in onSettle and recover.
@@ -59,22 +56,9 @@ contract openLend is ReentrancyGuard {
         oracle = _oracle;
         feeReceiverImpl = address(new oracleFeeReceiver());
         WETH = _WETH;
-        _busyStatus = 1;
     }
 
     receive() external payable {}
-
-    modifier notBusy() {
-        if (_busyStatus == 2) revert InvalidInput("busy");
-        _;
-    }
-
-    modifier busyLock() {
-        if (_busyStatus == 2) revert InvalidInput("busy");
-        _busyStatus = 2;
-        _;
-        _busyStatus = 1;
-    }
 
     modifier autoSettle(uint256 lendingId) {
         _settleHelper(lendingId);
@@ -257,7 +241,7 @@ contract openLend is ReentrancyGuard {
         uint96 gasCompensation,
         OracleParams calldata oracleParams,
         InterestRateParams calldata interestRateParams
-    ) external payable nonReentrant notBusy returns (uint256 lendingId) {
+    ) external payable nonReentrant returns (uint256 lendingId) {
         uint256 currentTime = uint48(block.timestamp);
 
         if (supplyToken == borrowToken) revert InvalidInput("supply == borrow");
@@ -322,7 +306,7 @@ contract openLend is ReentrancyGuard {
      *         cancelled, which permanently disables every other entrypoint on this lendingId.
      * @param  lendingId Unique identifier returned from `requestBorrow`.
      */
-    function cancelBorrowRequest(uint256 lendingId) external nonReentrant notBusy {
+    function cancelBorrowRequest(uint256 lendingId) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         if (lending.cancelled) revert InvalidInput("lendingId cancelled");
@@ -357,7 +341,8 @@ contract openLend is ReentrancyGuard {
      * @param  paramHashExpected Optional loose paramHash. Set to bytes32(0) to skip.
      * @param  minLendAmount Refi-only floor on the new principal. Set to 0 on origination (ignored).
      * @param  maxLendAmount Refi-only ceiling on the new principal. Set to type(uint128).max on origination (ignored).
-     * @param  expectedMinSupply Reverts if `supplyAmount < expectedMinSupply`.
+     * @param  expectedMinSupply Reverts if `supplyAmount < expectedMinSupply`. Uses pre-accept supply. Post-accept supply
+     *         can change if borrower has supplyPulled > 0 in a refinance.
      * @param  minRate Reverts if the computed rate is below this floor.
      * @param  liquidatorFraction Share of any post-settlement equity buffer routed to the liquidator, in 1e7
      *                            fixed-point (0 = lender keeps it all, 1e7 = liquidator keeps it all). Bounded
@@ -372,7 +357,7 @@ contract openLend is ReentrancyGuard {
         uint128 expectedMinSupply,
         uint32 minRate,
         uint24 liquidatorFraction
-    ) external nonReentrant notBusy autoSettle(lendingId) {
+    ) external nonReentrant autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         uint256 _owedPrev;
@@ -511,7 +496,7 @@ contract openLend is ReentrancyGuard {
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
-    ) external nonReentrant notBusy autoSettle(lendingId) {
+    ) external nonReentrant autoSettle(lendingId) {
         if (msg.sender != lendingArrangements[lendingId].borrower) revert InvalidInput("not borrower");
         _repayDebt(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
@@ -531,7 +516,7 @@ contract openLend is ReentrancyGuard {
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
-    ) external nonReentrant notBusy autoSettle(lendingId) {
+    ) external nonReentrant autoSettle(lendingId) {
         _repayDebt(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
 
@@ -551,7 +536,7 @@ contract openLend is ReentrancyGuard {
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
-    ) external nonReentrant notBusy autoSettle(lendingId) {
+    ) external nonReentrant autoSettle(lendingId) {
         if (msg.sender != lendingArrangements[lendingId].borrower) revert InvalidInput("not borrower");
         _topUpCollateral(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
@@ -571,7 +556,7 @@ contract openLend is ReentrancyGuard {
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
-    ) external nonReentrant notBusy autoSettle(lendingId) {
+    ) external nonReentrant autoSettle(lendingId) {
         _topUpCollateral(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
 
@@ -583,7 +568,7 @@ contract openLend is ReentrancyGuard {
      *         finished too close to or past maturity.
      * @param  lendingId Unique identifier of the lending arrangement.
      */
-    function claimCollateral(uint256 lendingId) external nonReentrant notBusy {
+    function claimCollateral(uint256 lendingId) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         uint256 currentTime = block.timestamp;
@@ -643,7 +628,7 @@ contract openLend is ReentrancyGuard {
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
-    ) external payable nonReentrant notBusy autoSettle(lendingId) {
+    ) external payable nonReentrant autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
         RefiParams storage refiParams = lending.refiParams;
         OracleParams memory eventOP;
@@ -705,7 +690,7 @@ contract openLend is ReentrancyGuard {
      *         underlying loan's rate, term, and start are untouched.
      * @param  lendingId Unique identifier of the lending arrangement.
      */
-    function cancelRefinance(uint256 lendingId) external nonReentrant notBusy autoSettle(lendingId) {
+    function cancelRefinance(uint256 lendingId) external nonReentrant autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
         if (msg.sender != lending.borrower) revert InvalidInput("not borrower");
@@ -753,7 +738,7 @@ contract openLend is ReentrancyGuard {
         bytes32 paramHashExpected,
         uint256 worstRatio,
         uint96 settlerReward
-    ) external payable nonReentrant notBusy {
+    ) external payable nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
         OracleParams storage oracleParams = lending.oracleParams;
 
@@ -848,104 +833,31 @@ contract openLend is ReentrancyGuard {
     function onSettle(uint256 id, uint256, uint256, address, address)
         external
         payable
-        busyLock
     {
         if (msg.sender != address(oracle)) revert InvalidInput("invalid sender");
         uint256 lendingId = reportIdToLending[id];
         if (lendingId == 0) revert InvalidInput("no lendingId for reportId");
 
         LendingArrangement storage lending = lendingArrangements[lendingId];
+        if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
+        if (lending.finished) revert InvalidInput("finished");
+        if (lendingToReportId[lendingId] != id) revert InvalidInput("wrong reportId");
 
         _touchAmort(lending);
 
-        uint48 start = lending.start;
-        uint48 term = lending.term;
-        uint128 supplyAmount = lending.supplyAmount;
-        address lender = lending.lender;
-        address supplyToken = lending.supplyToken;
-        uint256 borrowValue = _residualDebt(lending);
-        address feeRecipient = _predictFeeReceiver(id);
-
-        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
-        uint256 oracleAmount1 = rs.currentAmount1;
-        uint256 oracleAmount2 = rs.currentAmount2;
-        uint256 tokenStake = uint256(supplyAmount) * lending.stake / 10000;
-        uint256 borrowValueInSupplyTerms = Math.mulDiv(borrowValue, oracleAmount1, oracleAmount2);
-        uint256 liqThresh = uint256(supplyAmount) * lending.liquidationThreshold / 1e7;
-
-        lending.inLiquidation = false;
-        reportIdToLending[id] = 0;
-        lendingToReportId[lendingId] = 0;
-        if (liqThresh < borrowValueInSupplyTerms) {
-            address liquidator = lending.liquidator;
-
-            lending.finished = true;
-            _clearRefiCurve(lending);
-
-            if (borrowValueInSupplyTerms > supplyAmount) {
-                _sendGasComp(lending);
-                _transferTokens(supplyToken, address(this), lender, supplyAmount);
-                _transferTokens(supplyToken, address(this), liquidator, tokenStake);
-
-                emit LiqFinishedUnderwater(lendingId);
-            } else {
-                uint256 buffer = supplyAmount - borrowValueInSupplyTerms;
-                uint256 liquidatorPiece = buffer * lending.liquidatorFraction / 1e7;
-                uint256 lenderPiece = buffer - liquidatorPiece;
-
-                _sendGasComp(lending);
-                _transferTokens(supplyToken, address(this), lender, borrowValueInSupplyTerms + lenderPiece);
-                _transferTokens(supplyToken, address(this), liquidator, liquidatorPiece + tokenStake);
-
-                emit LiqFinishedWithBuffer(lendingId);
-            }
-        } else {
-
-            uint256 settleableAt = rs.reportTimestamp + lending.oracleParams.settlementTime;
-
-            if (lending.curveOpen) {
-                lending.requestStart = uint48(settleableAt);
-            }
-
-            // Grace period around liquidations that end either too close to maturity (30 minutes) or after it.
-            // When grace fires, half the stake routes to the lender.
-            if (settleableAt > uint256(start) + term - 1800) {
-                lending.gracePeriod = uint48(1800 + (settleableAt - lending.liquidationStart) * 2);
-
-                uint256 lenderStakePiece = tokenStake / 2;
-                lending.supplyAmount += uint128(tokenStake - lenderStakePiece);
-                _transferTokens(supplyToken, address(this), lender, lenderStakePiece);
-            } else {
-                lending.supplyAmount += uint128(tokenStake);
-            }
-
-            lending.liquidationStart = 0;
-            lending.liquidator = address(0);
-
-            emit LiqUnsuccessful(lendingId);
-        }
-
-        if (lending.oracleParams.oracleGameFee > 0) {
-            _grabOracleGameFees(lending, feeRecipient, lendingId);
-        }
+        _executeLiquidation(lending, id, lendingId);
     }
 
     /**
      * @notice Permissionless resolver for a liquidation whose oracle settlement callback reverted.
-     * @dev    OpenOracle's `settle` invokes the callback through a low-level call and does not revert on
-     *         failure, so a reverting `onSettle` leaves the report settled on the oracle side while the loan
-     *         remains stuck in liquidation. This function unwinds that stuck state, treating the outcome as an
-     *         unsuccessful liquidation regardless of what the oracle actually resolved to: the liquidator gets
-     *         their full stake back, any open refi curve has its rate-curve clock reset, a grace period is
-     *         granted on the same near-maturity rule as a normal failed liquidation, any accumulated
-     *         oracle-game protocol fees are distributed, and the lender keeps the loan to either re-liquidate
-     *         or ride to maturity and call `claimCollateral`. Unlike `onSettle`'s failed-liq branch, this path
-     *         does not split the stake when grace fires — recovery is treated as "callback failed, undo cleanly,"
-     *         not as a liquidation outcome that should compensate the lender for delay.
+     * @dev    Executes liquidation based on final oracle price. Interest is touched at
+     *         recovery execution time, matching normal `onSettle` semantics where debt is
+     *         updated when openLend finalizes the liquidation, not when the oracle report
+     *         first became settleable.
      * @param  reportId The openOracle reportId whose settlement callback failed. Indexers can find this in the
      *                  `LoanLiquidationUnderway(lendingId, reportId, feeRecipient)` event emitted at `liquidate` time.
      */
-    function recover(uint256 reportId) external nonReentrant busyLock {
+    function recover(uint256 reportId) external nonReentrant {
         uint256 lendingId = reportIdToLending[reportId];
         LendingArrangement storage lending = lendingArrangements[lendingId];
         IOpenOracle.ReportStatus memory rs = oracle.reportStatus(reportId);
@@ -954,36 +866,13 @@ contract openLend is ReentrancyGuard {
         if (lending.finished) revert InvalidInput("finished");
         if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
         if (rs.settlementTimestamp == 0) revert InvalidInput("no oracle settlement");
+        if (lendingToReportId[lendingId] != reportId) revert InvalidInput("wrong reportId");
 
         _touchAmort(lending);
 
-        uint256 tokenStake = uint256(lending.supplyAmount) * lending.stake / 10000;
-        address liquidator = lending.liquidator;
-        address feeRecipient = _predictFeeReceiver(reportId);
-        uint256 settleableAt = rs.reportTimestamp + lending.oracleParams.settlementTime;
-
-        if (settleableAt > uint256(lending.start) + lending.term - 1800) {
-            lending.gracePeriod = uint48(1800 + (settleableAt - lending.liquidationStart) * 2);
-        }
-
-        if (lending.curveOpen) {
-            lending.requestStart = uint48(settleableAt);
-        }
-
-        lending.inLiquidation = false;
-        lending.liquidationStart = 0;
-        reportIdToLending[reportId] = 0;
-        lendingToReportId[lendingId] = 0;
-        lending.liquidator = address(0);
-
-        _transferTokens(lending.supplyToken, address(this), liquidator, tokenStake);
-    
-        if (lending.oracleParams.oracleGameFee > 0) {
-            _grabOracleGameFees(lending, feeRecipient, lendingId);
-        }
+        _executeLiquidation(lending, reportId, lendingId);
 
         emit Recovery(lendingId);
-
     }
 
     /**
@@ -992,11 +881,13 @@ contract openLend is ReentrancyGuard {
      * @dev    Splits the swept fees 50% to the borrower, 25% to the lender, 25% to the liquidator. Reverts if
      *         the feeRecipient's `gameId()` does not match `lendingId`.
      * @param  lendingId Unique identifier of the lending arrangement.
-     * @param  feeRecipient Address of the fee receiver clone deployed in `liquidate`.
+     * @param  reportId Unique identifier of the oracle game.
      */
-    function grabOracleGameFeesAny(uint256 lendingId, address feeRecipient) external nonReentrant busyLock {
+    function grabOracleGameFeesAny(uint256 lendingId, uint256 reportId) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
-        if (feeRecipient == address(0)) revert InvalidInput("no fee recipient");
+        address feeRecipient = _predictFeeReceiver(reportId);
+
+        if (feeRecipient.code.length == 0) revert InvalidInput("no fee receiver");
         if (oracleFeeReceiver(feeRecipient).gameId() != lendingId) {
             revert InvalidInput("feeRecipient not for lendingId");
         }
@@ -1013,7 +904,7 @@ contract openLend is ReentrancyGuard {
      *         the settle, the settlement always persists once the oracle accepts it.
      * @param  lendingId Unique identifier of the lending arrangement.
      */
-    function settleLiquidation(uint256 lendingId) external nonReentrant notBusy {
+    function settleLiquidation(uint256 lendingId) external nonReentrant {
         _settleHelper(lendingId);
     }
 
@@ -1024,7 +915,7 @@ contract openLend is ReentrancyGuard {
      *         this entrypoint; if the retry also fails, the amount is re-credited to `tempHolding`.
      * @param  tokenToGet ERC20 to withdraw.
      */
-    function getTempHolding(address tokenToGet) external nonReentrant notBusy {
+    function getTempHolding(address tokenToGet) external nonReentrant {
         uint256 amount = tempHolding[msg.sender][tokenToGet];
         if (amount > 0) {
             tempHolding[msg.sender][tokenToGet] = 0;
@@ -1110,7 +1001,7 @@ contract openLend is ReentrancyGuard {
             revert InvalidInput("supply amount + stake");
         }
         if (escHalt > type(uint128).max) revert InvalidInput("escalation halt too high");
-        if (currentTime >= uint256(lending.start) + lending.term) revert InvalidInput("expired");
+        if (currentTime >= uint256(lending.start) + lending.term + lending.gracePeriod) revert InvalidInput("expired");
         if (lending.principal > expectedMaxPrincipal) revert InvalidInput("principal too high");
         if (prevSupplyAmount < expectedMinSupply) revert InvalidInput("supply too low");
         if (expectedParamHash != bytes32(0)) {
@@ -1199,15 +1090,15 @@ contract openLend is ReentrancyGuard {
 
         try feeReceiver.collect() {} catch {}
 
-        uint256 supplyBalanceStart = IERC20(supplyToken).balanceOf(address(this));
-        try feeReceiver.sweep(supplyToken) {} catch {}
-        uint256 supplyBalanceEnd = IERC20(supplyToken).balanceOf(address(this));
-        uint256 feesSupply = supplyBalanceEnd > supplyBalanceStart ? supplyBalanceEnd - supplyBalanceStart : 0;
+        uint256 feesSupply;
+        try feeReceiver.sweep(supplyToken) returns (uint256 swept) {
+            feesSupply = swept;
+        } catch {}
 
-        uint256 borrowBalanceStart = IERC20(borrowToken).balanceOf(address(this));
-        try feeReceiver.sweep(borrowToken) {} catch {}
-        uint256 borrowBalanceEnd = IERC20(borrowToken).balanceOf(address(this));
-        uint256 feesBorrow = borrowBalanceEnd > borrowBalanceStart ? borrowBalanceEnd - borrowBalanceStart : 0;
+        uint256 feesBorrow;
+        try feeReceiver.sweep(borrowToken) returns (uint256 swept) {
+            feesBorrow = swept;
+        } catch {}
 
         uint256 borrowerSupplyFeePiece = feesSupply / 2;
         uint256 lenderSupplyFeePiece = borrowerSupplyFeePiece / 2;
@@ -1231,6 +1122,80 @@ contract openLend is ReentrancyGuard {
         _transferTokens(borrowToken, address(this), liquidator, liquidatorBorrowFeePiece);
 
         emit OracleGameFeesGrabbed(lendingId, feeRecipient, feesSupply, feesBorrow);
+    }
+
+    /// @dev Executes liquidation.
+    function _executeLiquidation(LendingArrangement storage lending, uint256 id, uint256 lendingId) internal {
+        uint48 start = lending.start;
+        uint48 term = lending.term;
+        uint128 supplyAmount = lending.supplyAmount;
+        address lender = lending.lender;
+        address supplyToken = lending.supplyToken;
+        uint256 borrowValue = _residualDebt(lending);
+        address feeRecipient = _predictFeeReceiver(id);
+
+        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
+        uint256 oracleAmount1 = rs.currentAmount1;
+        uint256 oracleAmount2 = rs.currentAmount2;
+        uint256 tokenStake = uint256(supplyAmount) * lending.stake / 10000;
+        uint256 borrowValueInSupplyTerms = Math.mulDiv(borrowValue, oracleAmount1, oracleAmount2);
+        uint256 liqThresh = uint256(supplyAmount) * lending.liquidationThreshold / 1e7;
+
+        lending.inLiquidation = false;
+        reportIdToLending[id] = 0;
+        lendingToReportId[lendingId] = 0;
+        if (liqThresh < borrowValueInSupplyTerms) {
+            address liquidator = lending.liquidator;
+
+            lending.finished = true;
+            _clearRefiCurve(lending);
+
+            if (borrowValueInSupplyTerms > supplyAmount) {
+                _sendGasComp(lending);
+                _transferTokens(supplyToken, address(this), lender, supplyAmount);
+                _transferTokens(supplyToken, address(this), liquidator, tokenStake);
+
+                emit LiqFinishedUnderwater(lendingId);
+            } else {
+                uint256 buffer = supplyAmount - borrowValueInSupplyTerms;
+                uint256 liquidatorPiece = buffer * lending.liquidatorFraction / 1e7;
+                uint256 lenderPiece = buffer - liquidatorPiece;
+
+                _sendGasComp(lending);
+                _transferTokens(supplyToken, address(this), lender, borrowValueInSupplyTerms + lenderPiece);
+                _transferTokens(supplyToken, address(this), liquidator, liquidatorPiece + tokenStake);
+
+                emit LiqFinishedWithBuffer(lendingId);
+            }
+        } else {
+
+            uint256 settleableAt = rs.reportTimestamp + lending.oracleParams.settlementTime;
+            uint256 liquidationStart = lending.liquidationStart;
+
+            lending.liquidationStart = 0;
+            lending.liquidator = address(0);
+            if (lending.curveOpen) {
+                lending.requestStart = uint48(settleableAt);
+            }
+
+            // Grace period around liquidations that end either too close to maturity (30 minutes) or after it.
+            // When grace fires, half the stake routes to the lender.
+            if (settleableAt > uint256(start) + term - 1800) {
+                lending.gracePeriod = uint48(1800 + (settleableAt - liquidationStart) * 2);
+
+                uint256 lenderStakePiece = tokenStake / 2;
+                lending.supplyAmount += uint128(tokenStake - lenderStakePiece);
+                _transferTokens(supplyToken, address(this), lender, lenderStakePiece);
+            } else {
+                lending.supplyAmount += uint128(tokenStake);
+            }
+
+            emit LiqUnsuccessful(lendingId);
+        }
+
+        if (lending.oracleParams.oracleGameFee > 0) {
+            _grabOracleGameFees(lending, feeRecipient, lendingId);
+        }
     }
 
     /// @dev Pulls tokens and rejects fee-on-transfer / rebasing behavior that changes the recipient by
@@ -1505,3 +1470,4 @@ contract openLend is ReentrancyGuard {
         return keccak256(abi.encode(copy));
     }
 }
+
