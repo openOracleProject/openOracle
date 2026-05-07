@@ -109,7 +109,7 @@ contract RecoveryTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
-        uint256 reportId = _liquidate(lendingId, 8 ether);
+        uint256 reportId = _liquidate(lendingId, 12 ether);
 
         // Loan is in liquidation, mapping populated.
         assertTrue(lending.getLending(lendingId).inLiquidation, "should be in liquidation");
@@ -138,13 +138,13 @@ contract RecoveryTest is OpenLendingBaseTest {
         assertEq(loanAfter.liquidationStart, 0, "liquidationStart cleared");
         assertEq(lending.reportIdToLending(reportId), 0, "mapping cleared by recover");
 
-        // Stake returned to liquidator (recovery diverges from normal failed-liq policy).
+        // Recover now follows the same failed-liq branch as onSettle: no-grace stake is added to supplyAmount.
         assertEq(
             supplyToken.balanceOf(liquidator) - liquidatorSupplyBefore,
-            tokenStake,
-            "stake returned to liquidator"
+            0,
+            "liquidator does not recover stake on failed-liq recover"
         );
-        assertEq(loanAfter.supplyAmount, SUPPLY_AMOUNT, "supplyAmount unchanged (stake NOT forfeited to borrower)");
+        assertEq(loanAfter.supplyAmount, SUPPLY_AMOUNT + tokenStake, "supplyAmount includes forfeited stake");
         assertTrue(loanAfter.active, "loan still live");
         assertFalse(loanAfter.finished, "loan not finished");
     }
@@ -157,7 +157,7 @@ contract RecoveryTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
-        uint256 reportId = _liquidate(lendingId, 8 ether);
+        uint256 reportId = _liquidate(lendingId, 12 ether);
 
         // Capture settleableAt now (no dispute, so reportTimestamp == liquidationStart).
         (,,, uint48 reportTs,,,) = oracle.reportStatus(reportId);
@@ -191,7 +191,7 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         // Liquidate well before maturity.
         vm.warp(block.timestamp + LOAN_TERM - 1500);
-        uint256 reportId = _liquidate(lendingId, 8 ether);
+        uint256 reportId = _liquidate(lendingId, 12 ether);
 
         uint48 liqStart = lending.getLending(lendingId).liquidationStart;
         assertGt(liqStart, 0, "liquidationStart populated");
@@ -253,7 +253,6 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         // Single token1 dispute (oldAmount1 = 10 ether, protocolFee = 100_000 / 1e7 = 1%) → 0.1 ether fee in supply.
         // Split 50/25/25 (borrower / lender / liquidator) via integer division: 0.05 / 0.025 / 0.025.
-        uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
         uint256 expectedFee = 10 ether * 100_000 / 1e7;          // 0.1 ether
         uint256 borrowerPiece = expectedFee / 2;                 // 0.05 ether
         uint256 lenderPiece = borrowerPiece / 2;                 // 0.025 ether
@@ -271,8 +270,8 @@ contract RecoveryTest is OpenLendingBaseTest {
         );
         assertEq(
             supplyToken.balanceOf(liquidator) - liquidatorSupplyBefore,
-            tokenStake + liquidatorPiece,
-            "liquidator exact stake + supply fee piece"
+            liquidatorPiece,
+            "liquidator exact supply fee piece"
         );
     }
 
@@ -367,14 +366,11 @@ contract RecoveryTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // Retry story: underwater resolution + failed callback → loan stays live → re-liquidate succeeds
+    // Underwater recovery
     // -------------------------------------------------------------------------
 
-    /// @dev Pins the explicit retry story documented in `recover`'s natspec: even when the oracle resolved to an
-    ///      underwater outcome, recover() commits to the failed-liq treatment unconditionally. The lender is denied
-    ///      the underwater payout but the loan remains live, and they can re-liquidate cleanly so long as no
-    ///      gracePeriod was granted.
-    function testRecover_UnderwaterCallbackFailureRecoverableThenReliquidates() public {
+    /// @dev Underwater callback failure is recovered by executing the same underwater liquidation outcome.
+    function testRecover_UnderwaterCallbackFailureExecutesLiquidationOutcome() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
@@ -389,73 +385,97 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         _settleWithBrokenCallback(firstReportId);
 
-        // Lender is currently denied the underwater payout, but recover keeps the loan live.
         uint256 lenderSupplyBeforeRecover = supplyToken.balanceOf(lender);
 
         vm.prank(randomCaller);
         lending.recover(firstReportId);
 
         openLend.LendingArrangement memory loanAfterRecover = lending.getLending(lendingId);
-        assertFalse(loanAfterRecover.finished, "loan must NOT be finished - lender denied underwater payout");
+        assertTrue(loanAfterRecover.finished, "loan finishes underwater via recover");
         assertFalse(loanAfterRecover.inLiquidation, "inLiquidation cleared");
-        assertTrue(loanAfterRecover.active, "loan still active");
-        assertEq(loanAfterRecover.gracePeriod, 0, "no gracePeriod (recovered far from maturity)");
+        assertEq(lending.reportIdToLending(firstReportId), 0, "report mapping cleared");
+        assertEq(lending.lendingToReportId(lendingId), 0, "reverse mapping cleared");
 
-        // Lender's supply gain from recovery is exactly their 25% share of the dispute fee, NOT the underwater payout.
-        // First-cycle fee = 0.1 ether (1% of 10 ether token1 swap); lender share = 0.025 ether.
+        // Underwater no-equity branch: lender gets collateral plus their 25% share of token1 dispute fee.
         uint256 firstCycleLenderFee = (10 ether * 100_000 / 1e7) / 2 / 2; // 0.025 ether
         assertEq(
             supplyToken.balanceOf(lender) - lenderSupplyBeforeRecover,
-            firstCycleLenderFee,
-            "lender gain from recovery = fee share only, no underwater payout"
+            uint256(SUPPLY_AMOUNT) + firstCycleLenderFee,
+            "lender gain from recovery = underwater payout + fee share"
         );
+    }
 
-        uint256 lenderSupplyAfterRecover = supplyToken.balanceOf(lender);
+    function testRecover_UnderwaterOutcomeMatchesNormalOnSettleAccounting() public {
+        uint256 normalLendingId = _setupLoan();
+        uint256 recoverLendingId = _setupLoan();
 
-        // Re-liquidate. Same lender, same loan. Should succeed because gracePeriod == 0.
-        uint256 secondReportId = _liquidate(lendingId, 6 ether);
-        assertTrue(secondReportId != firstReportId, "fresh reportId for the retry");
-        assertTrue(lending.getLending(lendingId).inLiquidation, "back in liquidation");
+        vm.warp(block.timestamp + 10 days);
+        uint256 normalReportId = _liquidate(normalLendingId, 6 ether);
+        uint256 recoverReportId = _liquidate(recoverLendingId, 6 ether);
 
-        // Run the second cycle to underwater resolution, this time without breaking the callback.
-        (bytes32 stateHash2,,,,,,) = oracle.extraData(secondReportId);
-        // Read the report's actual reportTimestamp from the oracle to defeat any test-contract block.timestamp hoisting
-        // under via_ir. Add disputeDelay+1 from there to satisfy DisputeTooEarly cleanly.
-        (,,, uint48 secondReportTimestamp,,,) = oracle.reportStatus(secondReportId);
-        vm.warp(uint256(secondReportTimestamp) + ORACLE_DISPUTE_DELAY + 1);
-        vm.prank(disputer);
-        oracle.disputeAndSwap(secondReportId, address(supplyToken), 20 ether, 10 ether, disputer, 6 ether, stateHash2);
+        (,,, uint48 normalReportTs,,,) = oracle.reportStatus(normalReportId);
+        (,,, uint48 recoverReportTs,,,) = oracle.reportStatus(recoverReportId);
+        assertEq(normalReportTs, recoverReportTs, "reports share timestamp");
 
-        // Read the post-dispute reportTimestamp to set up the settle warp.
-        (,,, uint48 secondDisputeTimestamp,,,) = oracle.reportStatus(secondReportId);
-        vm.warp(uint256(secondDisputeTimestamp) + ORACLE_SETTLEMENT_TIME + 1);
+        uint256 borrowerBeforeNormal = supplyToken.balanceOf(borrower);
+        uint256 lenderBeforeNormal = supplyToken.balanceOf(lender);
+        uint256 liquidatorBeforeNormal = supplyToken.balanceOf(liquidator);
+
+        vm.warp(uint256(normalReportTs) + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
-        oracle.settle(secondReportId);
+        oracle.settle(normalReportId);
 
-        openLend.LendingArrangement memory loanAfterRetry = lending.getLending(lendingId);
-        assertTrue(loanAfterRetry.finished, "second cycle finishes the loan underwater");
-        assertFalse(loanAfterRetry.inLiquidation, "inLiquidation cleared by successful onSettle");
+        uint256 borrowerNormalDelta = supplyToken.balanceOf(borrower) - borrowerBeforeNormal;
+        uint256 lenderNormalDelta = supplyToken.balanceOf(lender) - lenderBeforeNormal;
+        uint256 liquidatorNormalDelta = supplyToken.balanceOf(liquidator) - liquidatorBeforeNormal;
 
-        // Underwater no-equity branch: lender gets full supplyAmount + their 0.025 ether fee share from the second
-        // cycle's dispute. (borrowValueInSupplyTerms ~140 ether > supplyAmount 100 ether → no buffer split.)
-        uint256 secondCycleLenderFee = (10 ether * 100_000 / 1e7) / 2 / 2; // 0.025 ether
+        uint256 borrowerBeforeRecover = supplyToken.balanceOf(borrower);
+        uint256 lenderBeforeRecover = supplyToken.balanceOf(lender);
+        uint256 liquidatorBeforeRecover = supplyToken.balanceOf(liquidator);
+
+        _forceCallbackRevert();
+        vm.prank(settler);
+        oracle.settle(recoverReportId);
+        vm.clearMockedCalls();
+
+        vm.prank(randomCaller);
+        lending.recover(recoverReportId);
+
         assertEq(
-            supplyToken.balanceOf(lender) - lenderSupplyAfterRecover,
-            uint256(SUPPLY_AMOUNT) + secondCycleLenderFee,
-            "lender retry gain = full supply (underwater) + fee share"
+            supplyToken.balanceOf(borrower) - borrowerBeforeRecover,
+            borrowerNormalDelta,
+            "borrower supply delta matches normal settle"
         );
-        assertEq(lending.reportIdToLending(secondReportId), 0, "second report mapping cleared by onSettle");
+        assertEq(
+            supplyToken.balanceOf(lender) - lenderBeforeRecover,
+            lenderNormalDelta,
+            "lender supply delta matches normal settle"
+        );
+        assertEq(
+            supplyToken.balanceOf(liquidator) - liquidatorBeforeRecover,
+            liquidatorNormalDelta,
+            "liquidator supply delta matches normal settle"
+        );
+
+        openLend.LendingArrangement memory normalLoan = lending.getLending(normalLendingId);
+        openLend.LendingArrangement memory recoveredLoan = lending.getLending(recoverLendingId);
+        assertTrue(normalLoan.finished, "normal loan finished");
+        assertTrue(recoveredLoan.finished, "recovered loan finished");
+        assertFalse(normalLoan.inLiquidation, "normal inLiquidation cleared");
+        assertFalse(recoveredLoan.inLiquidation, "recover inLiquidation cleared");
+        assertEq(lending.reportIdToLending(normalReportId), 0, "normal report mapping cleared");
+        assertEq(lending.reportIdToLending(recoverReportId), 0, "recover report mapping cleared");
     }
 
     // -------------------------------------------------------------------------
     // Stake-destination policy
     // -------------------------------------------------------------------------
 
-    function testRecover_StakeReturnedToLiquidator() public {
+    function testRecover_FailedLiqStakeAddedToSupplyAmount() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
-        uint256 reportId = _liquidate(lendingId, 8 ether);
+        uint256 reportId = _liquidate(lendingId, 12 ether);
         _settleWithBrokenCallback(reportId);
 
         uint128 supplyBeforeRecover = lending.getLending(lendingId).supplyAmount;
@@ -469,13 +489,13 @@ contract RecoveryTest is OpenLendingBaseTest {
 
         assertEq(
             lending.getLending(lendingId).supplyAmount,
-            supplyBeforeRecover,
-            "supplyAmount NOT incremented by stake (vs normal failed liq)"
+            supplyBeforeRecover + tokenStake,
+            "supplyAmount increments by failed-liq stake"
         );
         assertEq(
             supplyToken.balanceOf(liquidator) - liquidatorSupplyBefore,
-            tokenStake,
-            "liquidator gets the stake back"
+            0,
+            "liquidator does not get failed-liq stake back"
         );
         assertEq(
             supplyToken.balanceOf(borrower),

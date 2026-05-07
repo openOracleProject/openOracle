@@ -300,6 +300,67 @@ contract LiquidationTest is OpenLendingBaseTest {
         );
     }
 
+    function testGracePeriod_BorrowerCanTopUpDuringGrace() public {
+        uint256 lendingId = _setupLoan(5e6);
+
+        // Trigger near-maturity failed liquidation to set gracePeriod.
+        vm.warp(block.timestamp + LOAN_TERM - 900);
+        _liquidate(liquidator, lendingId, 12 ether);
+
+        uint256 reportId = oracle.nextReportId() - 1;
+        vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertGt(loan.gracePeriod, 0, "gracePeriod should be set after near-maturity failed liq");
+
+        // Past original maturity, within grace.
+        vm.warp(uint256(loan.start) + loan.term + (loan.gracePeriod / 2));
+
+        uint128 topUpAmount = 5 ether;
+        uint128 supplyBefore = loan.supplyAmount;
+        uint256 contractBalanceBefore = supplyToken.balanceOf(address(lending));
+
+        vm.prank(borrower);
+        lending.topUpCollateral(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
+
+        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        assertEq(
+            loanAfter.supplyAmount,
+            supplyBefore + topUpAmount,
+            "topUp during grace should increase supplyAmount"
+        );
+        assertEq(
+            supplyToken.balanceOf(address(lending)),
+            contractBalanceBefore + topUpAmount,
+            "topUp during grace should pull supplyToken into the lending contract"
+        );
+    }
+
+    function testGracePeriod_BorrowerCannotTopUpAfterGraceExpires() public {
+        uint256 lendingId = _setupLoan(5e6);
+
+        // Trigger near-maturity failed liquidation to set gracePeriod.
+        vm.warp(block.timestamp + LOAN_TERM - 900);
+        _liquidate(liquidator, lendingId, 12 ether);
+
+        uint256 reportId = oracle.nextReportId() - 1;
+        vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.prank(settler);
+        oracle.settle(reportId);
+
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        assertGt(loan.gracePeriod, 0, "gracePeriod should be set after near-maturity failed liq");
+
+        // Past grace.
+        vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod + 1);
+
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        lending.topUpCollateral(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+    }
+
     function testGracePeriod_LenderCannotClaimDuringGrace() public {
         uint256 lendingId = _setupLoan(5e6);
 
@@ -572,7 +633,8 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId2 = _setupLoan(5e6);
         vm.warp(block.timestamp + 1 days);
         _liquidate(liquidator, lendingId2, 12 ether);
-        address feeRecipient2 = _predictFeeReceiver(_latestReportId());
+        uint256 reportId2 = _latestReportId();
+        address feeRecipient2 = _predictFeeReceiver(reportId2);
         assertTrue(feeRecipient2.code.length > 0, "second feeRecipient deployed");
         assertTrue(feeRecipient2 != feeRecipient1, "fee receivers should be distinct clones");
 
@@ -583,16 +645,76 @@ contract LiquidationTest is OpenLendingBaseTest {
 
         // Calling grabOracleGameFeesAny on receiver1 with the WRONG lendingId reverts
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
-        lending.grabOracleGameFeesAny(lendingId2, feeRecipient1);
+        lending.grabOracleGameFeesAny(lendingId2, reportId1);
 
         // And on receiver2 with the wrong lendingId reverts
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
-        lending.grabOracleGameFeesAny(lendingId, feeRecipient2);
+        lending.grabOracleGameFeesAny(lendingId, reportId2);
 
         // Each receiver is callable with its own lendingId (no fees second time around — onSettle already swept,
         // but the call should not revert)
-        lending.grabOracleGameFeesAny(lendingId, feeRecipient1);
+        lending.grabOracleGameFeesAny(lendingId, reportId1);
         // (lendingId2's liq #2 is still in flight; skip the no-op grab)
+    }
+
+    function testFeeReceivers_RemainReportBoundAcrossRefiAndLaterLiquidation() public {
+        uint256 lendingId = _setupLoan(5e6);
+        vm.warp(block.timestamp + 1 days);
+
+        _liquidate(liquidator, lendingId, 12 ether);
+        uint256 reportId1 = _latestReportId();
+        address feeRecipient1 = _predictFeeReceiver(reportId1);
+        assertTrue(feeRecipient1.code.length > 0, "first receiver deployed");
+
+        vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
+        vm.prank(settler);
+        oracle.settle(reportId1);
+        assertFalse(lending.getLending(lendingId).inLiquidation, "first failed liq settled");
+
+        // Refi the same loan to a new lender, then liquidate again. The second liquidation should deploy
+        // a fresh receiver, while the old receiver remains tied to reportId1 and the same lendingId.
+        vm.prank(borrower);
+        lending.refinance(
+            lendingId,
+            0,
+            0,
+            0,
+            0,
+            _standardInterestRateParams(),
+            _zeroOracleParams(),
+            bytes32(0),
+            0,
+            type(uint128).max
+        );
+
+        vm.prank(disputer2);
+        borrowToken.approve(address(lending), type(uint256).max);
+        vm.prank(disputer2);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+
+        vm.warp(block.timestamp + 1 days);
+        _liquidate(liquidator, lendingId, 12 ether);
+        uint256 reportId2 = _latestReportId();
+        address feeRecipient2 = _predictFeeReceiver(reportId2);
+
+        assertTrue(feeRecipient2.code.length > 0, "second receiver deployed");
+        assertTrue(feeRecipient2 != feeRecipient1, "later liquidation gets fresh receiver");
+
+        openLend.Beneficiaries memory oldBens = lending.getBeneficiaries(lendingId, feeRecipient1);
+        openLend.Beneficiaries memory newBens = lending.getBeneficiaries(lendingId, feeRecipient2);
+        assertEq(oldBens.lender, lender, "old receiver keeps original lender beneficiary");
+        assertEq(newBens.lender, disputer2, "new receiver tracks refi lender beneficiary");
+
+        // A different lendingId cannot sweep either receiver by reusing old reportIds.
+        uint256 otherLendingId = _setupLoan(5e6);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        lending.grabOracleGameFeesAny(otherLendingId, reportId1);
+        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        lending.grabOracleGameFeesAny(otherLendingId, reportId2);
+
+        // But the original lendingId can still address both deterministic receivers by reportId.
+        lending.grabOracleGameFeesAny(lendingId, reportId1);
+        lending.grabOracleGameFeesAny(lendingId, reportId2);
     }
 
     // ---------------- callback liveness with failing token recipients ----------------

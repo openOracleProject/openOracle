@@ -316,10 +316,10 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // 9. recover near-grace returns full stake to liquidator (no split)
+    // 9. recover near-grace follows normal failed-liq stake split
     // -------------------------------------------------------------------------
 
-    function testRecover_NearGrace_ReturnsFullStakeToLiquidator() public {
+    function testRecover_NearGrace_SplitsStakeLikeFailedLiq() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900); // near maturity
 
@@ -348,13 +348,13 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         assertFalse(loan.inLiquidation, "liq cleared by recover");
         assertEq(
             supplyToken.balanceOf(liquidator),
-            liquidatorSupplyBefore + tokenStake,
-            "recover sends full stake to liquidator"
+            liquidatorSupplyBefore,
+            "recover does not return failed-liq stake to liquidator"
         );
         assertEq(
             supplyToken.balanceOf(lender),
-            lenderSupplyBefore,
-            "lender supply unchanged -- recover does not split stake"
+            lenderSupplyBefore + tokenStake / 2,
+            "lender receives half stake on near-grace failed-liq recover"
         );
         // Grace formula uses settleableAt - liquidationStart = ORACLE_SETTLEMENT_TIME (no dispute).
         assertEq(loan.gracePeriod, 1800 + ORACLE_SETTLEMENT_TIME * 2, "grace from settleable-time formula");

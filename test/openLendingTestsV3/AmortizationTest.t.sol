@@ -700,8 +700,8 @@ contract AmortizationTest is OpenLendingBaseTest {
     // 7. Regression
     // -------------------------------------------------------------------------
 
-    /// @dev Recover() touches amort and still returns the FULL stake to the liquidator (no split).
-    function testRegression_RecoverFullStakeToLiquidatorAndAmortTouched() public {
+    /// @dev Recover() touches amort and follows the normal failed-liq near-grace stake split.
+    function testRegression_RecoverStakeSplitAndAmortTouched() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900);
 
@@ -724,9 +724,8 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(randomCaller);
         lending.recover(reportId);
 
-        // Full stake to liquidator (recover does not split).
-        assertEq(supplyToken.balanceOf(liquidator) - liqBefore, tokenStake, "recover returns full stake to liquidator");
-        assertEq(supplyToken.balanceOf(lender), lenderBefore, "lender receives nothing from recover");
+        assertEq(supplyToken.balanceOf(liquidator) - liqBefore, 0, "recover does not return failed-liq stake");
+        assertEq(supplyToken.balanceOf(lender), lenderBefore + tokenStake / 2, "lender receives half stake");
         // Amort lastTouch advanced past the pre-recover value.
         assertGt(lending.getLending(lendingId).lastTouch, lastTouchBefore, "recover touched amort state");
     }

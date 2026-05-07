@@ -521,7 +521,7 @@ contract HelperCoverageTest is Test {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         // No revert, no balance change
-        lending.grabOracleGameFeesAny(lendingId, feeRecipient);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         assertEq(supplyToken.balanceOf(borrower), borrowerSupplyBefore, "borrower supply unchanged");
         assertEq(borrowToken.balanceOf(borrower), borrowerBorrowBefore, "borrower borrow unchanged");

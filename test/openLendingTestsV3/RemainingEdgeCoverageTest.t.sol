@@ -218,7 +218,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 lenderBefore = borrowToken.balanceOf(lender);
         uint256 liquidatorBefore = borrowToken.balanceOf(liquidator);
 
-        lending.grabOracleGameFeesAny(lendingId, feeRecipient);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         assertEq(oracle.protocolFees(feeRecipient, address(borrowToken)), 0, "fees should be fully swept");
         uint256 firstSweepTotal = (borrowToken.balanceOf(borrower) - borrowerBefore)
@@ -230,7 +230,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         lenderBefore = borrowToken.balanceOf(lender);
         liquidatorBefore = borrowToken.balanceOf(liquidator);
 
-        lending.grabOracleGameFeesAny(lendingId, feeRecipient);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         assertEq(borrowToken.balanceOf(borrower), borrowerBefore, "second sweep should be a no-op for borrower");
         assertEq(borrowToken.balanceOf(lender), lenderBefore, "second sweep should be a no-op for lender");
@@ -250,14 +250,14 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             0
         , 1e15);
 
-        address feeRecipient = _predictFeeReceiver(_latestReportId());
+        uint256 reportId = _latestReportId();
 
         // Set up a second loan to obtain a "wrong" lendingId that exists
         uint256 otherLendingId = _setupActiveLoan(5e6);
         assertTrue(otherLendingId != lendingId, "two distinct lending ids");
 
         vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
-        lending.grabOracleGameFeesAny(otherLendingId, feeRecipient);
+        lending.grabOracleGameFeesAny(otherLendingId, reportId);
     }
 
     // ---------------- exact-boundary refi/lend ----------------
