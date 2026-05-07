@@ -12,19 +12,14 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /**
  * @title openSwap
- * @notice Uses openOracle for swap execution price
-           Different from simpleSwapper since there's no choice about whether to fulfill
-           simpleSwapper flow is deposit sellToken -> oracle game ends in price -> anyone has choice to swap against that price
-           openSwap flow is deposit sellToken -> someone matches with enough buyToken -> oracle game ends in price -> swap executed against price
-           This swapping method may open up oracle price manipulation opportunities. We try to cover manipulation strategies here:
-                      https://docs.openoracle.org/openoracle/attack-vectors#manipulation-without-a-swap-fee
-           Biasing the mean settled oracle price seems doable but tough, as the attacker needs to solve a multiplayer DP to optimally bias.
-           In general, this is a very complex game and we probably need to play it in the real world to be sure about the economics.
+ * @notice A user proposes a swap, someone matches it, and openOracle determines the execution price. 
+           The matcher earns a fee for their service.
 
            Supported token types: vanilla ERC20 and USDT-style tokens that omit a return value on transfer/transferFrom.
            Not supported: fee-on-transfer, rebasing, ERC777 / tokens with transfer hooks, or any token whose
            balance can change without a corresponding transfer event from this contract. Using unsupported tokens
            may cause loss of funds or incorrect fee accounting.
+           
  * @author OpenOracle Team
  * @custom:version 0.2.0
  * @custom:documentation https://docs.openoracle.org/
@@ -747,5 +742,4 @@ contract openSwapV2Permit is ReentrancyGuard {
     }
 
 }
-
 
