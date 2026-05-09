@@ -38,9 +38,11 @@ The current direction is to keep the core oracle semantics intact while making e
 
 ## Main Files
 
-- `src/OpenOracleGasGolfing.sol` - current experimental oracle implementation.
+- `src/OpenOracleGasGolfing_ContractSizeLimit.sol` - first contract-size-limited gas-golfing prototype.
+- `src/OpenOracleGasGolfing_ContractSizeLimit2.sol` - current state-of-the-art contract-size-limited prototype.
 - `src/OpenOracleErrors.sol` - shared custom errors.
-- `test/openOracleGasGolfing/` - behavioral tests for the gas-golfing implementation.
+- `test/openOracleGasGolfingConractSizeLimit/` - behavioral tests for the first contract-size-limited implementation.
+- `test/openOracleGasGolfingConractSizeLimit2/` - behavioral tests for the current contract-size-limited implementation.
 
 ## Testing
 
@@ -51,7 +53,7 @@ forge test
 For focused gas-golfing behavior tests:
 
 ```bash
-forge test --match-path 'test/openOracleGasGolfing/*.sol'
+forge test --match-path 'test/openOracleGasGolfingConractSizeLimit2/*.sol'
 ```
 
 ## Upstream Project
