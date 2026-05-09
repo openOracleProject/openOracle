@@ -10,7 +10,7 @@ This is not production-ready code. It is a research prototype for measuring trad
 
 The latest contract-size-limited prototype, `src/OpenOracleGasGolfing_ContractSizeLimit2.sol`, keeps the storage-mode public state readable, stays under the EIP-170 bytecode limit, and preserves both storage-backed and calldata/preimage-backed oracle flows.
 
-Recent production-style measurements show the optimizations are material. The current state of the art for the contract-size-limited prototype is roughly:
+Recent production-style measurements show the optimizations are material. The current state of the art for the contract-size-limited prototype's calldata/preimage path is roughly:
 
 | Path | Current |
 | --- | ---: |
