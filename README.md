@@ -6,6 +6,21 @@ The point is to see how far the oracle game can be compressed while preserving t
 
 This is not production-ready code. It is a research prototype for measuring tradeoffs, finding the practical gas floor, and stress-testing design ideas before deciding what, if anything, belongs in a production OpenOracle release.
 
+## Where We Are Today
+
+The latest contract-size-limited prototype, `src/OpenOracleGasGolfing_ContractSizeLimit2.sol`, keeps the storage-mode public state readable, stays under the EIP-170 bytecode limit, and preserves both storage-backed and calldata/preimage-backed oracle flows.
+
+Recent production-style measurements show the optimizations are material. The current state of the art for the contract-size-limited prototype is roughly:
+
+| Path | Current |
+| --- | ---: |
+| Create report | 56k |
+| Initial report | 55k |
+| Dispute | 64k |
+| Settle | 50k |
+
+The current direction is to keep the core oracle semantics intact while making each hot path pay only for state it actually needs.
+
 ## Current Focus
 
 - Reduce report creation, initial report, dispute, and settlement gas.
