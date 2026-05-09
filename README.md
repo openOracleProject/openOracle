@@ -1,64 +1,44 @@
-# openOracle
+# OpenOracle Gas Golfing
 
-openOracle is designed to be a trust-minimized way to get token prices that anyone can use. 
+This repository is an experimental gas-golfing workspace for OpenOracle.
 
-At its most basic level the oracle works by having a reporter submit both a limit bid and ask at the same price. Anyone can swap against these orders minus a small fee. If nobody takes either order in a certain amount of time, it is evidence of a good price that can be used for settlement. 
+The point is to see how far the oracle game can be compressed while preserving the important mechanics: expected-state dispute calls, storage-mode and calldata/preimage modes, internal balance accounting, virtual sentinels, capital-efficient self-disputes, and settlement callbacks.
 
-## Deployments
+This is not production-ready code. It is a research prototype for measuring tradeoffs, finding the practical gas floor, and stress-testing design ideas before deciding what, if anything, belongs in a production OpenOracle release.
 
-### Optimism
+## Current Focus
 
-<table>
-<tr>
-<th>Contract</th>
-<th>Deployment Address</th>
-</tr>
-<tr>
-<td><a href="https://optimistic.etherscan.io/address/0xf3CCE3274c32f1F344Ba48336D5EFF34dc6E145f#code">OpenOracle</a></td>
-<td><code>0xf3CCE3274c32f1F344Ba48336D5EFF34dc6E145f</code></td>
-</tr>
-<tr>
-<td><a href="https://optimistic.etherscan.io/address/0x6D5dCF8570572e106eF1602ef2152BC363dAeC8b#code">openOracleBatcher</a></td>
-<td><code>0x6D5dCF8570572e106eF1602ef2152BC363dAeC8b</code></td>
-</tr>
-<tr>
-<td><a href="https://optimistic.etherscan.io/address/0x832aF47b9ca3336063871632cb36334a03B56601#code">OracleSwapFacility</a></td>
-<td><code>0x832aF47b9ca3336063871632cb36334a03B56601</code></td>
-</tr>
-<tr>
-<td><a href="https://optimistic.etherscan.io/address/0x4f9041CCAea126119A1fe62F40A24e7556f1357b#code">openOracleDataProviderV3</a></td>
-<td><code>0x4f9041CCAea126119A1fe62F40A24e7556f1357b</code></td>
-</tr>
-</table>
+- Reduce report creation, initial report, dispute, and settlement gas.
+- Compare storage-backed oracle state against calldata/preimage-backed state.
+- Avoid unnecessary token transfers by using internal balances where possible.
+- Preserve caller-side expected-state protection instead of blindly acting on live state.
+- Explore composability around settlement callbacks and internal credits.
 
-## Docs
+## Non-Goals
 
-- [openOracle documentation](https://docs.openoracle.org)
+- This repo is not a deployment target.
+- This repo is not an audited production implementation.
+- This repo does not attempt to support non-standard ERC20s such as fee-on-transfer, rebasing, or tax tokens.
+- Historical snapshots in `src/` are only development artifacts unless explicitly kept for comparison.
 
-## Usage
+## Main Files
 
-### Install
-To install dependencies and compile contracts:
+- `src/OpenOracleGasGolfing.sol` - current experimental oracle implementation.
+- `src/OpenOracleErrors.sol` - shared custom errors.
+- `test/openOracleGasGolfing/` - behavioral tests for the gas-golfing implementation.
 
-```bash
-git clone 
-forge install
-forge build
-```
-
-### Foundry Tests
+## Testing
 
 ```bash
 forge test
 ```
 
-### Format
+For focused gas-golfing behavior tests:
 
 ```bash
-forge fmt
+forge test --match-path 'test/openOracleGasGolfing/*.sol'
 ```
 
-## Socials
+## Upstream Project
 
-- [Farcaster](https://farcaster.xyz/openoracle)
-- [Discord](https://discord.gg/jQGeX6CAJB)
+OpenOracle docs: https://docs.openoracle.org
