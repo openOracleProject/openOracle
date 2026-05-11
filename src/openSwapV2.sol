@@ -9,6 +9,7 @@ import {IOpenOracle} from "./interfaces/IOpenOracle.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {oracleFeeReceiver} from "./oracleFeeReceiver.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title openSwap
@@ -92,8 +93,11 @@ contract openSwapV2Permit is ReentrancyGuard {
     }
 
     struct SlippageParams {
-        uint232 priceTolerated; // one of two max slippage inputs. current price at time of swap, formatted as priceTolerated = 225073570923495617630012810 implies (1e30 / priceTolerated) = $4442.99 for WETH/USDC trading (sellToken WETH or ETH and buyToken USDC)
-                                //should match oracle game price calculation (respecting PRICE_PRECISION semantics)
+        uint232 priceTolerated; // user-set reference price for slippage check at settlement.
+                                // Encoded as oracleAmount1 * 1e30 / oracleAmount2 at the desired price,
+                                // where amounts are in token-native decimals.
+                                // Example: WETH (18 dec) / USDC (6 dec) at $4442.99/ETH →
+                                // priceTolerated ≈ 1e18 * 1e30 / (4442.99 * 1e6) ≈ 2.25e38.
         uint24 toleranceRange; // 100000 = 1%, max slippage against priceTolerated
     }
 
@@ -182,6 +186,7 @@ contract openSwapV2Permit is ReentrancyGuard {
         if (sellToken == WETH && buyToken == address(0) || sellToken == address(0) && buyToken == WETH) revert InvalidInput("sellToken = buyToken");
 
         if (sellAmt == 0 || minOut == 0 || minFulfillLiquidity == 0) revert InvalidInput("zero amounts");
+        if (expiration == 0 || expiration > 30 days) revert InvalidInput("expiration");
         if (fulfillFeeParams.maxFee >= 1e7) revert InvalidInput("fulfillmentFee");
 
         if (slippageParams.priceTolerated == 0 || slippageParams.toleranceRange == 0 || slippageParams.toleranceRange > 1e7) revert InvalidInput("slippage");
@@ -201,7 +206,7 @@ contract openSwapV2Permit is ReentrancyGuard {
 
         if (fulfillFeeParams.maxFee == 0
             || fulfillFeeParams.startingFee == 0
-            || fulfillFeeParams.growthRate == 0
+            || fulfillFeeParams.growthRate < 10000
             || fulfillFeeParams.maxRounds == 0
             || fulfillFeeParams.maxRounds > 100
             || fulfillFeeParams.roundLength == 0
@@ -209,9 +214,9 @@ contract openSwapV2Permit is ReentrancyGuard {
             || fulfillFeeParams.maxFee > 1e7
             ) revert InvalidInput("fulfillFeeParams");
 
-        uint256 upperPrice = (slippageParams.priceTolerated * (uint256(1e7) + slippageParams.toleranceRange)) / 1e7;                                                                                                                                                            
-        uint256 worstFulfillAmt = (sellAmt * 1e18) / upperPrice;                                                                                                                                                                         
-        worstFulfillAmt -= worstFulfillAmt * fulfillFeeParams.maxFee / 1e7;                                                                                                                                                                               
+        uint256 upperPrice = Math.mulDiv(slippageParams.priceTolerated, uint256(1e7) + slippageParams.toleranceRange, 1e7);
+        uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice);
+        worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, fulfillFeeParams.maxFee, 1e7);
                                                                                                                                                                                                                                         
         if (minOut > worstFulfillAmt) revert InvalidInput("minOut inconsistent");
 
@@ -297,17 +302,20 @@ contract openSwapV2Permit is ReentrancyGuard {
 
         payEth(matcher, s.gasCompensation);
 
-        uint256 buyTokenTransferAmt = buyTokenIsEth ? amount2 : minFulfillLiquidity + amount2;
+        uint256 buyTokenTransferAmt = buyTokenIsEth ? uint256(amount2) : uint256(minFulfillLiquidity) + uint256(amount2);
         IERC20(buyTokenOracleFormat).safeTransferFrom(matcher, address(this), buyTokenTransferAmt);
         IERC20(sellTokenOracleFormat).safeTransferFrom(matcher, address(this), initialLiquidity);
 
         if (preimage.protocolFee > 0) {
             address feeReceiver = Clones.clone(feeReceiverImpl);
-            oracleFeeReceiver(feeReceiver).initialize(address(this), uint128(swapId), address(oracle), sellTokenOracleFormat, buyTokenOracleFormat);
             s.feeRecipient = feeReceiver;
+            oracleFeeReceiver(feeReceiver).initialize(address(this), uint128(swapId), address(oracle), sellTokenOracleFormat, buyTokenOracleFormat);
         }
 
         uint256 reportId = oracleGame(s, preimage);
+
+        s.reportId = uint128(reportId);
+        reportIdToSwapId[reportId] = swapId;
 
         _ensureOracleApproval(buyTokenOracleFormat);
         _ensureOracleApproval(sellTokenOracleFormat);
@@ -319,9 +327,6 @@ contract openSwapV2Permit is ReentrancyGuard {
             oracle.extraData(reportId).stateHash,
             matcher
         );
-
-        s.reportId = uint128(reportId);
-        reportIdToSwapId[reportId] = swapId;
 
         emit SwapMatched(swapId, fulfillmentFee, matcher, reportId, s.swapper);
 
@@ -398,7 +403,6 @@ contract openSwapV2Permit is ReentrancyGuard {
             timeType: o.timeType,
             trackDisputes: false,
             callbackContract: address(this),
-            callbackSelector: this.onSettle.selector,
             protocolFeeRecipient: s.feeRecipient
         });
 
@@ -409,7 +413,9 @@ contract openSwapV2Permit is ReentrancyGuard {
     }
 
     /* -------- oracle callback -------- */
-    function onSettle(uint256 id, uint256, uint256, address, address)
+    // Signature must match the oracle's hardcoded CALLBACK_SELECTOR =
+    // bytes4(keccak256("openOracleCallback(uint256,uint256,uint256,uint256,address,address)")).
+    function openOracleCallback(uint256 id, uint256 currentAmount1, uint256 currentAmount2, uint256, address, address)
         external
         payable
     {
@@ -419,18 +425,16 @@ contract openSwapV2Permit is ReentrancyGuard {
         if (id != s.reportId) revert InvalidInput("wrong reportId");
         if (s.finished) revert InvalidInput("finished");
 
-        _executeSwap(id, swapId, s);
+        _executeSwap(id, swapId, s, currentAmount1, currentAmount2);
 
     }
 
     /**
      * @notice Lets users bail out of a swapId.
                Anyone-can-call.
-               Two bail out conditions:
-                    1. reportId distributed but swapId not finished
-                    2. maxGameTime has passed since oracle game started 
-               In 1, swap is executed using final oracle price
-               In 2, swapper and matcher are refunded initial token deposits
+               Two bail out conditions, checked in order:
+                    1. maxGameTime has passed since oracle game started → swapper and matcher are refunded initial token deposits
+                    2. otherwise, oracle has settled but swapId is not yet finished → swap is executed using final oracle price
      * @param swapId Unique identifier of swapping instance
     */
     function bailOut(uint256 swapId) external nonReentrant {
@@ -443,19 +447,19 @@ contract openSwapV2Permit is ReentrancyGuard {
         if (s.cancelled) revert InvalidInput("cancelled");
         if (s.reportId == 0) revert InvalidInput("doesnt exist");
 
-        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
-
         bool isGameTooLong = block.timestamp - s.start > s.maxGameTime;
-
-        if (rs.settlementTimestamp != 0) {
-            _executeSwap(id, swapId, s);
-            return;
-        }
 
         if (isGameTooLong) {
             s.finished = true;
             refund(s.sellToken, s.sellAmt, s.swapper, s.buyToken, s.minFulfillLiquidity, s.matcher);
             emit SwapRefunded(swapId, s.swapper, s.matcher);
+            return;
+        }
+
+        IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
+
+        if (rs.settlementTimestamp != 0) {
+            _executeSwap(id, swapId, s, rs.currentAmount1, rs.currentAmount2);
             return;
         }
 
@@ -498,7 +502,7 @@ contract openSwapV2Permit is ReentrancyGuard {
         }
     }
 
-    function _executeSwap(uint256 id, uint256 swapId, Swap storage s) internal {
+    function _executeSwap(uint256 id, uint256 swapId, Swap storage s, uint256 oracleAmount1, uint256 oracleAmount2) internal {
 
         s.finished = true;
 
@@ -510,20 +514,20 @@ contract openSwapV2Permit is ReentrancyGuard {
         address feeRecipient = s.feeRecipient;
         uint128 minFulfillLiquidity = s.minFulfillLiquidity;
         uint128 sellAmt = s.sellAmt;
+        uint24 fulfillmentFee = s.fulfillmentFee;
+        uint16 blocksPerSecond = s.blocksPerSecond;
         SlippageParams memory sp = s.slippageParams;
 
         IOpenOracle.ReportStatus memory rs = oracle.reportStatus(id);
         if (rs.settlementTimestamp == 0) revert InvalidInput("not settled");
         bool timeType = oracle.reportMeta(id).timeType;
 
-        uint256 oracleAmount1 = rs.currentAmount1;
-        uint256 oracleAmount2 = rs.currentAmount2;
-        uint256 price = oracleAmount1 * 1e18 / oracleAmount2;
-        uint256 fulfillAmt = (sellAmt * oracleAmount2) / oracleAmount1;
-        fulfillAmt -= fulfillAmt * s.fulfillmentFee / 1e7;
+        uint256 price = Math.mulDiv(oracleAmount1, 1e30, oracleAmount2);
+        uint256 fulfillAmt = Math.mulDiv(sellAmt, oracleAmount2, oracleAmount1);
+        fulfillAmt -= Math.mulDiv(fulfillAmt, fulfillmentFee, 1e7);
 
         bool slippageOk = toleranceCheck(price, sp.priceTolerated, sp.toleranceRange);
-        bool blocksPerSecondOk = impliedBlocksPerSecond(timeType, rs.reportTimestamp, rs.lastReportOppoTime, s.blocksPerSecond);
+        bool blocksPerSecondOk = impliedBlocksPerSecond(timeType, rs.reportTimestamp, rs.lastReportOppoTime, blocksPerSecond);
         bool slippageBailout = fulfillAmt > minFulfillLiquidity || !slippageOk;
         bool shouldRefund = slippageBailout || !blocksPerSecondOk;
 
@@ -623,8 +627,8 @@ contract openSwapV2Permit is ReentrancyGuard {
         returns (bool)
     {
         uint256 tr = uint256(toleranceRange);
-        uint256 upper = (priceTolerated * (1e7 + tr)) / 1e7;
-        uint256 lower = (priceTolerated * 1e7) / (1e7 + tr);
+        uint256 upper = Math.mulDiv(priceTolerated, 1e7 + tr, 1e7);
+        uint256 lower = Math.mulDiv(priceTolerated, 1e7, 1e7 + tr);
 
         return price >= lower && price <= upper;
 
