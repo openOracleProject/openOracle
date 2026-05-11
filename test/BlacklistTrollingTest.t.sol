@@ -108,14 +108,13 @@ contract BlacklistTrollingTest is Test {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
@@ -157,10 +156,10 @@ contract BlacklistTrollingTest is Test {
         vm.prank(charlie);
         oracle.settle(reportId);
 
-        // Price = amount1 * 1e18 / amount2 = 1.1e18 * 1e18 / 2100e18
+        // Price = amount1 * 1e30 / amount2 = 1.1e18 * 1e18 / 2100e18
         uint256 finalAmount1 = 11e17;
         uint256 finalAmount2 = 2100e18;
-        uint256 expectedPrice = (finalAmount1 * 1e18) / finalAmount2;
+        uint256 expectedPrice = (finalAmount1 * 1e30) / finalAmount2;
         (uint256 price,) = oracle.getSettlementData(reportId);
         assertEq(price, expectedPrice, "Price incorrect after settlement");
 
@@ -197,14 +196,13 @@ contract BlacklistTrollingTest is Test {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
@@ -243,10 +241,10 @@ contract BlacklistTrollingTest is Test {
         vm.prank(charlie);
         oracle.settle(reportId);
 
-        // Price = amount1 * 1e18 / amount2 = 1.1e18 * 1e18 / 2100e18
+        // Price = amount1 * 1e30 / amount2 = 1.1e18 * 1e18 / 2100e18
         uint256 finalAmount1 = 11e17;
         uint256 finalAmount2 = 2100e18;
-        uint256 expectedPrice = (finalAmount1 * 1e18) / finalAmount2;
+        uint256 expectedPrice = (finalAmount1 * 1e30) / finalAmount2;
         (uint256 price,) = oracle.getSettlementData(reportId);
         assertEq(price, expectedPrice, "Price incorrect after settlement");
     }
@@ -271,14 +269,13 @@ contract BlacklistTrollingTest is Test {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report (he will be current reporter at settle time)
         vm.prank(bob);
@@ -308,8 +305,8 @@ contract BlacklistTrollingTest is Test {
         assertEq(charlie.balance, charlieETHBefore + SETTLER_REWARD, "Charlie should get settler reward");
 
         // Settlement succeeded
-        // Price = amount1 * 1e18 / amount2 = 1e18 * 1e18 / 2000e18
-        uint256 expectedPrice = (1e18 * 1e18) / 2000e18;
+        // Price = amount1 * 1e30 / amount2 = 1e18 * 1e18 / 2000e18
+        uint256 expectedPrice = (1e18 * 1e30) / 2000e18;
         assertEq(price, expectedPrice, "Price incorrect");
         assertEq(settlementTimestamp, block.timestamp, "Settlement timestamp should be set");
 
@@ -344,14 +341,13 @@ contract BlacklistTrollingTest is Test {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);

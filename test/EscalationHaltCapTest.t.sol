@@ -43,7 +43,6 @@ contract EscalationHaltCapTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
@@ -53,7 +52,7 @@ contract EscalationHaltCapTest is BaseTest {
         // Submit initial report
         token1.approve(address(oracle), initialAmount1);
         token2.approve(address(oracle), initialAmount2);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         oracle.submitInitialReport(reportId, uint128(initialAmount1), uint128(initialAmount2), stateHash);
 
         vm.stopPrank();
@@ -132,7 +131,6 @@ contract EscalationHaltCapTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
@@ -142,7 +140,7 @@ contract EscalationHaltCapTest is BaseTest {
         // Submit initial report
         token1.approve(address(oracle), initialAmount1);
         token2.approve(address(oracle), initialAmount2);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         oracle.submitInitialReport(reportId, uint128(initialAmount1), uint128(initialAmount2), stateHash);
 
         vm.stopPrank();
@@ -210,7 +208,6 @@ contract EscalationHaltCapTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
@@ -219,7 +216,7 @@ contract EscalationHaltCapTest is BaseTest {
 
         token1.approve(address(oracle), initialAmount1);
         token2.approve(address(oracle), initialAmount2);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         oracle.submitInitialReport(reportId, uint128(initialAmount1), uint128(initialAmount2), stateHash);
 
         vm.stopPrank();

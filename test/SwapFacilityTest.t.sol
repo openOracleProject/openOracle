@@ -6,16 +6,23 @@ import "src/OracleSwapFacility.sol";
 
 contract TestCallback {
     uint256 public lastReportId;
-    uint256 public lastPrice;
+    uint256 public lastAmount1;
+    uint256 public lastAmount2;
     uint256 public lastTimestamp;
     address public lastToken1;
     address public lastToken2;
 
-    function onOracleSettle(uint256 reportId, uint256 price, uint256 timestamp, address token1, address token2)
-        external
-    {
+    function openOracleCallback(
+        uint256 reportId,
+        uint256 amount1,
+        uint256 amount2,
+        uint256 timestamp,
+        address token1,
+        address token2
+    ) external {
         lastReportId = reportId;
-        lastPrice = price;
+        lastAmount1 = amount1;
+        lastAmount2 = amount2;
         lastTimestamp = timestamp;
         lastToken1 = token1;
         lastToken2 = token2;
@@ -40,10 +47,10 @@ contract SwapFacilityTest is BaseTest {
         uint256 aliceToken2Start = token2.balanceOf(alice);
         vm.startPrank(alice);
 
-        uint256 amount1 = 5e18;
-        uint256 amount2 = 5e18;
-        uint256 fee = 3000; // 3 bps
-        uint256 settlementTime = 120; // 2 minutes
+        uint128 amount1 = 5e18;
+        uint128 amount2 = 5e18;
+        uint24 fee = 3000; // 3 bps
+        uint48 settlementTime = 120; // 2 minutes
 
         // Approve tokens for swap facility
         token1.approve(address(swapFacility), amount1);
@@ -61,11 +68,10 @@ contract SwapFacilityTest is BaseTest {
             settlementTime,
             true, // timeType = true (seconds)
             address(callbackContract), // callback contract
-            callbackContract.onOracleSettle.selector, // callback selector
             true, // trackDisputes
-            300000, // callback gas limit
-            101, // multiplier (default 101%)
-            0, // disputeDelay
+            uint32(300000), // callback gas limit
+            uint16(101), // multiplier (default 101%)
+            uint24(0), // disputeDelay
             amount1 // escalationHalt (set to amount1)
         );
 
@@ -92,7 +98,7 @@ contract SwapFacilityTest is BaseTest {
         token1.approve(address(oracle), 100e18);
         token2.approve(address(oracle), 100e18);
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(1);
+        (bytes32 stateHash,,,,,) = oracle.extraData(1);
         oracle.disputeAndSwap(1, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(amount2), stateHash);
 
         vm.stopPrank();
@@ -103,7 +109,8 @@ contract SwapFacilityTest is BaseTest {
 
         // Check callback was executed
         assertEq(callbackContract.lastReportId(), reportId);
-        assertTrue(callbackContract.lastPrice() > 0);
+        assertTrue(callbackContract.lastAmount1() > 0);
+        assertTrue(callbackContract.lastAmount2() > 0);
         assertEq(callbackContract.lastToken1(), address(token1));
         assertEq(callbackContract.lastToken2(), address(token2));
 
@@ -120,10 +127,10 @@ contract SwapFacilityTest is BaseTest {
         uint256 aliceToken2Start = token2.balanceOf(alice);
         vm.startPrank(alice);
 
-        uint256 amount1 = 5e18;
-        uint256 amount2 = 5e18;
-        uint256 fee = 3000; // 3 bps
-        uint256 settlementTime = 120; // 2 minutes
+        uint128 amount1 = 5e18;
+        uint128 amount2 = 5e18;
+        uint24 fee = 3000; // 3 bps
+        uint48 settlementTime = 120; // 2 minutes
 
         // Approve tokens for swap facility
         token1.approve(address(swapFacility), amount1);
@@ -157,7 +164,7 @@ contract SwapFacilityTest is BaseTest {
         token1.approve(address(oracle), 100e18);
         token2.approve(address(oracle), 100e18);
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(1);
+        (bytes32 stateHash,,,,,) = oracle.extraData(1);
         oracle.disputeAndSwap(1, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(amount2), stateHash);
 
         vm.stopPrank();

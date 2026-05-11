@@ -52,7 +52,6 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
@@ -62,7 +61,7 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report using batcher (by bob)
@@ -122,7 +121,6 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
@@ -132,7 +130,7 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report
@@ -194,7 +192,6 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
@@ -204,7 +201,7 @@ contract OpenOracleBatcherTest is BaseTest {
         console.log("Created report ID:", reportId);
 
         // 2. Get stateHash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         console.log("StateHash obtained");
 
         // 3. Submit initial report
@@ -286,7 +283,8 @@ contract OpenOracleBatcherTest is BaseTest {
             currentAmount1: status.currentAmount1,
             currentAmount2: status.currentAmount2,
             callbackGasLimit: extra.callbackGasLimit,
-            protocolFeeRecipient: extra.protocolFeeRecipient
+            protocolFeeRecipient: extra.protocolFeeRecipient,
+            callbackContract: extra.callbackContract
         });
 
         stateHash = extra.stateHash;
@@ -312,7 +310,6 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
@@ -373,14 +370,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Build WRONG oracleParams (wrong exactToken1Report)
         openOracleBatcher.oracleParams memory p = openOracleBatcher.oracleParams({
@@ -399,7 +395,8 @@ contract OpenOracleBatcherTest is BaseTest {
             currentAmount1: 0,
             currentAmount2: 0,
             callbackGasLimit: 0,
-            protocolFeeRecipient: alice
+            protocolFeeRecipient: alice,
+            callbackContract: address(0)
         });
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
@@ -436,14 +433,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
@@ -488,14 +484,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({
@@ -543,14 +538,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // 2. Submit initial report
         vm.prank(bob);
@@ -615,14 +609,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -678,14 +671,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -735,14 +727,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -784,14 +775,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Record balances BEFORE
         uint256 bobToken1Before = token1.balanceOf(bob);
@@ -861,14 +851,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report
         vm.prank(bob);
@@ -949,14 +938,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         uint256 bobToken1Before = token1.balanceOf(bob);
         uint256 bobToken2Before = token2.balanceOf(bob);
@@ -1008,14 +996,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.005 ether), // 0.005 ETH settler reward
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -1069,14 +1056,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Bob submits initial report via batcher (offering 1 token1 for 2000 token2)
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
@@ -1159,7 +1145,6 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: alice
@@ -1229,14 +1214,13 @@ contract OpenOracleBatcherTest is BaseTest {
                 settlerReward: uint96(0.001 ether),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: 0,
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         openOracleBatcher.InitialReportData[] memory reports = new openOracleBatcher.InitialReportData[](1);
         reports[0] = openOracleBatcher.InitialReportData({

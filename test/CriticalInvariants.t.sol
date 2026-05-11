@@ -20,7 +20,7 @@ contract TestCallback {
     mapping(uint256 => Execution) public executions;
     mapping(uint256 => uint256) public executionCount;
 
-    function onOracleSettle(uint256 reportId, uint256, uint256, address, address) external {
+    function openOracleCallback(uint256 reportId, uint256, uint256, uint256, address, address) external {
         executions[reportId] =
             Execution({called: true, gasReceived: gasleft(), reportId: reportId, timestamp: block.timestamp});
         executionCount[reportId]++;
@@ -86,7 +86,6 @@ contract InvariantHandler {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(callback),
-                callbackSelector: TestCallback.onOracleSettle.selector,
                 trackDisputes: false,
                 callbackGasLimit: CALLBACK_GAS_LIMIT,
                 protocolFeeRecipient: address(this)
@@ -107,7 +106,7 @@ contract InvariantHandler {
 
         // Read meta + state hash
         (uint256 exactToken1Report, , , , , , , , , , , ) = oracle.reportMeta(reportId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Provide a simple amount2 (arbitrary positive)
         uint256 amount2 = 1e18;
@@ -162,7 +161,7 @@ contract InvariantHandler {
         // Ensure we have sufficient balances to perform dispute contributions
         _ensureBalances(newAmount1 + oldAmount1, newAmount2 + oldAmount2);
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
         // Always swap token1 in this handler for simplicity
         try oracle.disputeAndSwap(reportId, address(token1), uint128(newAmount1), uint128(newAmount2), uint128(oldAmount2), stateHash) {
             // ok
@@ -211,7 +210,7 @@ contract InvariantHandler {
         }
 
         // Compose a very low gas amount relative to configured callbackGasLimit
-        (, , , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+        (, , , uint32 cbGasLimit, , ) = oracle.extraData(reportId);
         uint256 lowGas = cbGasLimit / 4; // intentionally small
         if (lowGas > 50_000) lowGas = 50_000; // cap at 50k to ensure it's clearly too low
         if (lowGas < 30_000) lowGas = 30_000; // baseline minimal gas
@@ -287,7 +286,7 @@ contract CriticalInvariantsTest is StdInvariant, Test {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
             // Load extra + status
-            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+            (, address cb, , uint32 cbGasLimit, , ) = oracle.extraData(reportId);
             (
                 ,
                 ,
@@ -339,7 +338,7 @@ contract CriticalInvariantsTest is StdInvariant, Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
-            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+            (, address cb, , uint32 cbGasLimit, , ) = oracle.extraData(reportId);
             (,,,, uint48 settlementTimestamp2,,) = oracle.reportStatus(reportId);
             if (cb != address(0) && settlementTimestamp2 != 0) {
                 (bool called, uint256 gasReceived, ,) = callback.executions(reportId);
@@ -360,7 +359,7 @@ contract CriticalInvariantsTest is StdInvariant, Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
             if (reportId == 0) continue;
-            (, address cb, , uint32 cbGasLimit, , , ) = oracle.extraData(reportId);
+            (, address cb, , uint32 cbGasLimit, , ) = oracle.extraData(reportId);
             (,,,, uint48 settlementTimestamp3,,) = oracle.reportStatus(reportId);
             if (cb != address(0) && settlementTimestamp3 != 0) {
                 (bool called, uint256 gasReceived, ,) = callback.executions(reportId);

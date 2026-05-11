@@ -53,7 +53,6 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
@@ -61,7 +60,7 @@ contract OpenOracleTest is BaseTest {
         );
 
         // Get state hash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
@@ -129,7 +128,6 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
@@ -137,7 +135,7 @@ contract OpenOracleTest is BaseTest {
         );
 
         // Get state hash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
@@ -187,14 +185,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash, address(rejectingReceiver));
@@ -262,14 +259,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -310,14 +306,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         vm.expectRevert(OpenOracle.InvalidAmount1.selector);
@@ -341,14 +336,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: protocolFeeRecipient
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         vm.expectRevert(OpenOracle.InvalidAmount2.selector);
@@ -386,7 +380,6 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: address(0)
@@ -398,7 +391,7 @@ contract OpenOracleTest is BaseTest {
         assertEq(address(oracle).balance, ORACLE_FEE, "Oracle should have received fee");
 
         // Get state hash
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         // Submit initial report
         vm.prank(bob);
@@ -494,14 +487,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
@@ -533,14 +525,13 @@ contract OpenOracleTest is BaseTest {
                 settlerReward: uint96(SETTLER_REWARD),
                 timeType: true,
                 callbackContract: address(0),
-                callbackSelector: bytes4(0),
                 trackDisputes: false,
                 callbackGasLimit: uint32(0),
                 protocolFeeRecipient: address(0)
             })
         );
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.prank(bob);
         oracle.submitInitialReport(reportId, uint128(1e18), uint128(2000e18), stateHash);
