@@ -14,7 +14,6 @@ interface IOpenOracle {
         address callbackContract;
         uint32 numReports;
         uint32 callbackGasLimit;
-        bytes4 callbackSelector;
         address protocolFeeRecipient;
         bool trackDisputes;
     }
@@ -59,7 +58,6 @@ interface IOpenOracle {
         bool timeType;
         bool trackDisputes;
         address callbackContract;
-        bytes4 callbackSelector;
         address protocolFeeRecipient;
     }
 
