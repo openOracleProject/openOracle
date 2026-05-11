@@ -235,7 +235,6 @@ contract OpenOracle is OpenOracleErrors {
         bool isSelfDispute = (disputer == previousReporter && msg.sender == previousReporter);
 
         {
-            uint256 feeSum = uint256(oracle.feePercentage) + uint256(oracle.protocolFee);
             uint48 prevReportTimestamp = oracle.reportTimestamp;
             uint256 escalationHalt = oracle.escalationHalt;
             uint256 expectedAmount1;
@@ -262,7 +261,6 @@ contract OpenOracle is OpenOracleErrors {
             if (oracle.settlementTimestamp != 0) revert AlreadySettled();
             if (tokenToSwap != token1 && tokenToSwap != token2) revert InvalidTokenToSwap();
             if (currentTime < prevReportTimestamp + oracle.disputeDelay) revert DisputeTooEarly();
-            if (feeSum > 0) _checkFeeBoundary(oldAmount1, oldAmount2, newAmount1, newAmount2, feeSum);
             if (disputer == address(0)) revert AddressCannotBeZero();
             if (timing.blockTimestamp > 0) _validateTiming(timing);
             if (msg.value > 0 && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) revert NeitherTokenIsETH();
@@ -496,24 +494,6 @@ contract OpenOracle is OpenOracleErrors {
         } else {
             IERC20(token).safeTransferFrom(from, to, amount);
             return amount;
-        }
-    }
-
-    function _checkFeeBoundary(
-        uint256 oldAmount1,
-        uint256 oldAmount2,
-        uint256 newAmount1,
-        uint256 newAmount2,
-        uint256 feeSum
-    ) internal pure {
-        uint256 oldPrice = (oldAmount1 * PRICE_PRECISION) / oldAmount2;
-        uint256 feeBoundary = (oldPrice * feeSum) / PERCENTAGE_PRECISION;
-        uint256 lowerBoundary = (oldPrice * PERCENTAGE_PRECISION) / (PERCENTAGE_PRECISION + feeSum);
-        uint256 upperBoundary = oldPrice + feeBoundary;
-        uint256 newPrice = (newAmount1 * PRICE_PRECISION) / newAmount2;
-
-        if (newPrice >= lowerBoundary && newPrice <= upperBoundary) {
-            revert NewPriceInsideFeeBoundary();
         }
     }
 
