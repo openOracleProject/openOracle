@@ -6,7 +6,7 @@ import {IOpenOracle} from "./interfaces/IOpenOracle.sol";
 contract openOracleDataProviderV3 {
     /* ─── immutables & constants ────────────────────────────── */
     IOpenOracle public immutable oracle;
-    uint256 constant PRICE_PRECISION = 1e18;
+    uint256 constant PRICE_PRECISION = 1e30;
 
     /* ─── constructor ──────────────────────────────────────── */
     constructor(address oracleAddress) {
@@ -44,7 +44,6 @@ contract openOracleDataProviderV3 {
         address callbackContract;
         uint32 numReports;
         uint32 callbackGasLimit;
-        bytes4 callbackSelector;
         bool trackDisputes;
         address protocolFeeRecipient;
     }
@@ -55,7 +54,7 @@ contract openOracleDataProviderV3 {
         IOpenOracle.extraReportData memory _reportExtra = oracle.extraData(reportId);
 
         uint256 price = _reportStatus.currentAmount2 > 0
-            ? (_reportStatus.currentAmount1 * PRICE_PRECISION) / _reportStatus.currentAmount2
+            ? (uint256(_reportStatus.currentAmount1) * PRICE_PRECISION) / _reportStatus.currentAmount2
             : 0;
 
         return botStruct(
@@ -84,7 +83,6 @@ contract openOracleDataProviderV3 {
             _reportExtra.callbackContract,
             _reportExtra.numReports,
             _reportExtra.callbackGasLimit,
-            _reportExtra.callbackSelector,
             _reportExtra.trackDisputes,
             _reportExtra.protocolFeeRecipient
         );
