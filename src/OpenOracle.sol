@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title OpenOracle
@@ -51,9 +52,11 @@ contract OpenOracle is ReentrancyGuard {
     error ReportNotSettled();
 
     // Constants
-    uint256 public constant PRICE_PRECISION = 1e18;
+    uint256 public constant PRICE_PRECISION = 1e30;
     uint256 public constant PERCENTAGE_PRECISION = 1e7;
     uint256 public constant MULTIPLIER_PRECISION = 100;
+    bytes4 internal constant CALLBACK_SELECTOR =
+        bytes4(keccak256("openOracleCallback(uint256,uint256,uint256,uint256,address,address)"));
 
     // State variables
     uint256 public nextReportId = 1;
@@ -77,7 +80,6 @@ contract OpenOracle is ReentrancyGuard {
         address callbackContract;
         uint32 numReports;
         uint32 callbackGasLimit;
-        bytes4 callbackSelector;
         address protocolFeeRecipient;
         bool trackDisputes;
     }
@@ -118,11 +120,10 @@ contract OpenOracle is ReentrancyGuard {
         address token2Address; // address of token2 in the oracle report instance
         uint32 callbackGasLimit; // gas the settlement callback must use
         uint24 feePercentage; // fee paid to previous reporter. 1000 = 0.01%
-        uint16 multiplier; // amount by which newAmount1 must increase versus old amount1. 140 = 1.4x
+        uint16 multiplier; // amount by which newAmount1 must increase versus old amount1. 140 = 1.4x. 100 = no escalation.
         bool timeType; // true for block timestamp, false for block number
         bool trackDisputes; // true keeps a readable dispute history for smart contracts
         address callbackContract; // contract address for settle to call back into
-        bytes4 callbackSelector; // method in the callbackContract you want called.
         address protocolFeeRecipient; // address that receives protocol fees and initial reporter rewards if keepFee set to false
     }
 
@@ -145,7 +146,6 @@ contract OpenOracle is ReentrancyGuard {
         bool timeType,
         bool trackDisputes,
         address callbackContract,
-        bytes4 callbackSelector,
         uint32 callbackGasLimit,
         bytes32 stateHash,
         uint256 blockTimestamp
@@ -229,16 +229,15 @@ contract OpenOracle is ReentrancyGuard {
 
         extraReportData storage extra = extraData[reportId];
         address callbackContract = extra.callbackContract;
-        bytes4 callbackSelector = extra.callbackSelector;
         uint32 callbackGasLimit = extra.callbackGasLimit;
 
         _transferTokens(token1, address(this), currentReporter, currentAmount1);
         _transferTokens(token2, address(this), currentReporter, currentAmount2);
 
-        if (callbackContract != address(0) && callbackSelector != bytes4(0)) {
+        if (callbackContract != address(0)) {
             // Prepare callback data
             bytes memory callbackData = abi.encodeWithSelector(
-                callbackSelector, reportId, (currentAmount1 * PRICE_PRECISION) / currentAmount2, status.settlementTimestamp, token1, token2
+                CALLBACK_SELECTOR, reportId, currentAmount1, currentAmount2, status.settlementTimestamp, token1, token2
             );
 
             // Execute callback with gas limit. Revert if not enough gas supplied to attempt callback fully.
@@ -267,7 +266,7 @@ contract OpenOracle is ReentrancyGuard {
     function getSettlementData(uint256 reportId) external view returns (uint256 price, uint256 settlementTimestamp) {
         ReportStatus storage status = reportStatus[reportId];
         if (status.settlementTimestamp == 0) revert ReportNotSettled();
-        return ((status.currentAmount1 * PRICE_PRECISION) / status.currentAmount2, status.settlementTimestamp);
+        return (Math.mulDiv(status.currentAmount1, PRICE_PRECISION, status.currentAmount2), status.settlementTimestamp);
     }
 
     /**
@@ -309,7 +308,6 @@ contract OpenOracle is ReentrancyGuard {
             settlerReward: settlerReward,
             timeType: true,
             callbackContract: address(0),
-            callbackSelector: bytes4(0),
             trackDisputes: false,
             callbackGasLimit: 0,
             protocolFeeRecipient: msg.sender
@@ -331,8 +329,7 @@ contract OpenOracle is ReentrancyGuard {
      *   - protocolFee: Protocol fee in thousandths of basis points (3000 = 0.03%)
      *   - settlerReward: Reward for settling the report in wei
      *   - timeType: If true: time in seconds, if false: blocks
-     *   - callbackContract: Settle calls back into this address
-     *   - callbackSelector: Settle callback uses this method
+     *   - callbackContract: Settle calls back into this address (callback signature is fixed: openOracleCallback(uint256 reportId, uint256 currentAmount1, uint256 currentAmount2, uint256 settlementTimestamp, address token1, address token2))
      *   - trackDisputes: Optional dispute tracking for smart contracts
      *   - callbackGasLimit: How much gas the callback must use. Must be safely < block gas limit or funds will be stuck
      *   - protocolFeeRecipient: Address that receives accrued protocol fees & initial reporter reward if keepFee false
@@ -379,7 +376,6 @@ contract OpenOracle is ReentrancyGuard {
 
         extraReportData storage extra = extraData[reportId];
         extra.callbackContract = params.callbackContract;
-        extra.callbackSelector = params.callbackSelector;
         if (params.trackDisputes == true) extra.trackDisputes = params.trackDisputes;
         extra.callbackGasLimit = params.callbackGasLimit;
         if (params.protocolFeeRecipient != address(0)) extra.protocolFeeRecipient = params.protocolFeeRecipient;
@@ -390,7 +386,6 @@ contract OpenOracle is ReentrancyGuard {
                 params.settlementTime,
                 params.disputeDelay,
                 params.callbackContract,
-                params.callbackSelector,
                 params.callbackGasLimit,
                 params.feePercentage,
                 params.protocolFee,
@@ -399,6 +394,10 @@ contract OpenOracle is ReentrancyGuard {
                 params.trackDisputes,
                 params.multiplier,
                 params.escalationHalt,
+                params.protocolFeeRecipient,
+                params.token1Address,
+                params.token2Address,
+                params.exactToken1Report,
                 msg.sender,
                 _getBlockNumber(),
                 uint48(block.timestamp))
@@ -424,7 +423,6 @@ contract OpenOracle is ReentrancyGuard {
             params.timeType,
             params.trackDisputes,
             params.callbackContract,
-            params.callbackSelector,
             params.callbackGasLimit,
             stateHash,
             block.timestamp
@@ -483,7 +481,7 @@ contract OpenOracle is ReentrancyGuard {
         if (amount1 != meta.exactToken1Report) revert InvalidAmount1();
         if (amount2 == 0) revert InvalidAmount2();
         if (extra.stateHash != stateHash) revert InvalidStateHash();
-        if (reporter == address(0)) revert AddressCannotBeZero();
+        if (reporter == address(0) || reporter == address(this)) revert AddressCannotBeZero();
 
         _transferTokens(meta.token1, msg.sender, address(this), amount1);
         _transferTokens(meta.token2, msg.sender, address(this), amount2);
@@ -582,7 +580,7 @@ contract OpenOracle is ReentrancyGuard {
         _validateDispute(reportId, tokenToSwap, newAmount1, newAmount2, meta, status);
         if (status.currentAmount2 != amt2Expected) revert InvalidAmount2Expected();
         if (stateHash != extra.stateHash) revert InvalidStateHash();
-        if (disputer == address(0)) revert AddressCannotBeZero();
+        if (disputer == address(0) || disputer == address(this)) revert AddressCannotBeZero();
 
         bool trackDisputes = extra.trackDisputes;
         if (tokenToSwap == meta.token1) {
@@ -678,11 +676,11 @@ contract OpenOracle is ReentrancyGuard {
         uint256 feeSum = uint256(meta.feePercentage) + uint256(meta.protocolFee);
         if (feeSum > 0){
             uint256 oldAmount1 = status.currentAmount1;
-            uint256 oldPrice = (oldAmount1 * PRICE_PRECISION) / status.currentAmount2;
-            uint256 feeBoundary = (oldPrice * feeSum) / PERCENTAGE_PRECISION;
-            uint256 lowerBoundary = (oldPrice * PERCENTAGE_PRECISION) / (PERCENTAGE_PRECISION + feeSum);
+            uint256 oldPrice = Math.mulDiv(oldAmount1, PRICE_PRECISION, status.currentAmount2);
+            uint256 feeBoundary = Math.mulDiv(oldPrice, feeSum, PERCENTAGE_PRECISION);
+            uint256 lowerBoundary = Math.mulDiv(oldPrice, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION + feeSum);
             uint256 upperBoundary = oldPrice + feeBoundary;
-            uint256 newPrice = (newAmount1 * PRICE_PRECISION) / newAmount2;
+            uint256 newPrice = Math.mulDiv(newAmount1, PRICE_PRECISION, newAmount2);
 
             if (newPrice >= lowerBoundary && newPrice <= upperBoundary) {
                 revert NewPriceInsideFeeBoundary();
@@ -804,3 +802,4 @@ contract OpenOracle is ReentrancyGuard {
         return uint48(block.number);
     }
 }
+
