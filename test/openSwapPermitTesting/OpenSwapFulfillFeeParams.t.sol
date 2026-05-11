@@ -105,7 +105,7 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
     function _getSlippageParams() internal pure returns (openSwapV2Permit.SlippageParams memory) {
         return openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
     }
@@ -566,7 +566,7 @@ contract OpenSwapFulfillFeeParamsTest is Test {
 
         // Submit report and settle
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);

@@ -112,7 +112,7 @@ contract OpenSwapProtocolFeesTest is Test {
         });
 
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
 
@@ -475,7 +475,7 @@ contract OpenSwapProtocolFeesTest is Test {
 
     function testProtocolFees_FeeReentryNoDoubleDistribution() public {
         // The cross-contract reentry path we spent time reasoning about:
-        //   grabOracleGameFeesAny → sweep → token hook → oracle.settle → onSettle → nested grabOracleGameFees
+        //   grabOracleGameFeesAny → sweep → token hook → oracle.settle → openOracleCallback → nested grabOracleGameFees
         //
         // The receiver's nonReentrant blocks the nested sweep/collect attempts, so
         // the nested grabOracleGameFees distributes 0. The outer sweep returns the
@@ -511,7 +511,7 @@ contract OpenSwapProtocolFeesTest is Test {
             timeType: true
         });
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({
@@ -589,7 +589,7 @@ contract OpenSwapProtocolFeesTest is Test {
     }
 
     function testProtocolFees_PostSettlementFeeRetry() public {
-        // Grief boundary: a sweep failure during onSettle's grabOracleGameFees must
+        // Grief boundary: a sweep failure during openOracleCallback's grabOracleGameFees must
         // not brick the swap (try/catch absorbs it). Fees can be recovered later by
         // anyone calling grabOracleGameFeesAny once sweep is unblocked.
         uint256 swapId = _createSwap();
@@ -601,7 +601,7 @@ contract OpenSwapProtocolFeesTest is Test {
         // Seed the receiver with fees that should eventually distribute.
         sellToken.transfer(feeRecipient, 100e18);
 
-        // Make sweep(sellToken) revert for the duration of onSettle. buyToken sweep is
+        // Make sweep(sellToken) revert for the duration of openOracleCallback. buyToken sweep is
         // left alone (would be a no-op anyway since receiver has no buyToken seeded).
         vm.mockCallRevert(
             feeRecipient,

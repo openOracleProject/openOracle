@@ -187,7 +187,7 @@ contract OpenSwapSlippageTest is Test {
     function testSlippage_RevertWhenToleranceRangeZero() public {
         // toleranceRange = 0 now reverts
         vm.expectRevert();
-        _createSwapWithSlippage(5e14, 0);
+        _createSwapWithSlippage(5e26, 0);
     }
 
     function testSlippage_RevertWhenBothZero() public {
@@ -198,7 +198,7 @@ contract OpenSwapSlippageTest is Test {
     function testSlippage_RevertWhenToleranceRangeTooHigh() public {
         // toleranceRange > 1e7 reverts
         vm.expectRevert();
-        _createSwapWithSlippage(5e14, uint24(1e7 + 1));
+        _createSwapWithSlippage(5e26, uint24(1e7 + 1));
     }
 
     // ============ Slippage Pass Tests ============
@@ -207,7 +207,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_PassExactPrice() public {
         // With amount1=1e18, amount2=2000e18: oracle price = 5e14
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 100000; // 1%
 
         uint256 swapId = _createSwapWithSlippage(priceTolerated, toleranceRange);
@@ -222,7 +222,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_PassPriceWithinRange() public {
         // priceTolerated = 5e14, 1% tolerance = maxDiff of 5e12
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 100000; // 1%
 
         uint256 swapId = _createSwapWithSlippage(priceTolerated, toleranceRange);
@@ -240,7 +240,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_FailPriceOutsideRange() public {
         // priceTolerated = 5e14, 1% tolerance
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 100000; // 1%
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
@@ -261,7 +261,7 @@ contract OpenSwapSlippageTest is Test {
     }
 
     function testSlippage_FailWildlyDifferentPrice() public {
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 100000; // 1%
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
@@ -285,7 +285,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_TightTolerance_Pass() public {
         // 0.1% tolerance
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 10000; // 0.1%
 
         uint256 swapId = _createSwapWithSlippage(priceTolerated, toleranceRange);
@@ -301,7 +301,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_TightTolerance_Fail() public {
         // 0.1% tolerance
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 10000; // 0.1%
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
@@ -323,7 +323,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_WideTolerance_Pass() public {
         // 10% tolerance
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 1000000; // 10%
 
         uint256 swapId = _createSwapWithSlippage(priceTolerated, toleranceRange);
@@ -339,7 +339,7 @@ contract OpenSwapSlippageTest is Test {
 
     function testSlippage_WideTolerance_Fail() public {
         // 10% tolerance
-        uint256 priceTolerated = 5e14;
+        uint256 priceTolerated = 5e26;
         uint24 toleranceRange = 1000000; // 10%
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);

@@ -116,7 +116,7 @@ contract OpenSwapGasCompensationTest is Test {
 
     function _getSlippageParams() internal pure returns (openSwapV2Permit.SlippageParams memory) {
         return openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
     }
@@ -590,7 +590,7 @@ contract OpenSwapGasCompensationTest is Test {
         uint256 ethToSend = gasComp + SETTLER_REWARD;
 
         openSwapV2Permit.SlippageParams memory strictSlippage = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14, // Expected price
+            priceTolerated: 5e26, // Expected price
             toleranceRange: 10000 // 0.1% tolerance
         });
 

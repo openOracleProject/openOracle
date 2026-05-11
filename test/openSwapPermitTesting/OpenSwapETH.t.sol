@@ -106,7 +106,7 @@ contract OpenSwapETHTest is Test {
 
     function _getSlippageParams() internal pure returns (openSwapV2Permit.SlippageParams memory) {
         return openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
     }
@@ -211,7 +211,7 @@ contract OpenSwapETHTest is Test {
 
         // Submit report and settle
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
         // Reporter already has mock WETH from setUp, just submit report
         // Report: 1 WETH = 2000 tokens (amount1=WETH, amount2=token)
@@ -341,10 +341,10 @@ contract OpenSwapETHTest is Test {
         uint256 sellAmtTokens = 10e18;
 
         // Create swap: Token → ETH
-        // Oracle price = amount1 * 1e18 / amount2 = 1e18 * 1e18 / 5e16 = 2e19
+        // Oracle price = amount1 * 1e30 / amount2 = 1e18 * 1e30 / 5e16 = 2e31
         // (initial report: amount1=initialLiquidity=1e18 token, amount2=5e16 WETH)
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 2e19,
+            priceTolerated: 2e31,
             toleranceRange: 1e7 - 1
         });
         vm.startPrank(swapper);
@@ -375,7 +375,7 @@ contract OpenSwapETHTest is Test {
 
         // Submit report and settle
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
         // Report: 1 token = 0.05 ETH (so 10 tokens = 0.5 ETH)
         // token1 = token, token2 = WETH

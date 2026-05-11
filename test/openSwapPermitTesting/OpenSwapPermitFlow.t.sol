@@ -91,7 +91,7 @@ contract OpenSwapPermitFlowTest is Test {
     }
 
     function _slippageParams() internal pure returns (openSwapV2Permit.SlippageParams memory) {
-        return openSwapV2Permit.SlippageParams({ priceTolerated: 5e14, toleranceRange: 1e7 - 1 });
+        return openSwapV2Permit.SlippageParams({ priceTolerated: 5e26, toleranceRange: 1e7 - 1 });
     }
 
     function _fulfillFeeParams() internal pure returns (openSwapV2Permit.FulfillFeeParams memory) {

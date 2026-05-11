@@ -83,7 +83,7 @@ contract OpenSwapPreimageAndMinOutTest is Test {
     }
 
     function _slippageParams() internal pure returns (openSwapV2Permit.SlippageParams memory) {
-        return openSwapV2Permit.SlippageParams({ priceTolerated: 5e14, toleranceRange: 1e7 - 1 });
+        return openSwapV2Permit.SlippageParams({ priceTolerated: 5e26, toleranceRange: 1e7 - 1 });
     }
 
     function _fulfillFeeParams() internal pure returns (openSwapV2Permit.FulfillFeeParams memory) {
@@ -319,7 +319,7 @@ contract OpenSwapPreimageAndMinOutTest is Test {
     function testMinOutValidation_TightSlippage_ReducesWorstCase() public {
         // With tight tolerance (100 = 0.001%), worst price barely moves
         openSwapV2Permit.SlippageParams memory tight = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14, toleranceRange: 100
+            priceTolerated: 5e26, toleranceRange: 100
         });
 
         // Calculate worst case with tight slippage

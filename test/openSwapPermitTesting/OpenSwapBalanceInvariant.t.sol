@@ -125,7 +125,7 @@ contract OpenSwapBalanceInvariantTest is Test {
         });
 
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
 
@@ -229,7 +229,7 @@ contract OpenSwapBalanceInvariantTest is Test {
 
         // Submit initial report and settle
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
@@ -309,7 +309,7 @@ contract OpenSwapBalanceInvariantTest is Test {
             _matchSwapWithCreationTime(swapId, _lastSwapCreationTime);
 
             openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-            (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+            (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
             vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
@@ -346,7 +346,7 @@ contract OpenSwapBalanceInvariantTest is Test {
         _matchSwapWithCreationTime(swapId2, _lastSwapCreationTime);
 
         openSwapV2Permit.Swap memory s2 = swapContract.getSwap(swapId2);
-        (bytes32 stateHash2,,,,,,) = oracle.extraData(s2.reportId);
+        (bytes32 stateHash2,,,,,) = oracle.extraData(s2.reportId);
 
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
@@ -411,7 +411,7 @@ contract OpenSwapBalanceInvariantTest is Test {
 
         // Complete the swap
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
-        (bytes32 stateHash,,,,,,) = oracle.extraData(s.reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(s.reportId);
 
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);

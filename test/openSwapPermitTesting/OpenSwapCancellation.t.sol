@@ -93,7 +93,7 @@ contract OpenSwapCancellationTest is Test {
         });
 
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
 
@@ -314,7 +314,7 @@ contract OpenSwapCancellationTest is Test {
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
         uint256 reportId = s.reportId;
 
-        (bytes32 stateHash,,,,,,) = oracle.extraData(reportId);
+        (bytes32 stateHash,,,,,) = oracle.extraData(reportId);
 
         vm.startPrank(initialReporter);
         vm.stopPrank();
@@ -350,10 +350,10 @@ contract OpenSwapCancellationTest is Test {
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
 
-        // Mock the onSettle callback to revert (simulating callback failure)
+        // Mock the openOracleCallback callback to revert (simulating callback failure)
         vm.mockCallRevert(
             address(swapContract),
-            abi.encodeWithSelector(openSwapV2Permit.onSettle.selector),
+            abi.encodeWithSelector(openSwapV2Permit.openOracleCallback.selector),
             "callback failed"
         );
 
@@ -395,13 +395,14 @@ contract OpenSwapCancellationTest is Test {
         assertEq(buyToken.balanceOf(matcher), matcherBuyBefore - expectedFulfillAmt, "Matcher should be net out fulfillAmt of buyToken");
     }
 
-    function testBailOut_SettledTakesPriorityOverMaxGameTime() public {
-        // Regression: even when maxGameTime has elapsed, a settled-but-callback-failed
-        // swap is finalized via _executeSwap (not refunded). The settlementTimestamp
-        // branch in bailOut takes priority over the isGameTooLong branch.
+    function testBailOut_MaxGameTimeTakesPriorityOverSettled() public {
+        // Regression: once maxGameTime has elapsed, bailOut refunds even if the
+        // oracle has already settled. The gameTooLong branch runs first so the
+        // swapper always has a guaranteed recovery path past maxGameTime,
+        // regardless of whether _executeSwap would succeed.
 
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
-        uint256 matcherSellBefore = sellToken.balanceOf(matcher);
+        uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
         uint256 matcherBuyBefore = buyToken.balanceOf(matcher);
 
         uint256 swapId = _createSwap();
@@ -412,22 +413,20 @@ contract OpenSwapCancellationTest is Test {
         uint256 matchTime = s.start;
 
         // Advance just past settlementTime so the oracle is settleable.
-        // Roll blocks consistent with blocksPerSecond=500 (i.e. 0.5 blocks/sec)
-        // so impliedBlocksPerSecond stays in tolerance once we hit _executeSwap.
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
         vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
 
-        // Mock onSettle to revert during oracle.settle so the report is marked
-        // settled while the swap stays in `matched && !finished` state.
+        // Settle with the callback mocked to revert so the swap stays in
+        // `matched && !finished` while the oracle records settlementTimestamp.
         vm.mockCallRevert(
             address(swapContract),
-            abi.encodeWithSelector(openSwapV2Permit.onSettle.selector),
+            abi.encodeWithSelector(openSwapV2Permit.openOracleCallback.selector),
             "callback failed"
         );
         oracle.settle(reportId);
         vm.clearMockedCalls();
 
-        // Warp the rest of the way past maxGameTime, again maintaining the block ratio.
+        // Warp past maxGameTime.
         uint256 additionalSecs = MAX_GAME_TIME - SETTLEMENT_TIME;
         vm.warp(block.timestamp + additionalSecs);
         vm.roll(block.number + additionalSecs / 2);
@@ -442,13 +441,10 @@ contract OpenSwapCancellationTest is Test {
         openSwapV2Permit.Swap memory sFinal = swapContract.getSwap(swapId);
         assertTrue(sFinal.finished, "Swap should be finished");
 
-        // Asserts the settled branch ran, NOT the maxGameTime refund branch.
-        // Refund would have left swapper holding the original sellToken balance; execute does not.
-        uint256 expectedFulfillAmt = 19980e18;
-        assertEq(sellToken.balanceOf(swapper), swapperSellBefore - SELL_AMT, "Swapper should have sold SELL_AMT (executed, not refunded)");
-        assertEq(buyToken.balanceOf(swapper), expectedFulfillAmt, "Swapper should have received fulfillAmt of buyToken");
-        assertEq(sellToken.balanceOf(matcher), matcherSellBefore + SELL_AMT, "Matcher should have received SELL_AMT of sellToken");
-        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore - expectedFulfillAmt, "Matcher should be net out fulfillAmt of buyToken");
+        // Refund branch: swapper gets sellToken back, matcher gets buyToken back.
+        assertEq(sellToken.balanceOf(swapper), swapperSellBefore, "Swapper should have sellToken refunded");
+        assertEq(buyToken.balanceOf(swapper), swapperBuyBefore, "Swapper should not have received buyToken");
+        assertEq(buyToken.balanceOf(matcher), matcherBuyBefore, "Matcher should have buyToken refunded");
     }
 
     function testBailOut_FailsIfReportIdZero() public {

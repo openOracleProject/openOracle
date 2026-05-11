@@ -9,9 +9,9 @@ import "../utils/MaliciousReentrantToken.sol";
 
 /**
  * @title OpenSwapOnSettleTest
- * @notice Tests for onSettle callback access control and behavior
+ * @notice Tests for openOracleCallback callback access control and behavior
  *
- * onSettle is called by the oracle when a report settles.
+ * openOracleCallback is called by the oracle when a report settles.
  * Access control:
  * - Only oracle can call (msg.sender == oracle)
  * - reportId must match stored reportId
@@ -106,7 +106,7 @@ contract OpenSwapOnSettleTest is Test {
         });
 
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
 
@@ -176,10 +176,10 @@ contract OpenSwapOnSettleTest is Test {
         openSwapV2Permit.Swap memory s = swapContract.getSwap(swapId);
         uint256 reportId = s.reportId;
 
-        // Random user cannot call onSettle
+        // Random user cannot call openOracleCallback
         vm.prank(randomUser);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "invalid sender"));
-        swapContract.onSettle(reportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     function testOnSettle_SwapperCannotCall() public {
@@ -191,7 +191,7 @@ contract OpenSwapOnSettleTest is Test {
 
         vm.prank(swapper);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "invalid sender"));
-        swapContract.onSettle(reportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     function testOnSettle_MatcherCannotCall() public {
@@ -203,7 +203,7 @@ contract OpenSwapOnSettleTest is Test {
 
         vm.prank(matcher);
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "invalid sender"));
-        swapContract.onSettle(reportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     function testOnSettle_BountyContractCannotCall() public {
@@ -214,7 +214,7 @@ contract OpenSwapOnSettleTest is Test {
         uint256 reportId = s.reportId;
 
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "invalid sender"));
-        swapContract.onSettle(reportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     // ============ ReportId Validation Tests ============
@@ -230,7 +230,7 @@ contract OpenSwapOnSettleTest is Test {
         // Even oracle can't call with wrong reportId
         vm.prank(address(oracle));
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "wrong reportId"));
-        swapContract.onSettle(wrongReportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(wrongReportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     function testOnSettle_ZeroReportIdReverts() public {
@@ -240,7 +240,7 @@ contract OpenSwapOnSettleTest is Test {
         // is attempted, since reportStatus(0).settlementTimestamp is also 0.
         vm.prank(address(oracle));
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "not settled"));
-        swapContract.onSettle(0, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(0, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     // ============ Already Finished Tests ============
@@ -262,10 +262,10 @@ contract OpenSwapOnSettleTest is Test {
         openSwapV2Permit.Swap memory sAfter = swapContract.getSwap(swapId);
         assertTrue(sAfter.finished, "Swap should be finished");
 
-        // Second call to onSettle should fail
+        // Second call to openOracleCallback should fail
         vm.prank(address(oracle));
         vm.expectRevert(abi.encodeWithSelector(openSwapV2Permit.InvalidInput.selector, "finished"));
-        swapContract.onSettle(reportId, 5e14, 0, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, 0, address(sellToken), address(buyToken));
     }
 
     // ============ Normal Flow via Oracle Tests ============
@@ -344,18 +344,18 @@ contract OpenSwapOnSettleTest is Test {
 
         // _executeSwap requires oracle.reportStatus(id).settlementTimestamp != 0.
         // Settle the oracle for real, but suppress its automatic callback so we can
-        // exercise the direct onSettle path afterwards.
+        // exercise the direct openOracleCallback path afterwards.
         vm.mockCallRevert(
             address(swapContract),
-            abi.encodeWithSelector(openSwapV2Permit.onSettle.selector),
+            abi.encodeWithSelector(openSwapV2Permit.openOracleCallback.selector),
             "skipped"
         );
         oracle.settle(reportId);
         vm.clearMockedCalls();
 
-        // Directly call onSettle as oracle (simulating what the oracle does internally)
+        // Directly call openOracleCallback as oracle (simulating what the oracle does internally)
         vm.prank(address(oracle));
-        swapContract.onSettle(reportId, 5e14, block.timestamp, address(sellToken), address(buyToken));
+        swapContract.openOracleCallback(reportId, 1e18, 2000e18, block.timestamp, address(sellToken), address(buyToken));
 
         openSwapV2Permit.Swap memory sAfter = swapContract.getSwap(swapId);
         assertTrue(sAfter.finished, "Direct oracle call should work");
@@ -364,9 +364,9 @@ contract OpenSwapOnSettleTest is Test {
     /// @notice Reproduces the original v2 grief: an attacker calls swap() with a
     /// hook-bearing token whose transferFrom calls oracle.settle(targetReportId)
     /// while openSwap's nonReentrant lock is held by the outer swap() call.
-    /// In v2 (nonReentrant on onSettle), the inner callback would silently fail
+    /// In v2 (nonReentrant on openOracleCallback), the inner callback would silently fail
     /// and leave the target swap stuck (refundable via bailOut → effective cancel).
-    /// In osrf6 (nonReentrant removed from onSettle), the callback succeeds and
+    /// In osrf6 (nonReentrant removed from openOracleCallback), the callback succeeds and
     /// the target swap is finalized at the discovered price.
     function testReentrancy_OnSettleNotBlockedByOuterSwap() public {
         // 1. Set up target swap A and match it.
@@ -395,7 +395,7 @@ contract OpenSwapOnSettleTest is Test {
 
         // 3. Attacker calls swap() with mal as sellToken. While inside swap(),
         // openSwap's nonReentrant is held; the malicious token's transferFrom
-        // hook calls oracle.settle(reportIdA), which calls back into onSettle(A).
+        // hook calls oracle.settle(reportIdA), which calls back into openOracleCallback(A).
         openSwapV2Permit.OracleParams memory oracleParams = openSwapV2Permit.OracleParams({
             settlerReward: uint88(SETTLER_REWARD),
             initialLiquidity: INITIAL_LIQUIDITY,
@@ -409,7 +409,7 @@ contract OpenSwapOnSettleTest is Test {
             timeType: true
         });
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14,
+            priceTolerated: 5e26,
             toleranceRange: 1e7 - 1
         });
         openSwapV2Permit.FulfillFeeParams memory fulfillFeeParams = openSwapV2Permit.FulfillFeeParams({

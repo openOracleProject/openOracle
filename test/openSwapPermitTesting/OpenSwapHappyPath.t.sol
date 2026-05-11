@@ -147,7 +147,7 @@ contract OpenSwapHappyPathTest is Test {
         });
 
         openSwapV2Permit.SlippageParams memory slippageParams = openSwapV2Permit.SlippageParams({
-            priceTolerated: 5e14, // price = amount1 * 1e18 / amount2 = 1e18 / 2000 = 5e14
+            priceTolerated: 5e26, // price = amount1 * 1e18 / amount2 = 1e18 / 2000 = 5e14
             toleranceRange: 1e7 - 1 // max tolerance to effectively bypass slippage
         });
 
