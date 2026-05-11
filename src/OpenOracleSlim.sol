@@ -201,7 +201,7 @@ contract OpenOracle is OpenOracleErrors {
 
         if (msg.value < ethRequired) revert MsgValueTooLow();
         uint256 excess = msg.value - ethRequired;
-        if (excess > 0) _credit(msg.sender, ETH_SENTINEL, excess);
+        if (excess > 0) _credit(reporter, ETH_SENTINEL, excess);
 
         emit ReportSubmitted(reportId);
     }
@@ -357,7 +357,7 @@ contract OpenOracle is OpenOracleErrors {
 
         if (msg.value < ethRequired) revert MsgValueTooLow();
         uint256 excess = msg.value - ethRequired;
-        if (excess > 0) _credit(msg.sender, ETH_SENTINEL, excess);
+        if (excess > 0) _credit(disputer, ETH_SENTINEL, excess);
 
         emit ReportDisputed(reportId);
     }
