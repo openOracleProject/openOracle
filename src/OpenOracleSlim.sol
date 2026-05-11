@@ -140,6 +140,7 @@ contract OpenOracle is OpenOracleErrors {
         uint48 oppoTime = timeType ? blockNumber : uint48(block.timestamp);
         address token1 = params.token1Address;
         address token2 = params.token2Address;
+        address protocolFeeRecipient = params.protocolFeeRecipient;
 
         if (amount1 == 0) revert InvalidAmount1();
         if (token1 == token2) revert TokensCannotBeSame();
@@ -167,7 +168,7 @@ contract OpenOracle is OpenOracleErrors {
         oracle.settlerReward = params.settlerReward;
         oracle.callbackContract = params.callbackContract;
         oracle.callbackGasLimit = params.callbackGasLimit;
-        oracle.protocolFeeRecipient = params.protocolFeeRecipient;
+        oracle.protocolFeeRecipient = protocolFeeRecipient;
         oracle.currentAmount1 = amount1;
         oracle.currentAmount2 = amount2;
         oracle.currentReporter = payable(reporter);
@@ -192,6 +193,10 @@ contract OpenOracle is OpenOracleErrors {
 
         bytes32 stateHash = _hashOracle(oracle, helper);
         oracleGame[reportId] = stateHash;
+
+        if (params.protocolFee > 0 && protocolFeeRecipient != address(0)) {
+            _getDustAmounts(protocolFeeRecipient, token1, token2);
+        }
 
         _getDustAmounts(reporter, token1, token2);
 
@@ -297,7 +302,7 @@ contract OpenOracle is OpenOracleErrors {
             uint256 netToken2Contribution = newAmount2 >= oldAmount2 ? newAmount2 - oldAmount2 : 0;
             uint256 netToken2Receive = newAmount2 < oldAmount2 ? oldAmount2 - newAmount2 : 0;
 
-            if (protocolFee > 0) {
+            if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) { // gas optimization for intentional burn w/o writing to storage
                 address pfr = oracle.protocolFeeRecipient;
                 uint256 bal = tokenHolder[pfr][token1];
                 tokenHolder[pfr][token1] = bal == 0 ? protocolFee + 1 : bal + protocolFee;
@@ -326,7 +331,7 @@ contract OpenOracle is OpenOracleErrors {
             uint256 protocolFee = (oldAmount2 * oracle.protocolFee) / PERCENTAGE_PRECISION;
             uint256 netToken1Contribution = newAmount1 > (oldAmount1) ? newAmount1 - oldAmount1 : 0;
 
-            if (protocolFee > 0) {
+            if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) {
                 address pfr = oracle.protocolFeeRecipient;
                 uint256 bal = tokenHolder[pfr][token2];
                 tokenHolder[pfr][token2] = bal == 0 ? protocolFee + 1 : bal + protocolFee;
@@ -434,21 +439,20 @@ contract OpenOracle is OpenOracleErrors {
      * @param tokenToGet The token address to withdraw
      * @param to Recipient of the withdrawn tokens
      */
-    function _withdraw(address tokenToGet, address to) internal returns (uint256 sent) {
+    function _withdraw(address tokenToGet, address to) internal returns (uint256 amount) {
         if (to == address(0)) revert AddressCannotBeZero();
         uint256 balance = tokenHolder[msg.sender][tokenToGet];
         if (balance <= 1) return 0;
 
-        uint256 amount = balance - 1;
+        amount = balance - 1;
         tokenHolder[msg.sender][tokenToGet] = 1;
         if (tokenToGet == ETH_SENTINEL) {
             (bool success,) = (to).call{value: amount}("");
-            sent = amount;
             if (!success) {
                 revert EthTransferFailed();
             }
         } else {
-            sent = _transferTokens(tokenToGet, address(this), to, amount);
+            _transferTokens(tokenToGet, address(this), to, amount);
         }
     }
 
@@ -484,16 +488,13 @@ contract OpenOracle is OpenOracleErrors {
      */
     function _transferTokens(address token, address from, address to, uint256 amount)
         internal
-        returns (uint256 actualSent)
     {
-        if (amount == 0) return 0; // Gas optimization: skip zero transfers
+        if (amount == 0) return; // Gas optimization: skip zero transfers
 
         if (from == address(this)) {
             IERC20(token).safeTransfer(to, amount);
-            return amount;
         } else {
             IERC20(token).safeTransferFrom(from, to, amount);
-            return amount;
         }
     }
 
@@ -595,6 +596,3 @@ contract OpenOracle is OpenOracleErrors {
         return flags & mask != 0;
     }
 }
-
-
-
