@@ -39,6 +39,7 @@ contract openOracleBatcher is ReentrancyGuard {
         uint128 currentAmount2;//reportStatus end
         uint32 callbackGasLimit;
         address protocolFeeRecipient;
+        address callbackContract;
     }
 
     // converts adversarial RPC into just a revert on-chain
@@ -74,6 +75,7 @@ contract openOracleBatcher is ReentrancyGuard {
 
         if (p.callbackGasLimit != extra.callbackGasLimit) return false;
         if (p.protocolFeeRecipient != extra.protocolFeeRecipient) return false;
+        if (p.callbackContract != extra.callbackContract) return false;
 
         return true;
 
@@ -108,8 +110,8 @@ contract openOracleBatcher is ReentrancyGuard {
         uint256 timestampBound,
         uint256 blockNumberBound
     ) external nonReentrant {
-        if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound) revert ActionSafetyFailure("timestamp");
-        if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
+        if (block.timestamp > timestamp + timestampBound || block.timestamp + timestampBound < timestamp) revert ActionSafetyFailure("timestamp");
+        if (block.number > blockNumber + blockNumberBound || block.number + blockNumberBound < blockNumber) revert ActionSafetyFailure("block number");
         if (reports.length != 1) revert ActionSafetyFailure("too many reports");
         if (!validate(reports[0].reportId, p, true)) revert ActionSafetyFailure("params dont match");
 
@@ -141,8 +143,8 @@ contract openOracleBatcher is ReentrancyGuard {
         uint256 timestampBound,
         uint256 blockNumberBound
     ) external nonReentrant {
-        if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound) revert ActionSafetyFailure("timestamp");
-        if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
+        if (block.timestamp > timestamp + timestampBound || block.timestamp + timestampBound < timestamp) revert ActionSafetyFailure("timestamp");
+        if (block.number > blockNumber + blockNumberBound || block.number + blockNumberBound < blockNumber) revert ActionSafetyFailure("block number");
 
         _submitInitialReports(reports, batchAmount1, batchAmount2);
     }
@@ -198,16 +200,16 @@ contract openOracleBatcher is ReentrancyGuard {
             }
         }
 
-        // Calculate how much was actually spent
-        uint256 spent1 = (startBal1 + batchAmount1) - IERC20(token1).balanceOf(address(this));
-        uint256 spent2 = (startBal2 + batchAmount2) - IERC20(token2).balanceOf(address(this));
-
-        // Return unspent tokens
-        if (spent1 < batchAmount1) {
-            IERC20(token1).safeTransfer(sender, batchAmount1 - spent1);
+        // Refund everything that came into the batcher during this call (unspent
+        // batchAmount plus any oracle-routed inflow), anchored on pre-call balance
+        // so pre-existing dust isn't redirected to sender.
+        uint256 endBal1 = IERC20(token1).balanceOf(address(this));
+        uint256 endBal2 = IERC20(token2).balanceOf(address(this));
+        if (endBal1 > startBal1) {
+            IERC20(token1).safeTransfer(sender, endBal1 - startBal1);
         }
-        if (spent2 < batchAmount2) {
-            IERC20(token2).safeTransfer(sender, batchAmount2 - spent2);
+        if (endBal2 > startBal2) {
+            IERC20(token2).safeTransfer(sender, endBal2 - startBal2);
         }
 
         IERC20(token1).forceApprove(address(oracle), 0);
@@ -255,8 +257,8 @@ contract openOracleBatcher is ReentrancyGuard {
         uint256 timestampBound,
         uint256 blockNumberBound
     ) external nonReentrant {
-        if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound)revert ActionSafetyFailure("timestamp");
-        if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
+        if (block.timestamp > timestamp + timestampBound || block.timestamp + timestampBound < timestamp)revert ActionSafetyFailure("timestamp");
+        if (block.number > blockNumber + blockNumberBound || block.number + blockNumberBound < blockNumber) revert ActionSafetyFailure("block number");
         
         _disputeReports(disputes, batchAmount1, batchAmount2);
     }
@@ -282,8 +284,8 @@ contract openOracleBatcher is ReentrancyGuard {
         uint256 timestampBound,
         uint256 blockNumberBound
     ) external nonReentrant {
-        if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound) revert ActionSafetyFailure("timestamp");
-        if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
+        if (block.timestamp > timestamp + timestampBound || block.timestamp + timestampBound < timestamp) revert ActionSafetyFailure("timestamp");
+        if (block.number > blockNumber + blockNumberBound || block.number + blockNumberBound < blockNumber) revert ActionSafetyFailure("block number");
         if (disputes.length != 1) revert ActionSafetyFailure("too many disputes");
         if (!validate(disputes[0].reportId, p, false)) revert ActionSafetyFailure("params dont match");
 
@@ -340,16 +342,16 @@ contract openOracleBatcher is ReentrancyGuard {
             }
         }
 
-        // Calculate how much was actually spent
-        uint256 spent1 = (startBal1 + batchAmount1) - IERC20(token1).balanceOf(address(this));
-        uint256 spent2 = (startBal2 + batchAmount2) - IERC20(token2).balanceOf(address(this));
-
-        // Return unspent tokens
-        if (spent1 < batchAmount1) {
-            IERC20(token1).safeTransfer(sender, batchAmount1 - spent1);
+        // Refund everything that came into the batcher during this call (unspent
+        // batchAmount plus any oracle-routed inflow), anchored on pre-call balance
+        // so pre-existing dust isn't redirected to sender.
+        uint256 endBal1 = IERC20(token1).balanceOf(address(this));
+        uint256 endBal2 = IERC20(token2).balanceOf(address(this));
+        if (endBal1 > startBal1) {
+            IERC20(token1).safeTransfer(sender, endBal1 - startBal1);
         }
-        if (spent2 < batchAmount2) {
-            IERC20(token2).safeTransfer(sender, batchAmount2 - spent2);
+        if (endBal2 > startBal2) {
+            IERC20(token2).safeTransfer(sender, endBal2 - startBal2);
         }
 
         IERC20(token1).forceApprove(address(oracle), 0);
@@ -398,8 +400,8 @@ contract openOracleBatcher is ReentrancyGuard {
         uint256 timestampBound,
         uint256 blockNumberBound
     ) external nonReentrant {
-        if (block.timestamp > timestamp + timestampBound || block.timestamp < timestamp - timestampBound) revert ActionSafetyFailure("timestamp");
-        if (block.number > blockNumber + blockNumberBound || block.number < blockNumber - blockNumberBound) revert ActionSafetyFailure("block number");
+        if (block.timestamp > timestamp + timestampBound || block.timestamp + timestampBound < timestamp) revert ActionSafetyFailure("timestamp");
+        if (block.number > blockNumber + blockNumberBound || block.number + blockNumberBound < blockNumber) revert ActionSafetyFailure("block number");
         uint256 balanceBefore = address(this).balance;
         for (uint256 i = 0; i < settles.length; i++) {
             SafeSettleData memory settle = settles[i];
