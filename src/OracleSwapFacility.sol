@@ -35,10 +35,10 @@ contract OracleSwapFacility is ReentrancyGuard {
     function createAndReport(
         address token1,
         address token2,
-        uint256 amount1,
-        uint256 amount2,
-        uint256 fee,
-        uint256 settlementTime
+        uint128 amount1,
+        uint128 amount2,
+        uint24 fee,
+        uint48 settlementTime
     ) external payable nonReentrant returns (uint256 reportId) {
         reportId = _createAndReport(
             token1,
@@ -49,7 +49,6 @@ contract OracleSwapFacility is ReentrancyGuard {
             settlementTime,
             true,
             address(0),
-            bytes4(0),
             false,
             0,
             101,
@@ -62,18 +61,17 @@ contract OracleSwapFacility is ReentrancyGuard {
     function createAndReport(
         address token1,
         address token2,
-        uint256 amount1,
-        uint256 amount2,
-        uint256 fee,
-        uint256 settlementTime,
+        uint128 amount1,
+        uint128 amount2,
+        uint24 fee,
+        uint48 settlementTime,
         bool timeType,
         address callbackContract,
-        bytes4 callbackSelector,
         bool trackDisputes,
-        uint256 callbackGasLimit,
-        uint256 multiplier,
-        uint256 disputeDelay,
-        uint256 escalationHalt
+        uint32 callbackGasLimit,
+        uint16 multiplier,
+        uint24 disputeDelay,
+        uint128 escalationHalt
     ) external payable nonReentrant returns (uint256 reportId) {
         reportId = _createAndReport(
             token1,
@@ -84,7 +82,6 @@ contract OracleSwapFacility is ReentrancyGuard {
             settlementTime,
             timeType,
             callbackContract,
-            callbackSelector,
             trackDisputes,
             callbackGasLimit,
             multiplier,
@@ -100,21 +97,21 @@ contract OracleSwapFacility is ReentrancyGuard {
     function _createAndReport(
         address token1,
         address token2,
-        uint256 amount1,
-        uint256 amount2,
-        uint256 fee, // 2222 = 2.222bps
-        uint256 settlementTime, // how long your tokens are locked up in seconds. NOT a timestamp
+        uint128 amount1,
+        uint128 amount2,
+        uint24 fee, // 2222 = 2.222bps
+        uint48 settlementTime, // how long your tokens are locked up in seconds. NOT a timestamp
         bool timeType,
         address callbackContract,
-        bytes4 callbackSelector,
         bool trackDisputes,
-        uint256 callbackGasLimit,
-        uint256 multiplier,
-        uint256 disputeDelay,
-        uint256 escalationHalt
+        uint32 callbackGasLimit,
+        uint16 multiplier,
+        uint24 disputeDelay,
+        uint128 escalationHalt
     ) internal returns (uint256 reportId) {
         require(token1 != token2, "tokens identical");
         require(amount1 > 0 && amount2 > 0, "zero amounts");
+        require(msg.value <= type(uint96).max, "settlerReward overflow");
         if (msg.value <= 100) revert("not enough msg.value");
 
         /* ------------ pull the user’s tokens ------------ */
@@ -122,21 +119,20 @@ contract OracleSwapFacility is ReentrancyGuard {
         IERC20(token2).safeTransferFrom(msg.sender, address(this), amount2);
 
         IOpenOracle.CreateReportParams memory params = IOpenOracle.CreateReportParams({
-            exactToken1Report: uint128(amount1),
-            escalationHalt: uint128(escalationHalt),
+            exactToken1Report: amount1,
+            escalationHalt: escalationHalt,
             settlerReward: uint96(msg.value),
             token1Address: token1,
-            settlementTime: uint48(settlementTime),
-            disputeDelay: uint24(disputeDelay),
+            settlementTime: settlementTime,
+            disputeDelay: disputeDelay,
             protocolFee: 0,
             token2Address: token2,
-            callbackGasLimit: uint32(callbackGasLimit),
-            feePercentage: uint24(fee),
-            multiplier: uint16(multiplier),
+            callbackGasLimit: callbackGasLimit,
+            feePercentage: fee,
+            multiplier: multiplier,
             timeType: timeType,
             trackDisputes: trackDisputes,
             callbackContract: callbackContract,
-            callbackSelector: callbackSelector,
             protocolFeeRecipient: address(0)
         });
 
@@ -150,7 +146,7 @@ contract OracleSwapFacility is ReentrancyGuard {
         bytes32 stateHash = oracle.extraData(reportId).stateHash;
 
         /* ------------ file the initial report ----------- */
-        oracle.submitInitialReport(reportId, uint128(amount1), uint128(amount2), stateHash, msg.sender);
+        oracle.submitInitialReport(reportId, amount1, amount2, stateHash, msg.sender);
 
         emit SwapReportOpened(reportId, msg.sender, token1, token2, amount1, amount2, msg.value);
     }
