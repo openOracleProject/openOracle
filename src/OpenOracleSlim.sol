@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {OpenOracleErrors} from "./OpenOracleErrors.sol";
+import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
 
 /**
  * @title OpenOracle
@@ -30,6 +31,13 @@ contract OpenOracle is OpenOracleErrors {
     uint256 internal constant PERCENTAGE_PRECISION = 1e7;
     uint256 internal constant MULTIPLIER_PRECISION = 100;
     address internal constant ETH_SENTINEL = address(0);
+    address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+
+    // Permit2 witness: binds the sig to (beneficiary, relayer, swapper, intent).
+    bytes32 internal constant WITNESS_TYPEHASH =
+        keccak256("Witness(address beneficiary,address relayer,address swapper,bytes32 intent)");
+    string internal constant WITNESS_TYPE_STRING =
+        "Witness witness)TokenPermissions(address token,uint256 amount)Witness(address beneficiary,address relayer,address swapper,bytes32 intent)";
 
     uint8 public constant FLAG_TIME_TYPE = 1 << 0; // = 1
     uint8 public constant FLAG_TRACK_DISPUTES = 1 << 1; // = 2
@@ -262,7 +270,7 @@ contract OpenOracle is OpenOracleErrors {
 
             if (newAmount1 == 0 || newAmount2 == 0) revert AmountsCannotBeZero();
             if (previousReporter == address(0)) revert NoReportToDispute();
-            if (currentTime > prevReportTimestamp + oracle.settlementTime) revert DisputeTooLate();
+            if (currentTime >= prevReportTimestamp + oracle.settlementTime) revert DisputeTooLate();
             if (oracle.settlementTimestamp != 0) revert AlreadySettled();
             if (tokenToSwap != token1 && tokenToSwap != token2) revert InvalidTokenToSwap();
             if (currentTime < prevReportTimestamp + oracle.disputeDelay) revert DisputeTooEarly();
@@ -477,6 +485,86 @@ contract OpenOracle is OpenOracleErrors {
         }
     }
 
+    /**
+     * @notice Pulls `amount` of token from `from` via Permit2 (witness-bound) and credits `beneficiary`'s internal balance.
+     * @dev Witness binds (beneficiary, relayer = msg.sender, swapper = from, intent). The signer's sig is
+     *      only usable when the call is relayed by the intended relayer, credits the intended beneficiary,
+     *      attributes to the intended swapper, and matches the intended per-protocol intent hash.
+     */
+    function depositFromPermit2(
+        uint128 amount,
+        address beneficiary,
+        address from,
+        bytes32 intent,
+        ISignatureTransfer.PermitTransferFrom calldata permit,
+        bytes calldata signature
+    ) external {
+        if (beneficiary == address(0)) revert AddressCannotBeZero();
+        if (permit.permitted.amount != amount) revert Permit2AmountMismatch();
+
+        bytes32 witness = keccak256(abi.encode(WITNESS_TYPEHASH, beneficiary, msg.sender, from, intent));
+
+        ISignatureTransfer(PERMIT2).permitWitnessTransferFrom(
+            permit,
+            ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: amount}),
+            from,
+            witness,
+            WITNESS_TYPE_STRING,
+            signature
+        );
+
+        _credit(beneficiary, permit.permitted.token, amount);
+    }
+
+    /**
+     * @notice Transfers `amount` of `token` from `from`'s internal balance to `to`'s internal balance.
+     * @dev When `from == msg.sender`, no allowance is required. Otherwise, spends from
+     *      `from`'s internal allowance to msg.sender. Preserves the 1-unit sentinel on `from`'s slot.
+     */
+    function internalTransferFrom(address from, address to, address token, uint128 amount) external {
+        if (to == address(0)) revert AddressCannotBeZero();
+        if (amount == 0) return;
+
+        if (from != msg.sender) {
+            uint256 allowed = internalAllowance[from][msg.sender][token];
+            if (allowed < amount) revert InsufficientInternalAllowance();
+            if (allowed != type(uint256).max) {
+                internalAllowance[from][msg.sender][token] = allowed - amount;
+            }
+        }
+
+        uint256 bal = tokenHolder[from][token];
+        if (bal <= amount) revert InsufficientInternalBalance();
+        tokenHolder[from][token] = bal - amount;
+        _credit(to, token, amount);
+    }
+
+    /**
+     * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
+     *         On push failure (ETH call revert / ERC20 non-standard return / OOG within 80k gas),
+     *         falls back to crediting `to`'s internal balance instead.
+     * @dev Caller's slot preserves the 1-unit sentinel.
+     */
+    function pushOrCredit(address token, address to, uint128 amount) external {
+        if (to == address(0)) revert AddressCannotBeZero();
+        if (amount == 0) return;
+        uint256 bal = tokenHolder[msg.sender][token];
+        if (bal <= amount) revert InsufficientInternalBalance();
+        tokenHolder[msg.sender][token] = bal - amount;
+
+        if (token == ETH_SENTINEL) {
+            (bool ok,) = to.call{value: amount, gas: 50000}("");
+            if (!ok) _credit(to, token, amount);
+        } else {
+            (bool success, bytes memory returndata) =
+                token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
+            bool ok = success
+                && ((returndata.length > 0 && abi.decode(returndata, (bool)))
+                    || (returndata.length == 0 && token.code.length > 0));
+            if (!ok) _credit(to, token, amount);
+        }
+    }
+
     function approveInternal(address spender, address token, uint256 amount) external {
         if (spender == address(0)) revert AddressCannotBeZero();
         internalAllowance[msg.sender][spender][token] = amount;
@@ -572,6 +660,11 @@ contract OpenOracle is OpenOracleErrors {
             }
 
         }
+
+        // Strict delegation: if caller asked to fund from `owner`'s internal balance but the
+        // available balance + allowance falls short, revert. Prevents callers from accidentally
+        // paying out-of-pocket for a delegated dispute/report when the owner can't cover it.
+        if (tib && owner != msg.sender && fromInternal < amount) revert InsufficientInternalBalance();
 
         uint256 fromExternal = amount - fromInternal;
 
