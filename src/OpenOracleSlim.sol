@@ -413,7 +413,6 @@ contract OpenOracle is OpenOracleErrors {
         if (storePrice) finalPrice[reportId] = finalRatio;
         if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) finalizedGame[reportId] = oracle;
 
-        // handle flows
         tokenHolder[currentReporter][token1] += currentAmount1;
         tokenHolder[currentReporter][token2] += currentAmount2;
         if (settlerReward > 0) _credit(sender, ETH_SENTINEL, settlerReward);
