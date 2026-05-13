@@ -31,4 +31,9 @@ abstract contract OpenOracleErrors {
     error ReportNotSettled();
     error InvalidMode();
     error InvalidTiming();
+    error Permit2AmountMismatch();
+    error InsufficientInternalBalance();
+    error InsufficientInternalAllowance();
+    error NeitherTokenIsETH();
+    error InvalidMsgValue();
 }
