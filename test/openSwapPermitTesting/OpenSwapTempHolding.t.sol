@@ -9,7 +9,7 @@ contract OpenSwapTempHoldingTest is SlimTestBase {
         _setUpAll();
     }
 
-    function _matchToProduceMatcherCredit() internal returns (uint256 swapId, openSwapV2.Swap memory sPost) {
+    function _matchToProduceMatcherCredit() internal returns (uint256 swapId, openSwapV2.MatchedSwap memory sPost) {
         uint48 expiration;
         (swapId, expiration) = _propose();
         (, , sPost) = _match(swapId, 2000e18, expiration);
@@ -23,7 +23,7 @@ contract OpenSwapTempHoldingTest is SlimTestBase {
     }
 
     function testTempHolding_ExecutorCreditedOnBailout() public {
-        (uint256 swapId, openSwapV2.Swap memory sPost) = _matchToProduceMatcherCredit();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost) = _matchToProduceMatcherCredit();
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
 

@@ -16,7 +16,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
     function testSwapperCancelsBeforeExpiration() public {
         uint256 swapperEthBefore = swapper.balance;
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
@@ -28,7 +28,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
 
     function testThirdPartyCannotCancelBeforeExpiration() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(thirdParty);
@@ -38,7 +38,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
 
     function testSwapperCanCancelAtExactBoundary() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         // At block.timestamp == expiration: still in pre-expiration window (≤)
@@ -51,7 +51,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
 
     function testThirdPartyCannotCancelAtExactBoundary() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.warp(expiration);
@@ -69,7 +69,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
 
         (uint256 swapId, uint48 expiration) = _propose();
         uint256 swapperEthAfterPropose = swapper.balance; // post-propose snapshot
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.warp(uint256(expiration) + 1);
@@ -83,14 +83,15 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
         uint256 swapperPiece = total - callerPiece;
 
         assertEq(swapper.balance, swapperEthAfterPropose + swapperPiece + SETTLER_REWARD, "swapper got 4/5 + settlerReward");
-        assertEq(thirdParty.balance, thirdPartyEthBefore + callerPiece, "third party got 1/5");
+        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "third party 1/5 queued in tempHolding");
+        assertEq(thirdParty.balance, thirdPartyEthBefore, "third party not paid directly");
     }
 
     function testSwapperCancelsAfterExpiration_GetsFullGasComp() public {
         uint256 swapperEthBefore = swapper.balance;
 
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.warp(uint256(expiration) + 1 hours);
@@ -105,7 +106,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
 
     function testThirdPartyCancelDrainsContract() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.warp(uint256(expiration) + 1);
@@ -114,8 +115,11 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
         vm.prank(thirdParty);
         swapContract.cancelSwap(swapId, s, m);
 
-        // After cancel: openSwap's ETH balance for this swap is fully paid out
-        assertEq(address(swapContract).balance, 0, "openSwap ETH drained");
+        // Third-party caller piece stays in tempHolding until they withdraw.
+        uint96 total = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP;
+        uint256 callerPiece = total / 5;
+        assertEq(address(swapContract).balance, callerPiece, "openSwap holds only caller's queued piece");
+        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "caller queued in tempHolding");
         assertEq(_spendable(address(swapContract), address(sellToken)), 0, "openSwap sellToken drained");
     }
 

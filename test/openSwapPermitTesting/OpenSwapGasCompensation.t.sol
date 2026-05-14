@@ -10,9 +10,9 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
 
     function _fullFlowToExecute(address executor) internal {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
@@ -23,7 +23,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
 
     function _bailoutFlow(address bailer) internal {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
         vm.prank(bailer);
@@ -36,7 +36,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
         uint256 swapId = swapContract.propose{value: SETTLER_REWARD}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), 0, 0,
-            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
         assertGt(swapId, 0, "zero gas comps OK");
     }
@@ -47,7 +47,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
         uint256 swapId = swapContract.propose{value: 2 ether + SETTLER_REWARD}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), 1 ether, 1 ether,
-            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
         assertGt(swapId, 0, "high gas comps OK");
     }
@@ -72,7 +72,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
 
     function testGasComp_MatcherKeepsCompAfterBailout() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         uint256 matcherBefore = swapContract.tempHolding(matcher);
 
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
@@ -85,7 +85,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     function testGasComp_ReturnedOnCancel() public {
         uint256 swapperEthBefore = swapper.balance;
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
@@ -96,7 +96,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
 
     function testGasComp_PropagatesIntoSwapHash() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         s.matcherGasComp = MATCHER_GAS_COMP + 1; // tamper
 
@@ -113,7 +113,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
         swapContract.propose{value: MATCHER_GAS_COMP}( // missing executor + settler
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 }

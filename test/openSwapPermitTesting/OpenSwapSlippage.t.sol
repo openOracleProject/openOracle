@@ -23,9 +23,9 @@ contract OpenSwapSlippageTest is SlimTestBase {
 
     function _runToExecute(uint128 amount2) internal {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, amount2, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, amount2, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 

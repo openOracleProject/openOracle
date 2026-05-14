@@ -43,14 +43,14 @@ contract OpenSwapETHTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
     function _buildEthSell(uint256 /*swapId*/, uint48 expiration)
         internal
         view
-        returns (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m)
+        returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         (s, m) = _buildSwapAndPreimage(0, expiration);
         s.sellToken = address(0); // override for ETH-sell
@@ -76,14 +76,14 @@ contract OpenSwapETHTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
     function _buildTokenToEth(uint256 /*swapId*/, uint48 expiration)
         internal
         view
-        returns (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m)
+        returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         (s, m) = _buildSwapAndPreimage(0, expiration);
         s.buyToken = address(0); // override for ETH-buy
@@ -115,7 +115,7 @@ contract OpenSwapETHTest is SlimTestBase {
         uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         (uint256 swapId, uint48 expiration) = _proposeEthSell();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildEthSell(swapId, expiration);
 
         IOpenOracle2.TimingBoundaries memory timing = IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
@@ -137,7 +137,7 @@ contract OpenSwapETHTest is SlimTestBase {
             "matcher buyToken -amount2 -minFulfillLiquidity"
         );
 
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(1);
 
@@ -162,7 +162,7 @@ contract OpenSwapETHTest is SlimTestBase {
     function testETHToToken_Cancel() public {
         uint256 swapperEthBefore = swapper.balance;
         (uint256 swapId, uint48 expiration) = _proposeEthSell();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildEthSell(swapId, expiration);
 
         vm.prank(swapper);
@@ -177,7 +177,7 @@ contract OpenSwapETHTest is SlimTestBase {
         // propose for ETH-sell must have msg.value == sellAmt + extraEth
         uint256 wrongEth = SELL_AMT; // missing the gas comps
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.MsgValueMismatch.selector);
+        vm.expectRevert(openSwapV2.InvalidMsgValue.selector);
         swapContract.propose{value: wrongEth}(
             SELL_AMT,
             address(0),
@@ -190,7 +190,7 @@ contract OpenSwapETHTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
@@ -224,7 +224,7 @@ contract OpenSwapETHTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
@@ -239,7 +239,7 @@ contract OpenSwapETHTest is SlimTestBase {
         (uint256 swapId, uint48 expiration) = _proposeTokenToEthSmall(minFulfill);
         uint256 swapperEthBefore = swapper.balance; // snapshot AFTER propose deducted gas comps
 
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         s.buyToken = address(0);
         s.minFulfillLiquidity = minFulfill;
@@ -266,7 +266,7 @@ contract OpenSwapETHTest is SlimTestBase {
         assertEq(_spendable(address(swapContract), address(0)), minFulfill, "openSwap ETH internal = minFulfill");
 
         // Settle + execute
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(1);
 
@@ -286,7 +286,7 @@ contract OpenSwapETHTest is SlimTestBase {
 
     function testMatchSwap_RejectsMsgValue() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         // matchSwap is not payable; sending ETH should revert at the EVM dispatcher level

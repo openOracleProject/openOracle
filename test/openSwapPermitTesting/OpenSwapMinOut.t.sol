@@ -26,7 +26,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
@@ -40,9 +40,9 @@ contract OpenSwapMinOutTest is SlimTestBase {
         internal
         returns (uint256 fulfillAmt)
     {
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, amount2, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, amount2, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
@@ -72,7 +72,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 
@@ -94,7 +94,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(), false
         );
     }
 

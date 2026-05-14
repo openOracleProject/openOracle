@@ -94,7 +94,7 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
 
     function testFulfillFee_ImmediateMatchUsesStartingFee() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.fulfillmentFee, STARTING_FEE, "immediate match uses startingFee");
     }
 
@@ -103,7 +103,7 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         // Warp 1 round forward
         vm.warp(block.timestamp + ROUND_LENGTH);
         vm.roll(block.number + 1);
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         // startingFee * growthRate / 10000 = 10000 * 15000 / 10000 = 15000
         uint24 expected = uint24((uint256(STARTING_FEE) * GROWTH_RATE) / 10000);
         if (expected >= MAX_FEE) expected = MAX_FEE;
@@ -117,7 +117,7 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         // Warp many rounds (more than enough to exceed maxFee)
         vm.warp(block.timestamp + ROUND_LENGTH * 5);
         vm.roll(block.number + 5);
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.fulfillmentFee, 15000, "capped at maxFee");
     }
 
@@ -127,7 +127,7 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         // Warp past maxRounds but inside expiration (1 hour)
         vm.warp(block.timestamp + ROUND_LENGTH * 10);
         vm.roll(block.number + 10);
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         // Should be startingFee compounded only 3 times, then capped (or at maxFee, whichever lower)
         uint256 fee = STARTING_FEE;
         for (uint i = 0; i < 3; i++) {
@@ -145,7 +145,7 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         // Warp less than one round
         vm.warp(block.timestamp + ROUND_LENGTH - 1);
         vm.roll(block.number + 1);
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.fulfillmentFee, STARTING_FEE, "partial round still uses startingFee");
     }
 }

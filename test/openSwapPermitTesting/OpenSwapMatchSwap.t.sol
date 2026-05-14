@@ -19,7 +19,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
 
     function testMatchSwap_StoresPostMatchHash() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // The contract stored keccak256(abi.encode(sPost))
         assertEq(swapContract.swaps(swapId), keccak256(abi.encode(sPost)), "post-match hash");
@@ -37,7 +37,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         vm.roll(block.number + 50);
         uint48 matchTs = uint48(block.timestamp);
 
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.start, matchTs, "start = block.timestamp at match");
     }
 
@@ -112,7 +112,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
 
     function testMatchSwap_OracleHashMatchesReconstruction() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         (uint128 reportId,,) = _match(swapId, 2000e18, expiration);
 
@@ -146,25 +146,22 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         (uint256 swapId2, uint48 exp2) = _propose();
 
         // matcher matches swap1, matcher2 matches swap2
-        (openSwapV2.Swap memory s1, openSwapV2.MatcherPreimage memory m1) =
+        (openSwapV2.ProposedSwap memory s1, openSwapV2.MatcherPreimage memory m1) =
             _buildSwapAndPreimage(swapId1, exp1);
         reportTs = uint48(block.timestamp);
         reportBn = uint48(block.number);
         vm.prank(matcher);
         swapContract.matchSwap(swapId1, 2000e18, s1, m1, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        (openSwapV2.Swap memory s2, openSwapV2.MatcherPreimage memory m2) =
+        (openSwapV2.ProposedSwap memory s2, openSwapV2.MatcherPreimage memory m2) =
             _buildSwapAndPreimage(swapId2, exp2);
         vm.prank(matcher2);
         swapContract.matchSwap(swapId2, 2000e18, s2, m2, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
         // Build post-match swaps for each and verify stored hash matches expected matcher
-        openSwapV2.Swap memory s1Post = _postMatchSwap(s1, 1, STARTING_FEE, reportTs);
-        openSwapV2.Swap memory s2Post = s2;
+        openSwapV2.MatchedSwap memory s1Post = _postMatchSwap(s1, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory s2Post = _postMatchSwap(s2, 2, STARTING_FEE, reportTs);
         s2Post.matcher = matcher2;
-        s2Post.start = reportTs;
-        s2Post.fulfillmentFee = STARTING_FEE;
-        s2Post.reportId = 2;
 
         assertEq(swapContract.swaps(swapId1), keccak256(abi.encode(s1Post)), "swap1 post hash with matcher");
         assertEq(swapContract.swaps(swapId2), keccak256(abi.encode(s2Post)), "swap2 post hash with matcher2");
@@ -175,7 +172,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         (uint256 swapId2, uint48 exp2) = _propose();
 
         (uint128 reportId1,,) = _match(swapId1, 2000e18, exp1);
-        (openSwapV2.Swap memory s2, openSwapV2.MatcherPreimage memory m2) =
+        (openSwapV2.ProposedSwap memory s2, openSwapV2.MatcherPreimage memory m2) =
             _buildSwapAndPreimage(swapId2, exp2);
         reportTs = uint48(block.timestamp);
         reportBn = uint48(block.number);
@@ -190,7 +187,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
 
     function testMatchSwap_RevertOnWrongHash() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         // Tamper with one of the fields
         s.sellAmt = SELL_AMT + 1;
@@ -207,7 +204,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         vm.warp(uint256(expiration) + 1);
         vm.roll(block.number + 1);
 
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(matcher);
@@ -220,7 +217,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         _match(swapId, 2000e18, expiration);
 
         // Try to match again with pre-match struct; hash check fails
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(matcher);
         vm.expectRevert(openSwapV2.WrongHash.selector);

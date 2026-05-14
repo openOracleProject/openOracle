@@ -13,7 +13,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
         function(openSwapV2.MatcherPreimage memory) internal pure returns (openSwapV2.MatcherPreimage memory) tamperFn
     ) internal {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         m = tamperFn(m);
         vm.prank(matcher);
@@ -68,7 +68,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
 
     function testPreimage_Correct_Succeeds() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertTrue(sPost.matcher != address(0), "match succeeded with correct preimage");
     }
 
@@ -78,7 +78,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
         vm.warp(block.timestamp + 60);
         vm.roll(block.number + 1);
 
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         m.startFulfillFeeIncrease = uint48(block.timestamp); // wrong — should be the propose timestamp
 
@@ -95,7 +95,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
         return swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
             SELL_AMT, address(sellToken), minOut, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 

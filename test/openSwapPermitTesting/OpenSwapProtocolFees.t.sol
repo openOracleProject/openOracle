@@ -33,11 +33,11 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
 
     function _proposeAndMatchWithFees()
         internal
-        returns (uint256 swapId, openSwapV2.Swap memory sPost, address feeReceiver)
+        returns (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver)
     {
         uint48 expiration;
         (swapId, expiration) = _propose();
-        (uint128 reportId,, openSwapV2.Swap memory sP) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sP) = _match(swapId, 2000e18, expiration);
         sPost = sP;
         feeReceiver = sPost.feeRecipient;
         reportId; // silence
@@ -59,11 +59,11 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint256 swapId = swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
 
         // Reconstruct preimage/swap with zero protocolFee, then match
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, uint48(block.timestamp + 1 hours));
         m.protocolFee = 0;
         reportTs = uint48(block.timestamp);
@@ -71,12 +71,12 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
         assertEq(sPost.feeRecipient, address(0), "no clone when protocolFee = 0");
     }
 
     function testProtocolFees_FeeReceiverMetadata() public {
-        (uint256 swapId, openSwapV2.Swap memory sPost, address frAddr) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address frAddr) = _proposeAndMatchWithFees();
         oracleFeeReceiver fr = oracleFeeReceiver(frAddr);
 
         assertEq(uint256(fr.gameId()), swapId, "gameId = swapId");
@@ -191,11 +191,10 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         // 1) Run full propose → match → settle → execute. execute internally calls
         //    grabOracleGameFees, but with no real disputes there are no fees yet.
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
-        s.feeRecipient = sPost.feeRecipient;
-        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReportWithFeeRecipient(s, m, 2000e18, sPost.feeRecipient);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         address feeReceiver = sPost.feeRecipient;
 
@@ -233,13 +232,11 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     ///         internal balance, and distribute() must split it 50/50 to swapper + matcher.
     function testProtocolFees_RealDisputeRoutesToFeeReceiver() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
-        // OracleGame was committed with protocolFeeRecipient = clone address, so reconstruct s
-        // with the actual feeRecipient before building og.
-        s.feeRecipient = sPost.feeRecipient;
-        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        // OracleGame was committed with protocolFeeRecipient = clone address.
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReportWithFeeRecipient(s, m, 2000e18, sPost.feeRecipient);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         address feeReceiver = sPost.feeRecipient;
 
@@ -318,7 +315,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint256 swapId = _proposeEthBuyWith(sellAmt, minFulfill, mgc, egc, slip);
 
         // Build the same Swap/MatcherPreimage that propose hashed
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildEthBuySwap(sellAmt, minFulfill, mgc, egc, slip);
 
         // Predict the feeReceiver clone
@@ -367,7 +364,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         swapId = swapContract.propose{value: uint256(mgc) + uint256(egc) + SETTLER_REWARD}(
             sellAmt, address(sellToken), 1, address(0), minFulfill,
             uint48(1 hours), mgc, egc,
-            _defaultOracleParams(), slip, _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), slip, _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 
@@ -377,7 +374,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint96 mgc,
         uint96 egc,
         openSwapV2.SlippageParams memory slip
-    ) internal view returns (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) {
+    ) internal view returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) {
         s.swapper = swapper;
         s.sellAmt = sellAmt;
         s.sellToken = address(sellToken);
@@ -432,7 +429,7 @@ contract EthRejecter {
         openSwapV2 sc,
         uint256 swapId,
         uint128 amount2,
-        openSwapV2.Swap calldata s,
+        openSwapV2.ProposedSwap calldata s,
         openSwapV2.MatcherPreimage calldata m,
         IOpenOracle2.TimingBoundaries calldata t
     ) external {

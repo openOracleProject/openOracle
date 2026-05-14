@@ -22,14 +22,14 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         swapId = swapContract.propose{value: ethToSend}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), minFulfill,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 
     function _buildWith(uint256 swapId, uint48 expiration)
         internal
         view
-        returns (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m)
+        returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         (s, m) = _buildSwapAndPreimage(swapId, expiration);
         s.minFulfillLiquidity = _minFulfill;
@@ -37,7 +37,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
 
     function _runToExecute(uint128 minFulfill, uint128 amount2) internal returns (bool refunded) {
         (uint256 swapId, uint48 expiration) = _proposeWithMinFulfill(minFulfill);
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) = _buildWith(swapId, expiration);
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _buildWith(swapId, expiration);
         // We need to use the test-specific s in matchSwap (which has minFulfillLiquidity set correctly).
         // _match() builds its own s from _buildSwapAndPreimage which won't have _minFulfill applied — call inline.
         IOpenOracle2.TimingBoundaries memory timing = IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
@@ -48,7 +48,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, amount2, s, m, timing);
 
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
@@ -91,7 +91,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         // Confirm matcher receives (minFulfill - fulfillAmt) of buyToken
         uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
         (uint256 swapId, uint48 expiration) = _proposeWithMinFulfill(MIN_FULFILL_LIQUIDITY);
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) = _buildWith(swapId, expiration);
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _buildWith(swapId, expiration);
 
         IOpenOracle2.TimingBoundaries memory timing = IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
         reportTs = uint48(block.timestamp);
@@ -100,7 +100,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, 2000e18, s, m, timing);
 
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 

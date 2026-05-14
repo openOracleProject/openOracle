@@ -18,7 +18,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         swapContract.propose{value: ethToSend}(
             sellAmt, sellTok, minOut, buyTok, minFulfill,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            op, _defaultSlippage(), ff, _emptyPermit2()
+            op, _defaultSlippage(), ff, _emptyPermit2(), false
         );
     }
 
@@ -65,14 +65,6 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         // With near-100% fee, worstFulfillAmt approaches 0, so minOut must be tiny to pass
         _bareCall(address(sellToken), SELL_AMT, 1, address(buyToken), MIN_FULFILL_LIQUIDITY,
             _defaultOracleParams(), ff);
-    }
-
-    function testSwap_SettlerRewardTooLow_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
-        op.settlerReward = 99; // below the 100 floor
-        vm.expectRevert();
-        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
-            op, _defaultFulfillFee());
     }
 
     function testSwap_SettlementTimeZero_Reverts() public {
@@ -128,7 +120,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
 
     function testMatchSwap_ParamHashMismatch_Reverts() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         // Tamper one field
         m.protocolFee = m.protocolFee + 1;
@@ -139,7 +131,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
 
     function testMatchSwap_Expired_Reverts() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.warp(uint256(expiration) + 1);
         vm.roll(block.number + 1);
@@ -152,7 +144,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         (uint256 swapId, uint48 expiration) = _propose();
         _match(swapId, 2000e18, expiration);
         // Try to re-match using pre-match struct; hash check fails
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(matcher);
         vm.expectRevert(openSwapV2.WrongHash.selector);
@@ -161,7 +153,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
 
     function testMatchSwap_Cancelled_Reverts() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(swapper);
         swapContract.cancelSwap(swapId, s, m);
@@ -172,7 +164,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testMatchSwap_NonexistentSwap_Reverts() public {
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(999, uint48(block.timestamp + 1 hours));
         vm.prank(matcher);
         vm.expectRevert(openSwapV2.WrongHash.selector);

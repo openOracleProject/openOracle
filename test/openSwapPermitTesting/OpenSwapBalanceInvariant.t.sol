@@ -68,9 +68,9 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
 
     function testInvariant_HappyPath_OpenSwapHoldsNoTokens() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
@@ -92,9 +92,9 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         assertEq(buyBefore, UNRELATED_BUY);
 
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
@@ -113,7 +113,7 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         _seedAccidentalTransfers();
 
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(swapper);
         swapContract.cancelSwap(swapId, s, m);
@@ -127,7 +127,7 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         _seedAccidentalTransfers();
 
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
@@ -142,9 +142,9 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         // After a happy path, oracle's actual ERC20 holding for sellToken should equal
         // (matcher's internal balance + openSwap's internal balance + sentinels)
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
@@ -179,12 +179,12 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
 
         // First swap: propose, match, cancel
         (uint256 swapId1, uint48 exp1) = _propose();
-        (openSwapV2.Swap memory s1, openSwapV2.MatcherPreimage memory m1) =
+        (openSwapV2.ProposedSwap memory s1, openSwapV2.MatcherPreimage memory m1) =
             _buildSwapAndPreimage(swapId1, exp1);
 
         // Second swap: just propose then leave dangling
         (uint256 swapId2, uint48 exp2) = _propose();
-        (openSwapV2.Swap memory s2, openSwapV2.MatcherPreimage memory m2) =
+        (openSwapV2.ProposedSwap memory s2, openSwapV2.MatcherPreimage memory m2) =
             _buildSwapAndPreimage(swapId2, exp2);
 
         // Cancel swap1 only
@@ -218,20 +218,20 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
 
         // swap A: cancel (pre-match)
         (uint256 swapA, uint48 expA) = _propose();
-        (openSwapV2.Swap memory sA, openSwapV2.MatcherPreimage memory mA) =
+        (openSwapV2.ProposedSwap memory sA, openSwapV2.MatcherPreimage memory mA) =
             _buildSwapAndPreimage(swapA, expA);
         vm.prank(swapper);
         swapContract.cancelSwap(swapA, sA, mA);
 
         // swap B: match, then bailOut after maxGameTime
         (uint256 swapB, uint48 expB) = _propose();
-        (, , openSwapV2.Swap memory sBpost) = _match(swapB, 2000e18, expB);
+        (, , openSwapV2.MatchedSwap memory sBpost) = _match(swapB, 2000e18, expB);
 
         // swap C: full happy path
         (uint256 swapC, uint48 expC) = _propose();
-        (openSwapV2.Swap memory sC, openSwapV2.MatcherPreimage memory mC) =
+        (openSwapV2.ProposedSwap memory sC, openSwapV2.MatcherPreimage memory mC) =
             _buildSwapAndPreimage(swapC, expC);
-        (uint128 rC,, openSwapV2.Swap memory sCpost) = _match(swapC, 2000e18, expC);
+        (uint128 rC,, openSwapV2.MatchedSwap memory sCpost) = _match(swapC, 2000e18, expC);
         IOpenOracle2.OracleGame memory ogC = _buildOracleGameAtReport(sC, mC, 2000e18);
         IOpenOracle2.PreimageHelper memory phC = _buildPreimageHelper(rC);
 

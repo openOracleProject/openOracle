@@ -11,14 +11,14 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         vm.deal(randomUser, 1 ether);
     }
 
-    function _runMatch() internal returns (uint256 swapId, openSwapV2.Swap memory sPost) {
+    function _runMatch() internal returns (uint256 swapId, openSwapV2.MatchedSwap memory sPost) {
         uint48 expiration;
         (swapId, expiration) = _propose();
         (, , sPost) = _match(swapId, 2000e18, expiration);
     }
 
     function testMaxGameTime_AnyoneCanCallBailOut() public {
-        (uint256 swapId, openSwapV2.Swap memory sPost) = _runMatch();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost) = _runMatch();
 
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
@@ -36,7 +36,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         uint256 matcherSellInternalBefore = _spendable(matcher, address(sellToken));
         uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
-        (uint256 swapId, openSwapV2.Swap memory sPost) = _runMatch();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost) = _runMatch();
 
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
@@ -62,7 +62,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
 
     function testMaxGameTime_WorksWithUnsettledOracle() public {
         // Critical V3 property: bailOut after maxGameTime doesn't depend on oracle.settle being called.
-        (uint256 swapId, openSwapV2.Swap memory sPost) = _runMatch();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost) = _runMatch();
 
         // Verify oracle is unsettled
         assertTrue(oracle.oracleGame(sPost.reportId) != bytes32(0), "oracle game exists");
@@ -85,7 +85,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 
@@ -99,7 +99,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
-            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2()
+            op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
         );
     }
 }

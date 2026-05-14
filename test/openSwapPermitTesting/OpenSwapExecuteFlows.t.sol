@@ -15,7 +15,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
     // Custom execute that does NOT mutate oracle state — for tests passing the raw post-report state.
     function _executeRaw(
         uint256 swapId,
-        openSwapV2.Swap memory sPost,
+        openSwapV2.MatchedSwap memory sPost,
         IOpenOracle2.OracleGame memory og,
         IOpenOracle2.PreimageHelper memory ph,
         bool looseTiming,
@@ -29,9 +29,9 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
     function testExecute_MatureButUnsettled_Succeeds() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // Build oracle state at report — settlementTimestamp == 0
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
@@ -48,19 +48,19 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
         _executeRaw(swapId, sPost, og, ph, false, address(0x99));
 
-        // Swap completed even though oracle was never settled
+        // Swap completed without a separate settle transaction (auto-settled inside execute).
         uint256 expectedFulfill = (uint256(SELL_AMT) * 2000e18) / INITIAL_LIQUIDITY;
         expectedFulfill -= (expectedFulfill * STARTING_FEE) / 1e7;
-        assertEq(buyToken.balanceOf(swapper), swapperBuyBefore + expectedFulfill, "swapper got buyToken without oracle.settle");
+        assertEq(buyToken.balanceOf(swapper), swapperBuyBefore + expectedFulfill, "swapper got buyToken in unified settle+execute");
     }
 
     // ── 2a. looseTiming branch 1: caller has stale pre-settle state ──────
 
     function testExecute_LooseTimingBranch1_SettleBeatExecutor() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // Build state with settlementTimestamp = 0 (caller's view: not yet settled)
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
@@ -94,9 +94,9 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
     function testExecute_LooseTimingBranch2_TwoSecondSkew() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
@@ -133,9 +133,9 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
     function testRace_BailoutThenExecute_ExecuteHashFails() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
@@ -157,9 +157,9 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
     function testRace_ExecuteThenBailout_BailoutHashFails() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
@@ -209,11 +209,11 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         uint256 swapId = attacker.doPropose{value: uint256(mgc) + uint256(egc) + SETTLER_REWARD}(
             sellAmt, address(sellToken), 1, address(0), minFulfill,
             uint48(1 hours), mgc, egc,
-            _defaultOracleParams(), slip, _defaultFulfillFee(), _emptyPermit2()
+            _defaultOracleParams(), slip, _defaultFulfillFee(), _emptyPermit2(), false
         );
 
         // Rebuild the exact Swap/MatcherPreimage that propose hashed (swapper = attacker)
-        openSwapV2.Swap memory s;
+        openSwapV2.ProposedSwap memory s;
         s.swapper = address(attacker);
         s.sellAmt = sellAmt;
         s.sellToken = address(sellToken);
@@ -226,6 +226,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         s.slippageParams = slip;
         s.matcherGasComp = mgc;
         s.executorGasComp = egc;
+        s.useInternalBalances = false;
         openSwapV2.MatcherPreimage memory m;
         openSwapV2.OracleParams memory op = _defaultOracleParams();
         m.initialLiquidity = op.initialLiquidity;
@@ -248,7 +249,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, uint128(2 ether), s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        openSwapV2.Swap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
 
         // Build oracle game state at report-time + helper
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, uint128(2 ether));
@@ -295,11 +296,11 @@ contract ReentrantSwapper {
         uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity,
         uint48 expiration, uint96 matcherGasComp, uint96 executorGasComp,
         openSwapV2.OracleParams calldata op, openSwapV2.SlippageParams calldata slip,
-        openSwapV2.FulfillFeeParams calldata ff, openSwapV2.Permit2Params calldata pp
+        openSwapV2.FulfillFeeParams calldata ff, openSwapV2.Permit2Params calldata pp, bool useInternalBalances
     ) external payable returns (uint256) {
         return sc.propose{value: msg.value}(
             sellAmt, sellToken, minOut, buyToken, minFulfillLiquidity,
-            expiration, matcherGasComp, executorGasComp, op, slip, ff, pp
+            expiration, matcherGasComp, executorGasComp, op, slip, ff, pp, useInternalBalances
         );
     }
 

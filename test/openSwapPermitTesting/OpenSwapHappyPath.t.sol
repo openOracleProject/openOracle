@@ -23,7 +23,7 @@ contract OpenSwapHappyPathTest is SlimTestBase {
 
         // 2) match
         uint128 amount2 = 2000e18;
-        (uint128 reportId, uint24 fulfillmentFee, openSwapV2.Swap memory sPost) =
+        (uint128 reportId, uint24 fulfillmentFee, openSwapV2.MatchedSwap memory sPost) =
             _match(swapId, amount2, expiration);
 
         assertEq(
@@ -44,7 +44,7 @@ contract OpenSwapHappyPathTest is SlimTestBase {
         assertEq(swapContract.tempHolding(matcher), MATCHER_GAS_COMP, "matcher gas comp queued");
 
         // 3) settle
-        (openSwapV2.Swap memory sPre, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory sPre, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(sPre, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);

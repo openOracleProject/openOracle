@@ -24,7 +24,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         assertEq(sellToken.balanceOf(swapper), swapperSellBefore - SELL_AMT, "sellToken sent");
         assertEq(swapper.balance, swapperEthBefore - ethToSend, "ETH sent");
 
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
@@ -43,7 +43,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testCancelSwap_FailsIfNotSwapper() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(randomUser);
@@ -53,7 +53,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testCancelSwap_FailsAfterMatch() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         _match(swapId, 2000e18, expiration);
@@ -67,7 +67,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testCancelSwap_FailsIfAlreadyCancelled() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
@@ -80,7 +80,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
     }
 
     function testCancelSwap_FailsForNonexistentSwapId() public {
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(999, uint48(block.timestamp + 1 hours));
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.WrongHash.selector);
@@ -89,7 +89,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testCancelSwap_MatcherCannotCancel() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(matcher);
@@ -99,7 +99,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testCancelSwap_EmitsEvent() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
@@ -114,7 +114,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         (uint256 swapId1, uint48 expiration1) = _propose();
         (uint256 swapId2,) = _propose();
 
-        (openSwapV2.Swap memory s1, openSwapV2.MatcherPreimage memory m1) =
+        (openSwapV2.ProposedSwap memory s1, openSwapV2.MatcherPreimage memory m1) =
             _buildSwapAndPreimage(swapId1, expiration1);
 
         vm.prank(swapper);
@@ -128,7 +128,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         // openSwap's internal balance still holds swap2's sellAmt
         assertEq(_spendable(address(swapContract), address(sellToken)), SELL_AMT, "openSwap still holds swap2");
         // Verify swap2 not affected: should still be cancellable later
-        (openSwapV2.Swap memory s2, openSwapV2.MatcherPreimage memory m2) =
+        (openSwapV2.ProposedSwap memory s2, openSwapV2.MatcherPreimage memory m2) =
             _buildSwapAndPreimage(swapId2, expiration1);
         vm.prank(swapper);
         swapContract.cancelSwap(swapId2, s2, m2);
@@ -141,7 +141,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // Warp past maxGameTime
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
@@ -176,9 +176,10 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testBailOut_FailsIfNotMatched() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        // Build an unmatched Swap struct for the bailOut hash check (will hash-mismatch since
-        // pre-match storage holds keccak256(Swap, Preimage), not keccak256(Swap)).
-        (openSwapV2.Swap memory s,) = _buildSwapAndPreimage(swapId, expiration);
+        expiration;
+        // Pre-match storage holds keccak(ProposedSwap, Preimage); bailOut hashes MatchedSwap so
+        // any MatchedSwap value (zero-init here) will hash-mismatch.
+        openSwapV2.MatchedSwap memory s;
 
         vm.prank(randomUser);
         vm.expectRevert(openSwapV2.WrongHash.selector);
@@ -187,21 +188,23 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testBailOut_FailsIfCancelled() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(swapper);
         swapContract.cancelSwap(swapId, s, m);
 
         // Hash was deleted on cancel, so any bailOut input fails the hash check.
+        s;
+        openSwapV2.MatchedSwap memory dummy;
         vm.prank(randomUser);
         vm.expectRevert(openSwapV2.WrongHash.selector);
-        swapContract.bailOut(swapId, s);
+        swapContract.bailOut(swapId, dummy);
     }
 
     function testBailOut_FailsIfFinished() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
@@ -215,7 +218,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testBailOut_NoOpIfLatencyNotReached() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // No time elapsed — bailOut should revert
         vm.expectRevert(openSwapV2.CantBailOutYet.selector);
@@ -224,7 +227,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testBailOut_ExactLatencyBoundary() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        (, , openSwapV2.Swap memory sPost) = _match(swapId, 2000e18, expiration);
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         uint256 matchTime = sPost.start;
 
         // Exactly at matchTime + MAX_GAME_TIME — check is `> maxGameTime`, so this should revert
