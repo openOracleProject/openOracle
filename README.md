@@ -28,6 +28,8 @@ Tested with the external transfers for the swapper but internal for matcher (ETH
 | `execute` | 114k |
 | **Lifecycle total** | **300k** |
 
+Swapper sells USDC for ETH with the same mechanics is about 45k more expensive in total.
+
 ```
 
 ## Upstream Project
