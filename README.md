@@ -30,6 +30,20 @@ Tested with the external transfers for the swapper but internal for matcher (ETH
 
 Swapper sells USDC for ETH with the same mechanics is about 45k more expensive in total.
 
+Swapper using internal balance to fund the sell leg is ~279k life cycle for both ETH and USDC:
+
+| Path | Swap Fully Internal |
+| --- | ---: |
+| `propose`  | 80k |
+| `match` | 107k |
+| `execute` | 92k |
+| **Lifecycle total** | **279k** |
+
+
+## Further optimization
+
+Will try to use periphery contracts to intake blobs and decode into propose() and match() params, saving calldata
+
 ```
 
 ## Upstream Project
