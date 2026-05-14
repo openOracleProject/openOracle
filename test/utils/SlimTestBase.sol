@@ -49,6 +49,8 @@ abstract contract SlimTestBase is Test {
     // Captured at match for oracle state reconstruction
     uint48 internal reportTs;
     uint48 internal reportBn;
+    // Captured at propose so _buildSwapAndPreimage reproduces the stored hash shape.
+    bool internal proposeUseInternal;
 
     // ── deployment & setup ──────────────────────────────────────────────
 
@@ -76,6 +78,23 @@ abstract contract SlimTestBase is Test {
     function _setupSwapperPermit2(address who, address token) internal {
         vm.prank(who);
         IERC20(token).approve(PERMIT2, type(uint256).max);
+    }
+
+    /// @dev Swapper deposits internal-balance funds + approves openSwap to spend them (internal-balance mode).
+    function _setupSwapperInternalBalance(address who, address token, uint128 amount) internal {
+        vm.startPrank(who);
+        IERC20(token).approve(address(oracle), type(uint256).max);
+        oracle.deposit(token, amount, who);
+        oracle.approveInternal(address(swapContract), token, type(uint256).max);
+        vm.stopPrank();
+    }
+
+    /// @dev Same as above but for ETH sell.
+    function _setupSwapperInternalEth(address who, uint128 amount) internal {
+        vm.startPrank(who);
+        oracle.deposit{value: amount}(address(0), amount, who);
+        oracle.approveInternal(address(swapContract), address(0), type(uint256).max);
+        vm.stopPrank();
     }
 
     /// @dev Matcher deposits internal-balance funds + approves openSwap to spend them.
@@ -135,8 +154,13 @@ abstract contract SlimTestBase is Test {
     // ── flow helpers ────────────────────────────────────────────────────
 
     function _propose() internal returns (uint256 swapId, uint48 expiration) {
+        return _proposeWith(false);
+    }
+
+    function _proposeWith(bool useInternalBalances) internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
         proposeTs = uint48(block.timestamp);
+        proposeUseInternal = useInternalBalances;
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
@@ -152,15 +176,16 @@ abstract contract SlimTestBase is Test {
             _defaultOracleParams(),
             _defaultSlippage(),
             _defaultFulfillFee(),
-            _emptyPermit2()
+            _emptyPermit2(),
+            useInternalBalances
         );
     }
 
     function _match(uint256 swapId, uint128 amount2, uint48 expiration)
         internal
-        returns (uint128 reportId, uint24 fulfillmentFee, openSwapV2.Swap memory sPost)
+        returns (uint128 reportId, uint24 fulfillmentFee, openSwapV2.MatchedSwap memory sPost)
     {
-        (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m) =
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         IOpenOracle2.TimingBoundaries memory timing = IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
 
@@ -201,7 +226,7 @@ abstract contract SlimTestBase is Test {
 
     function _execute(
         uint256 swapId,
-        openSwapV2.Swap memory sPost,
+        openSwapV2.MatchedSwap memory sPost,
         IOpenOracle2.OracleGame memory og,
         IOpenOracle2.PreimageHelper memory ph,
         address executor
@@ -219,7 +244,7 @@ abstract contract SlimTestBase is Test {
         internal
         view
         virtual
-        returns (openSwapV2.Swap memory s, openSwapV2.MatcherPreimage memory m)
+        returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         s.swapper = swapper;
         s.sellAmt = SELL_AMT;
@@ -233,6 +258,7 @@ abstract contract SlimTestBase is Test {
         s.slippageParams = _defaultSlippage();
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.executorGasComp = EXECUTOR_GAS_COMP;
+        s.useInternalBalances = proposeUseInternal;
 
         openSwapV2.OracleParams memory op = _defaultOracleParams();
         m.initialLiquidity = op.initialLiquidity;
@@ -251,22 +277,41 @@ abstract contract SlimTestBase is Test {
     }
 
     function _postMatchSwap(
-        openSwapV2.Swap memory s,
+        openSwapV2.ProposedSwap memory s,
         uint128 reportId,
         uint24 fulfillmentFee,
         uint48 startTs
-    ) internal view returns (openSwapV2.Swap memory) {
-        s.matcher = matcher;
-        s.start = startTs;
-        s.fulfillmentFee = fulfillmentFee;
-        s.reportId = reportId;
-        return s;
+    ) internal view returns (openSwapV2.MatchedSwap memory sp) {
+        sp.sellAmt = s.sellAmt;
+        sp.minFulfillLiquidity = s.minFulfillLiquidity;
+        sp.maxGameTime = s.maxGameTime;
+        sp.blocksPerSecond = s.blocksPerSecond;
+        sp.buyToken = s.buyToken;
+        sp.sellToken = s.sellToken;
+        sp.swapper = s.swapper;
+        sp.executorGasComp = s.executorGasComp;
+        sp.useInternalBalances = s.useInternalBalances;
+        sp.slippageParams = s.slippageParams;
+
+        sp.matcher = matcher;
+        sp.start = startTs;
+        sp.fulfillmentFee = fulfillmentFee;
+        sp.reportId = reportId;
     }
 
     function _buildOracleGameAtReport(
-        openSwapV2.Swap memory s,
+        openSwapV2.ProposedSwap memory s,
         openSwapV2.MatcherPreimage memory m,
         uint128 amount2
+    ) internal view returns (IOpenOracle2.OracleGame memory) {
+        return _buildOracleGameAtReportWithFeeRecipient(s, m, amount2, address(0));
+    }
+
+    function _buildOracleGameAtReportWithFeeRecipient(
+        openSwapV2.ProposedSwap memory s,
+        openSwapV2.MatcherPreimage memory m,
+        uint128 amount2,
+        address feeRecipient
     ) internal view returns (IOpenOracle2.OracleGame memory) {
         return IOpenOracle2.OracleGame({
             currentAmount1: m.initialLiquidity,
@@ -278,7 +323,7 @@ abstract contract SlimTestBase is Test {
             lastReportOppoTime: reportBn,
             settlementTime: m.settlementTime,
             escalationHalt: m.escalationHalt,
-            protocolFeeRecipient: s.feeRecipient,
+            protocolFeeRecipient: feeRecipient,
             settlerReward: uint96(s.settlerReward),
             token2: s.buyToken,
             numReports: 0,

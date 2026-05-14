@@ -11,6 +11,11 @@ import {ISignatureTransfer} from "../../src/interfaces/ISignatureTransfer.sol";
  *         for the relevant token via the usual ERC20 approve.
  */
 contract MockPermit2 is ISignatureTransfer {
+    bytes32 public lastWitness;
+    string public lastWitnessTypeString;
+    address public lastOwner;
+    uint256 public callCount;
+
     function permitTransferFrom(
         PermitTransferFrom calldata permit,
         SignatureTransferDetails calldata transferDetails,
@@ -24,10 +29,14 @@ contract MockPermit2 is ISignatureTransfer {
         PermitTransferFrom calldata permit,
         SignatureTransferDetails calldata transferDetails,
         address owner,
-        bytes32 /* witness */,
-        string calldata /* witnessTypeString */,
+        bytes32 witness,
+        string calldata witnessTypeString,
         bytes calldata /* signature */
     ) external {
+        lastWitness = witness;
+        lastWitnessTypeString = witnessTypeString;
+        lastOwner = owner;
+        callCount += 1;
         IERC20(permit.permitted.token).transferFrom(owner, transferDetails.to, transferDetails.requestedAmount);
     }
 }
