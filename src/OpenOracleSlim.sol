@@ -488,8 +488,7 @@ contract OpenOracle is OpenOracleErrors {
     function deposit(address token, uint128 amount, address beneficiary) external payable {
         if (beneficiary == address(0)) revert AddressCannotBeZero();
         if (token != ETH_SENTINEL && msg.value > 0) revert InvalidMsgValue();
-        if (tokenHolder[beneficiary][token] == 0) tokenHolder[beneficiary][token] = 1;
-        tokenHolder[beneficiary][token] += amount;
+        _credit(beneficiary, token, amount);
 
         if (token == ETH_SENTINEL) {
             if (msg.value != amount) revert InvalidMsgValue();
