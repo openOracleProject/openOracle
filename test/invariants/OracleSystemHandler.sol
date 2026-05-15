@@ -325,7 +325,7 @@ contract OracleSystemHandler is Test {
         address user = _pickActor(actorSeed);
         address tok = _pickToken(tokSeed);
         vm.prank(user);
-        try oracle.withdraw(tok) {
+        try oracle.withdraw(tok, type(uint256).max) {
             totalWithdrawals += 1;
             _markTouched(user);
         } catch {}
