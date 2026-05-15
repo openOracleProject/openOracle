@@ -7,18 +7,19 @@ import {OpenOracleErrors} from "./OpenOracleErrors.sol";
 import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
 
 /**
- * @title OpenOracle
- * @notice A trust-free price oracle that uses an escalating auction mechanism
- * @dev This contract enables price discovery through economic incentives where
- *      expiration serves as evidence of a good price with appropriate parameters.
- *      Participants are responsible for validating report instance parameters before participation
+ * @title openOracle
+ * @notice A trust-minimized token price oracle
+ * @dev A price report is two limit orders, a buy and a sell, at the same price.
+ *      The orders are locked until either the timer runs out or one is taken.
+ *      To take one of the limit orders, you replace them with larger ones at a new price.
+ *      When the timer runs out without a dispute, the price is settled. Any disputes reset the timer.
+ *
+ *      Participants are responsible for validating oracle game parameters before participation
  *      and unsafe parameter sets including but not limited to settlementTime too high and callbackGasLimit too high
  *      will result in lost funds.
  *
- *      Internal token balances use a virtual 1-unit sentinel. The sentinel is an accounting marker,
- *      not a required token deposit, and is excluded from withdrawable/spendable balances.
- *
- *      Vanilla ERC20, USDC, and USDT-style return value tokens only. Fee-on-transfer, rebasing tokens etc are explicitly not supported.
+ *      Vanilla ERC20, USDC, and USDT-style return value tokens only.
+ *      Fee-on-transfer, rebasing tokens etc are explicitly not supported.
  * @author OpenOracle Team
  * @custom:version 0.2.0
  * @custom:documentation https://docs.openoracle.org
@@ -32,9 +33,8 @@ contract OpenOracle is OpenOracleErrors {
     uint256 internal constant MULTIPLIER_PRECISION = 100;
     address internal constant ETH_SENTINEL = address(0);
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
-    uint8 internal constant FLAGS_MAX = 0x0F;  // FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_ALL | FLAG_STORE_PRICE
+    uint8 internal constant FLAGS_MAX = 0x0F; // FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_ALL | FLAG_STORE_PRICE
 
-    // Permit2 witness: binds the sig to (beneficiary, relayer, swapper, intent).
     bytes32 internal constant WITNESS_TYPEHASH =
         keccak256("Witness(address beneficiary,address relayer,address swapper,bytes32 intent)");
     string internal constant WITNESS_TYPE_STRING =
@@ -48,14 +48,13 @@ contract OpenOracle is OpenOracleErrors {
     bytes4 internal constant CALLBACK_SELECTOR =
         bytes4(keccak256("openOracleCallback(uint256,uint256,uint256,uint256,address,address)"));
 
-    // State variables
     uint256 public nextReportId = 1;
 
-    mapping(uint256 => bytes32) public oracleGame;
+    mapping(uint256 => bytes32) public oracleGame; // reportId => state hash
     mapping(uint256 => uint256) public finalPrice;
-    mapping(address => mapping(address => uint256)) public tokenHolder;
-    mapping(uint256 => mapping(uint256 => DisputeRecord)) public disputeHistory;
-    mapping(uint256 => OracleGame) public finalizedGame;
+    mapping(address => mapping(address => uint256)) public tokenHolder; // owner => token => amount
+    mapping(uint256 => mapping(uint256 => DisputeRecord)) public disputeHistory; // reportId => numReports => dispute data
+    mapping(uint256 => OracleGame) public finalizedGame; // reportId => optional storage
     mapping(address => mapping(address => mapping(address => uint256))) public internalAllowance; // owner => spender => token => amount
 
     struct DisputeRecord {
@@ -65,28 +64,27 @@ contract OpenOracle is OpenOracleErrors {
         uint48 reportTimestamp;
     }
 
-    // which parameters are free for the caller of report() to choose
     struct OracleGame {
-        uint128 currentAmount1; // free
-        uint128 currentAmount2; // free
-        address currentReporter; // free
-        uint48 reportTimestamp; // set later in report but should be validated on entry
-        uint48 settlementTimestamp; // not free
-        address token1; // free
-        uint48 lastReportOppoTime; // set later in report but should be validated on entry
-        uint48 settlementTime; // free
-        uint128 escalationHalt; // free
-        address protocolFeeRecipient; // free
-        uint96 settlerReward; // free
-        address token2; // free
-        uint24 numReports; // not free
-        uint24 disputeDelay; // free
-        uint24 feePercentage; // free
-        uint16 multiplier; // free
-        address callbackContract; // free
-        uint32 callbackGasLimit; // free
-        uint24 protocolFee; // free
-        uint8 flags; // free
+        uint128 currentAmount1; // current amount of token1 in the report
+        uint128 currentAmount2; // current amount of token2 in the report
+        address currentReporter;
+        uint48 reportTimestamp; // time of last report or dispute. respects timeType
+        uint48 settlementTimestamp; // when the game settled. respects timeType
+        address token1;
+        uint48 lastReportOppoTime; // opposite time. respects timeType
+        uint48 settlementTime; // per-round timer. respects timeType
+        uint128 escalationHalt; // point at which disputes can continue but amounts stop growing.
+        address protocolFeeRecipient; // receives per-round protocolFee
+        uint96 settlerReward; // wei paid to settler
+        address token2;
+        uint24 numReports;
+        uint24 disputeDelay; // time after report where nobody can swap against the limit orders. respects timeType.
+        uint24 feePercentage; //1000 = 0.01%, portion per swap going to previous reporter
+        uint16 multiplier; // 140 = 1.4x, how much currentAmount1 must grow by each round
+        address callbackContract; // settlement callback calls into this address
+        uint32 callbackGasLimit; // gas forwarded to settlement callback; unsafe values above practical tx gas limits can make settlement impossible.
+        uint24 protocolFee; // 1000 = 0.01%, portion per swap going to protocolFeeRecipient
+        uint8 flags; // see flags above. timeType true means the game's clock uses timestamps, false, block numbers.
     }
 
     struct PreimageHelper {
@@ -110,10 +108,12 @@ contract OpenOracle is OpenOracleErrors {
     event InternalApproval(address indexed owner, address indexed spender, address indexed token, uint256 amount);
 
     /**
-     * @notice Creates a report instance from a caller-supplied OracleGame and submits the initial
-     *         report in one call. Caller must pass reportTimestamp / lastReportOppoTime /
-     *         settlementTimestamp / numReports as zero; contract overrides reportTimestamp /
-     *         lastReportOppoTime via assembly before hashing.
+     * @notice Creates a price report. Caller must pass reportTimestamp / lastReportOppoTime /
+     *         settlementTimestamp / numReports as zero.
+     * @dev Only the keccak256 state hash is stored on-chain. All future callers
+     *      (dispute, settle) must supply the exact OracleGame + PreimageHelper that
+     *      reconstructs the current hash; off-chain indexing of report state is the
+     *      caller's responsibility (events + tx data, or via the FLAG_STORE_ALL opt-in).
      * @param params OracleGame to commit
      * @param tryInternalBalance1 If true, fund token1 from params.currentReporter's internal balance
      * @param tryInternalBalance2 If true, fund token2 from params.currentReporter's internal balance
@@ -151,8 +151,8 @@ contract OpenOracle is OpenOracleErrors {
         }
         if (params.settlementTimestamp != 0) revert TimestampsMustBeZero();
         if (params.numReports != 0) revert NumReportsMustBeZero();
-        if (params.reportTimestamp != 0 || params.lastReportOppoTime != 0) revert TimestampsMustBeZero(); // cheap but is it actually needed
-        
+        if (params.reportTimestamp != 0 || params.lastReportOppoTime != 0) revert TimestampsMustBeZero();
+
         reportId = nextReportId++;
 
         bool trackDisputes = _hasFlag(params.flags, FLAG_TRACK_DISPUTES);
@@ -177,15 +177,9 @@ contract OpenOracle is OpenOracleErrors {
             blockNumber: blockNumber
         });
 
-        // Hash via calldatacopy + mstore overrides + mcopy of helper. Skips Solidity's
-        // memory-build of OracleGame (~10k gas vs naive `_hashOracle(params, helper)`).
-        // Layout (matches abi.encode(OracleGame, PreimageHelper)):
-        //   mem + 0x000 .. 0x280   OracleGame (20 × 32 bytes)
-        //   mem + 0x280 .. 0x300   PreimageHelper (4 × 32 bytes)
-        // Override offsets within OracleGame (slot N starts at N*0x20):
-        //   0x060   reportTimestamp     (slot 3, uint48)
-        //   0x0C0   lastReportOppoTime  (slot 6, uint48)
-        //   0x180   numReports          (slot 12, uint24; only when FLAG_TRACK_DISPUTES)
+        // Hash via calldatacopy + override mstores + mcopy(helper). Layout matches abi.encode(OracleGame, PreimageHelper):
+        //   0x000..0x280  OracleGame (20 slots)        0x280..0x300  PreimageHelper (4 slots)
+        // Overrides (slot N at N*0x20): 0x060 reportTimestamp · 0x0C0 lastReportOppoTime · 0x180 numReports (if trackDisputes)
         bytes32 stateHash;
         assembly ("memory-safe") {
             let mem := mload(0x40)
@@ -220,12 +214,12 @@ contract OpenOracle is OpenOracleErrors {
     }
 
     /**
-     * @notice Replaces the current report on a report instance with new amounts.
+     * @notice Swaps against and replaces the current report with new amounts.
      * @param reportId The report instance to dispute
-     * @param tokenToSwap Either token1 or token2; selects which side the disputer is buying
-     * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100, capped at escalationHalt (or oldAmount1 + 1 once escalation has halted)
-     * @param newAmount2 New token2 amount proposed by the disputer
-     * @param disputer Address recorded as the new currentReporter and credited for any ETH excess
+     * @param tokenToSwap Either token1 or token2; disputer is selling chosen token to previous reporter at the quoted ratio
+     * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100 unless at escalationHalt where it must equal oldAmount1 + 1
+     * @param newAmount2 New token2 amount proposed by the disputer. Ratio of newAmount1 and newAmount2 is the new price disputer is quoting.
+     * @param disputer Address recorded as the new currentReporter, credited for any ETH excess. Also receives tokens back when the round completes.
      * @param tryInternalBalance1 If true, draw token1 contributions from disputer's internal balance before pulling externally
      * @param tryInternalBalance2 If true, draw token2 contributions from disputer's internal balance before pulling externally
      * @param params OracleGame matching the current stored state hash
@@ -323,7 +317,8 @@ contract OpenOracle is OpenOracleErrors {
             uint256 netToken2Contribution = newAmount2 >= oldAmount2 ? newAmount2 - oldAmount2 : 0;
             uint256 netToken2Receive = newAmount2 < oldAmount2 ? oldAmount2 - newAmount2 : 0;
 
-            if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) { // gas optimization for intentional burn w/o writing to storage
+            if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) {
+                // gas optimization for intentional burn w/o writing to storage
                 address pfr = oracle.protocolFeeRecipient;
                 uint256 bal = tokenHolder[pfr][token1];
                 tokenHolder[pfr][token1] = bal == 0 ? protocolFee + 1 : bal + protocolFee;
@@ -387,7 +382,7 @@ contract OpenOracle is OpenOracleErrors {
     }
 
     /**
-     * @notice Settles a report after the settlement time has elapsed
+     * @notice Settles a report after settlementTime has elapsed
      * @param reportId The unique identifier for the report to settle
      * @param params OracleGame matching the current stored state hash
      * @param helper PreimageHelper matching the current stored state hash
@@ -421,7 +416,6 @@ contract OpenOracle is OpenOracleErrors {
         if (currentTime < reportTimestamp + settlementTime) revert SettleTooEarly();
         if (reportTimestamp == 0) revert NoReportYet();
 
-        // write state
         oracle.settlementTimestamp = uint48(currentTime);
         bytes32 nextStateHash = _hashOracle(oracle, helper);
         oracleGame[reportId] = nextStateHash;
@@ -434,8 +428,9 @@ contract OpenOracle is OpenOracleErrors {
 
         if (hasCallback) {
             // Prepare callback data
-            bytes memory callbackData =
-                abi.encodeWithSelector(CALLBACK_SELECTOR, reportId, currentAmount1, currentAmount2, currentTime, token1, token2);
+            bytes memory callbackData = abi.encodeWithSelector(
+                CALLBACK_SELECTOR, reportId, currentAmount1, currentAmount2, currentTime, token1, token2
+            );
 
             // Execute callback with gas limit. Revert if not enough gas supplied to attempt callback fully.
             (bool success,) = callbackContract.call{gas: callbackGasLimit}(callbackData);
@@ -448,26 +443,30 @@ contract OpenOracle is OpenOracleErrors {
         emit ReportSettled(reportId);
     }
 
-    function withdraw(address tokenToGet) external returns (uint256 sent) {
-        return _withdraw(tokenToGet, msg.sender);
+    function withdraw(address tokenToGet, uint256 amount) external returns (uint256 sent) {
+        return _withdraw(tokenToGet, amount, msg.sender);
     }
 
-    function withdrawTo(address tokenToGet, address to) external returns (uint256 sent) {
-        return _withdraw(tokenToGet, to);
+    function withdrawTo(address tokenToGet, uint256 amount, address to) external returns (uint256 sent) {
+        return _withdraw(tokenToGet, amount, to);
     }
 
     /**
      * @notice Withdraws held tokens to `to`, preserving the virtual 1-unit sentinel.
+     *         If too high an amount is passed, sends available balance instead of reverting.
      * @param tokenToGet The token address to withdraw
+     * @param amount Maximum amount to withdraw; if above available balance, withdraws available balance
      * @param to Recipient of the withdrawn tokens
      */
-    function _withdraw(address tokenToGet, address to) internal returns (uint256 amount) {
+    function _withdraw(address tokenToGet, uint256 amount, address to) internal returns (uint256 sent) {
         if (to == address(0)) revert AddressCannotBeZero();
         uint256 balance = tokenHolder[msg.sender][tokenToGet];
-        if (balance <= 1) return 0;
+        if (balance <= 1 || amount == 0) return 0;
 
-        amount = balance - 1;
-        tokenHolder[msg.sender][tokenToGet] = 1;
+        if (amount > balance - 1) amount = balance - 1;
+        tokenHolder[msg.sender][tokenToGet] = balance - amount;
+        sent = amount;
+
         if (tokenToGet == ETH_SENTINEL) {
             (bool success,) = (to).call{value: amount}("");
             if (!success) {
@@ -573,8 +572,10 @@ contract OpenOracle is OpenOracleErrors {
             (bool success, bytes memory returndata) =
                 token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
             bool ok = success
-                && ((returndata.length > 0 && abi.decode(returndata, (bool)))
-                    || (returndata.length == 0 && token.code.length > 0));
+                && (
+                    (returndata.length > 0 && abi.decode(returndata, (bool)))
+                        || (returndata.length == 0 && token.code.length > 0)
+                );
             if (!ok) _credit(to, token, amount);
         }
     }
@@ -588,9 +589,7 @@ contract OpenOracle is OpenOracleErrors {
     /**
      * @dev Internal function to handle token transfers
      */
-    function _transferTokens(address token, address from, address to, uint256 amount)
-        internal
-    {
+    function _transferTokens(address token, address from, address to, uint256 amount) internal {
         if (amount == 0) return; // Gas optimization: skip zero transfers
 
         if (from == address(this)) {
@@ -633,8 +632,7 @@ contract OpenOracle is OpenOracleErrors {
 
     /**
      * @dev Credit assets to a recipient's internal balance, seeding the virtual
-     *      sentinel on first credit so withdrawals return the
-     *      full credited amount.
+     *      sentinel on first credit.
      */
     function _credit(address recipient, address token, uint256 amount) internal {
         uint256 bal = tokenHolder[recipient][token];
@@ -670,14 +668,11 @@ contract OpenOracle is OpenOracleErrors {
                         }
                     }
                 }
-
             }
-
         }
 
         // Strict delegation: if caller asked to fund from `owner`'s internal balance but the
-        // available balance + allowance falls short, revert. Prevents callers from accidentally
-        // paying out-of-pocket for a delegated dispute/report when the owner can't cover it.
+        // available balance + allowance falls short, revert.
         if (tib && owner != msg.sender && fromInternal < amount) revert InsufficientInternalBalance();
 
         uint256 fromExternal = amount - fromInternal;
@@ -689,12 +684,9 @@ contract OpenOracle is OpenOracleErrors {
         if (fromExternal > 0) {
             _transferTokens(token, msg.sender, address(this), fromExternal);
         }
-        return 0; // ERC20 path consumed nothing from msg.value
+        return 0;
     }
 
-    /**
-     * @dev Gets the current block number (returns L1 block number for L1 deployment)
-     */
     function _getBlockNumber() internal view returns (uint48) {
         return uint48(block.number);
     }
