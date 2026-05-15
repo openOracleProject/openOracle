@@ -9,6 +9,7 @@ import "../../src/interfaces/ISignatureTransfer.sol";
 import "./MockERC20.sol";
 import "./MockPermit2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SwapCompat} from "../openSwapPermitTesting/SwapCompat.sol";
 
 abstract contract SlimTestBase is Test {
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
@@ -25,7 +26,7 @@ abstract contract SlimTestBase is Test {
     address internal settler = address(0x1004);
 
     // Defaults — override by changing the helper functions if needed
-    uint88 constant SETTLER_REWARD = 0.001 ether;
+    uint96 constant SETTLER_REWARD = 0.001 ether;
     uint128 constant INITIAL_LIQUIDITY = 1e18;
     uint48 constant SETTLEMENT_TIME = 300;
     uint24 constant DISPUTE_DELAY = 5;
@@ -119,8 +120,8 @@ abstract contract SlimTestBase is Test {
 
     // ── param builders ──────────────────────────────────────────────────
 
-    function _defaultOracleParams() internal view virtual returns (openSwapV2.OracleParams memory) {
-        return openSwapV2.OracleParams({
+    function _defaultOracleParams() internal view virtual returns (SwapCompat.OracleParams memory) {
+        return SwapCompat.OracleParams({
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlerReward: SETTLER_REWARD,
@@ -131,6 +132,10 @@ abstract contract SlimTestBase is Test {
             multiplier: 110,
             blocksPerSecond: 500
         });
+    }
+
+    function _swapCompatParams() internal view returns (SwapCompat.OracleParams memory) {
+        return _defaultOracleParams();
     }
 
     function _defaultSlippage() internal view virtual returns (openSwapV2.SlippageParams memory) {
@@ -164,7 +169,9 @@ abstract contract SlimTestBase is Test {
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
-        swapId = swapContract.propose{value: ethToSend}(
+        swapId = SwapCompat.proposeRaw(
+            swapContract,
+            ethToSend,
             SELL_AMT,
             address(sellToken),
             MIN_OUT,
@@ -260,7 +267,7 @@ abstract contract SlimTestBase is Test {
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = proposeUseInternal;
 
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         m.initialLiquidity = op.initialLiquidity;
         m.escalationHalt = op.escalationHalt;
         m.settlementTime = op.settlementTime;
@@ -316,7 +323,7 @@ abstract contract SlimTestBase is Test {
         return IOpenOracle2.OracleGame({
             currentAmount1: m.initialLiquidity,
             currentAmount2: amount2,
-            currentReporter: payable(matcher),
+            currentReporter: matcher,
             reportTimestamp: reportTs,
             settlementTimestamp: 0,
             token1: s.sellToken,
