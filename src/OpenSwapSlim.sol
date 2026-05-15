@@ -48,6 +48,7 @@ contract openSwapV2 is ReentrancyGuard {
     error NothingToWithdraw();
     error EthSendFailed();
     error OracleSettlementNotEligible();
+    error MustBeZero();
 
     constructor(address oracle_) {
         oracle = IOpenOracle2(oracle_);
@@ -79,10 +80,12 @@ contract openSwapV2 is ReentrancyGuard {
         SlippageParams slippageParams;
     }
 
+
+    // what is free for the proposer to choose? 
     struct ProposedSwap {
         uint128 sellAmt; // amount of sellToken the swapper is selling
         uint128 minFulfillLiquidity; // minimum amount of buyToken the matcher must put in the contract
-        uint88 settlerReward;
+        uint96 settlerReward;
         uint24 maxGameTime;
         uint16 blocksPerSecond;
         address buyToken; // address for token swapper wants
@@ -93,18 +96,6 @@ contract openSwapV2 is ReentrancyGuard {
         bool useInternalBalances;
         uint48 expiration;
         SlippageParams slippageParams;
-    }
-
-    struct OracleParams {
-        uint128 initialLiquidity; // oracle game initial liquidity in sellToken
-        uint128 escalationHalt; // amount of sellToken at which oracle game stops escalating
-        uint88 settlerReward; // settler reward in oracle game. settle function executes the swap.
-        uint48 settlementTime; // round length of oracle game, in seconds.
-        uint24 maxGameTime; // if oracle game takes longer than this many seconds, refund available.
-        uint24 disputeDelay; // disputes must wait this many seconds after the last report.
-        uint24 protocolFee; // 1000 = 0.01%, percentage levied of each swap in oracle game for protocolFeeRecipient's benefit.
-        uint16 multiplier; // oracle game multiplier, 110 = 1.1x
-        uint16 blocksPerSecond; // network's blocks per second. 500 means 0.5 blocks per second versus wall clock
     }
 
     struct SlippageParams {
@@ -135,7 +126,8 @@ contract openSwapV2 is ReentrancyGuard {
         uint24 disputeDelay;
         uint24 protocolFee;
         uint16 multiplier;
-        uint48 startFulfillFeeIncrease;
+        uint48 startFulfillFeeIncrease; // need to validate this is 0
+
         uint24 maxFee;
         uint24 startingFee;
         uint24 roundLength;
@@ -147,105 +139,118 @@ contract openSwapV2 is ReentrancyGuard {
     event SwapCancelled(uint256 swapId);
     event SwapRefunded(uint256 swapId, address indexed swapper, address indexed matcher);
     event SwapExecuted(uint256 swapId);
-    event SwapMatched(uint256 indexed swapId, uint128 reportId);
+    event SwapMatched(uint256 indexed swapId);
     event FeesTransferred(address indexed swapper, address indexed matcher, address buyToken, address sellToken, uint128 feesBuyToken, uint128 feesSellToken, address feeRecipientContract);
     event SlippageBailout(uint256 swapId);
     event ImpliedBlocksPerSecondBailout(uint256 swapId);
 
     /**
      * @notice Creates a swap, sending sellAmt of sellToken into the contract.
-     * @param sellAmt Amount of sellToken to sell
-     * @param sellToken Token address to sell
-     * @param minOut Minimum amount of buyToken to receive
-     * @param buyToken Token address to buy
-     * @param minFulfillLiquidity Matcher must supply this amount of buyToken. Should include a buffer above market price to prevent refunds.
-     * @param expiration Number of seconds after this transaction lands in a block when swap can no longer be matched.
-     * @param matcherGasComp Gas compensation for matcher
-     * @param executorGasComp Gas compensation for execute caller
-     * @param oracleParams Oracle game parameters: see OracleParams for comments
-     * @param slippageParams Slippage parameters: see SlippageParams for comments
-     * @param fulfillFeeParams Fulfillment fee parameters: see FulfillFeeParams for comments
-     * @param permit2 Permit2 params (ignored when useInternalBalances is true)
-     * @param useInternalBalances If true, pull sellToken from swapper's oracle internal balance; else use Permit2 (or msg.value for ETH).
+     * @param s ProposedSwap parameters; s.swapper is set to msg.sender and s.expiration is converted to an absolute timestamp by the contract
+     * @param m MatcherPreimage parameters; m.startFulfillFeeIncrease is set to block.timestamp by the contract
+     * @param permit2 Permit2 nonce / deadline / signature, used when sellToken is ERC20 and useInternalBalances is false
+     * @param minOut Minimum buyToken amount the swapper accepts at settlement
      * @return swapId Sequence number assigned to the new swap
      */
-    function propose(uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity, uint48 expiration, uint96 matcherGasComp, uint96 executorGasComp, OracleParams calldata oracleParams, SlippageParams calldata slippageParams, FulfillFeeParams calldata fulfillFeeParams, Permit2Params calldata permit2, bool useInternalBalances) external payable returns(uint256 swapId) {
-
-        uint256 settlerReward = oracleParams.settlerReward;
-        uint256 extraEth = matcherGasComp + settlerReward + executorGasComp;
+        function propose(
+            ProposedSwap calldata s,
+            MatcherPreimage calldata m,
+            Permit2Params calldata permit2,
+            uint128 minOut
+        ) external payable returns (uint256 swapId) {
+        uint256 settlerReward = s.settlerReward;
+        uint256 extraEth = s.matcherGasComp + settlerReward + s.executorGasComp;
+        address sellToken = s.sellToken;
+        address buyToken = s.buyToken;
+        uint128 sellAmt = s.sellAmt;
+        uint48 expiration = s.expiration;
+        bool useInternalBalances = s.useInternalBalances;
         bool isEth = sellToken == address(0);
+        bool needsPermit2 = !useInternalBalances && !isEth;
         uint256 expected = (isEth && !useInternalBalances) ? sellAmt + extraEth : extraEth;
 
         if (msg.value != expected) revert InvalidMsgValue();
 
         if (sellToken == buyToken) revert SameToken();
-        if (sellAmt == 0 || minOut == 0 || minFulfillLiquidity == 0) revert ZeroAmount();
+        if (sellAmt == 0 || minOut == 0 || s.minFulfillLiquidity == 0) revert ZeroAmount();
         if (expiration == 0 || expiration > 30 days) revert InvalidExpiration();
-        if (fulfillFeeParams.maxFee >= 1e7) revert InvalidFulfillFee();
+        if (m.maxFee >= 1e7) revert InvalidFulfillFee();
 
-        if (slippageParams.priceTolerated == 0 || slippageParams.toleranceRange == 0 || slippageParams.toleranceRange > 1e7) revert InvalidSlippage();
+        if (s.slippageParams.priceTolerated == 0 || s.slippageParams.toleranceRange == 0 || s.slippageParams.toleranceRange > 1e7) revert InvalidSlippage();
 
-        if (oracleParams.settlementTime == 0 
-            || oracleParams.initialLiquidity == 0
-            || oracleParams.blocksPerSecond == 0
-            || oracleParams.disputeDelay >= oracleParams.settlementTime
-            || oracleParams.escalationHalt < oracleParams.initialLiquidity
-            || oracleParams.settlementTime > 4 * 60 * 60
-            || oracleParams.protocolFee >= 1e7
-            || oracleParams.maxGameTime < oracleParams.settlementTime * 20
-            || oracleParams.maxGameTime > 604800
-            || oracleParams.multiplier < 100
+        if (m.settlementTime == 0 
+            || m.initialLiquidity == 0
+            || s.blocksPerSecond == 0
+            || m.disputeDelay >= m.settlementTime
+            || m.escalationHalt < m.initialLiquidity
+            || m.settlementTime > 4 * 60 * 60
+            || m.protocolFee >= 1e7
+            || s.maxGameTime < m.settlementTime * 20
+            || s.maxGameTime > 604800
+            || m.multiplier < 100
             ) revert InvalidOracleParams();
 
-        if (fulfillFeeParams.maxFee == 0
-            || fulfillFeeParams.startingFee == 0
-            || fulfillFeeParams.growthRate < 10000
-            || fulfillFeeParams.maxRounds == 0
-            || fulfillFeeParams.maxRounds > 100
-            || fulfillFeeParams.roundLength == 0
-            || fulfillFeeParams.maxFee < fulfillFeeParams.startingFee
-            || fulfillFeeParams.maxFee > 1e7
+        if (m.maxFee == 0
+            || m.startingFee == 0
+            || m.growthRate < 10000
+            || m.maxRounds == 0
+            || m.maxRounds > 100
+            || m.roundLength == 0
+            || m.maxFee < m.startingFee
+            || m.maxFee > 1e7
             ) revert InvalidFulfillFeeParams();
 
-        uint256 upperPrice = Math.mulDiv(slippageParams.priceTolerated, uint256(1e7) + slippageParams.toleranceRange, 1e7);
+        if (s.swapper != address(0) || m.startFulfillFeeIncrease != 0) revert MustBeZero();
+
+        uint256 upperPrice = Math.mulDiv(s.slippageParams.priceTolerated, uint256(1e7) + s.slippageParams.toleranceRange, 1e7);
         uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice);
-        worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, fulfillFeeParams.maxFee, 1e7);
+        worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, m.maxFee, 1e7);
                                                                                                                                                                                                                                         
         if (minOut > worstFulfillAmt) revert MinOutInconsistent();
 
         swapId = nextSwapId++;
-        ProposedSwap memory s;
 
-        s.swapper = msg.sender;
-        s.sellAmt = sellAmt;
-        s.sellToken = sellToken;
-        s.buyToken = buyToken;
-        s.minFulfillLiquidity =  minFulfillLiquidity;
-        s.maxGameTime = oracleParams.maxGameTime;
-        s.blocksPerSecond = oracleParams.blocksPerSecond;
-        s.settlerReward = oracleParams.settlerReward;
-        s.slippageParams = slippageParams;
-        s.matcherGasComp = matcherGasComp;
-        s.executorGasComp = executorGasComp;
-        s.useInternalBalances = useInternalBalances;
-        s.expiration = uint48(block.timestamp) + expiration;
+        // Two hashes share the same memory layout:
+        //
+        //   permitIntent = keccak(s_with_swapper, m_raw, minOut)
+        //     What the user signs off-chain for Permit2. Includes s.swapper override (caller())
+        //     so the intent commits to the signer's identity, but keeps s.expiration as the raw
+        //     offset and m.startFulfillFeeIncrease as 0 — both are static at signing time.
+        //
+        //   swapHash = keccak(s_with_all_overrides, m_with_override)
+        //     Canonical hash stored on-chain. Overrides s.expiration to absolute timestamp and
+        //     m.startFulfillFeeIncrease to block.timestamp.
+        //
+        // Memory layout (matches abi.encode(ProposedSwap, MatcherPreimage[, minOut])):
+        //   mem + 0x000 .. 0x1C0   ProposedSwap (14 slots: 13 fields + SlippageParams inline as 2)
+        //   mem + 0x1C0 .. 0x340   MatcherPreimage (12 slots)
+        //   mem + 0x340 .. 0x360   minOut (1 slot, only for permitIntent)
+        //
+        // Override offsets (slot N = N * 0x20):
+        //   0x100   s.swapper                  ← caller()
+        //   0x160   s.expiration               ← block.timestamp + s.expiration
+        //   0x280   m.startFulfillFeeIncrease  ← block.timestamp
+        uint256 absoluteExpiration = uint256(block.timestamp) + uint256(s.expiration);
+        bytes32 swapHash;
+        bytes32 permitIntent;
+        assembly ("memory-safe") {
+            let mem := mload(0x40)
+            calldatacopy(mem, s, 0x1C0)
+            calldatacopy(add(mem, 0x1C0), m, 0x180)
+            mstore(add(mem, 0x100), caller())                       // swapper override
 
-        MatcherPreimage memory m;
-        m.initialLiquidity = oracleParams.initialLiquidity;
-        m.escalationHalt = oracleParams.escalationHalt;
-        m.settlementTime = oracleParams.settlementTime;
-        m.disputeDelay = oracleParams.disputeDelay;
-        m.protocolFee = oracleParams.protocolFee;
-        m.multiplier = oracleParams.multiplier;
-        m.startFulfillFeeIncrease = uint48(block.timestamp);
-        m.maxFee = fulfillFeeParams.maxFee;
-        m.startingFee = fulfillFeeParams.startingFee;
-        m.roundLength = fulfillFeeParams.roundLength;
-        m.growthRate = fulfillFeeParams.growthRate;
-        m.maxRounds = fulfillFeeParams.maxRounds;
+            // permitIntent (skip when not Permit2 path — saves ~200 gas)
+            if needsPermit2 {
+                mstore(add(mem, 0x340), minOut)
+                permitIntent := keccak256(mem, 0x360)
+            }
 
-        bytes32 swapHash = 
-            keccak256(abi.encode(s, m));
+            // swapHash with full overrides
+            mstore(add(mem, 0x160), absoluteExpiration)             // expiration → absolute
+            mstore(add(mem, 0x280), timestamp())                    // startFulfillFeeIncrease
+            swapHash := keccak256(mem, 0x340)
+            mstore(0x40, add(mem, 0x360))
+        }
 
         if (useInternalBalances) {
             oracle.internalTransferFrom(msg.sender, address(this), sellToken, sellAmt);
@@ -253,21 +258,13 @@ contract openSwapV2 is ReentrancyGuard {
             if (isEth) {
                 oracle.deposit{value: sellAmt}(address(0), sellAmt, address(this));
             } else {
-                // Bind the swapper's Permit2 sig to the full propose intent (minus sellAmt + sellToken
-                // which Permit2 already pins via permitted.token + permitted.amount).
-                bytes32 intent = keccak256(
-                    abi.encode(
-                        minOut, buyToken, minFulfillLiquidity, expiration,
-                        matcherGasComp, executorGasComp,
-                        oracleParams, slippageParams, fulfillFeeParams,
-                        useInternalBalances
-                    )
-                );
+                // permitIntent commits the user to (s_with_swapper, m_raw, minOut) — runtime-independent
+                // so the user can reproduce it off-chain at signing time.
                 oracle.depositFromPermit2(
                     sellAmt,
                     address(this),
                     msg.sender,
-                    intent,
+                    permitIntent,
                     ISignatureTransfer.PermitTransferFrom({
                         permitted: ISignatureTransfer.TokenPermissions({
                             token: sellToken,
@@ -344,7 +341,7 @@ contract openSwapV2 is ReentrancyGuard {
         oracleGame(s, preimage, timing, amount2, matcher, settlerReward);
         oracle.internalTransferFrom(matcher, address(this), buyToken, minFulfillLiquidity);
 
-        emit SwapMatched(swapId, s.reportId);
+        emit SwapMatched(swapId);
     }
 
     /**
@@ -354,6 +351,8 @@ contract openSwapV2 is ReentrancyGuard {
                After expiration: anyone can call; caller receives 20% of (matcherGasComp + executorGasComp),
                swapper receives the remaining 80% plus the settler reward.
      * @param swapId Unique identifier of swapping instance
+     * @param _swap ProposedSwap committed at propose
+     * @param preimage MatcherPreimage committed at propose
     */
     function cancelSwap(uint256 swapId, ProposedSwap calldata _swap, MatcherPreimage calldata preimage) external nonReentrant {
         bytes32 passedHash = keccak256(abi.encode(_swap, preimage));
@@ -370,7 +369,7 @@ contract openSwapV2 is ReentrancyGuard {
 
         address swapper = s.swapper;
         uint256 totalGasComp = uint256(s.matcherGasComp) + uint256(s.executorGasComp);
-        uint88 settlerReward = s.settlerReward;
+        uint96 settlerReward = s.settlerReward;
         address sellToken = s.sellToken;
         uint128 sellAmt = s.sellAmt;
 
@@ -407,27 +406,31 @@ contract openSwapV2 is ReentrancyGuard {
 
     function oracleGame(MatchedSwap memory s, MatcherPreimage memory o, IOpenOracle2.TimingBoundaries memory timing, uint128 amount2, address matcher, uint96 settlerReward) internal returns (uint256 reportId) {
 
-        IOpenOracle2.CreateReportParams memory params = IOpenOracle2.CreateReportParams({
-            escalationHalt: o.escalationHalt,
-            token1Address: s.sellToken,
-            settlerReward: settlerReward,
-            token2Address: s.buyToken,
+        IOpenOracle2.OracleGame memory params = IOpenOracle2.OracleGame({
+            currentAmount1: o.initialLiquidity,
+            currentAmount2: amount2,
+            currentReporter: matcher,
+            reportTimestamp: 0,
+            settlementTimestamp: 0,
+            token1: s.sellToken,
+            lastReportOppoTime: 0,
             settlementTime: o.settlementTime,
+            escalationHalt: o.escalationHalt,
+            protocolFeeRecipient: s.feeRecipient,
+            settlerReward: settlerReward,
+            token2: s.buyToken,
+            numReports: 0,
             disputeDelay: o.disputeDelay,
-            protocolFee: o.protocolFee,
-            callbackGasLimit: 0,
             feePercentage: 0,
             multiplier: o.multiplier,
             callbackContract: address(0),
-            protocolFeeRecipient: s.feeRecipient,
+            callbackGasLimit: 0,
+            protocolFee: o.protocolFee,
             flags: 1
         });
 
         reportId = oracle.report{value: settlerReward} (
             params,
-            o.initialLiquidity,
-            amount2,
-            matcher,
             true,
             true,
             timing
@@ -441,6 +444,7 @@ contract openSwapV2 is ReentrancyGuard {
                One bail out condition:
                     maxGameTime has passed since oracle game started → swapper and matcher are refunded initial token deposits
      * @param swapId Unique identifier of swapping instance
+     * @param _swap MatchedSwap committed at matchSwap
     */
 
     function bailOut(uint256 swapId, MatchedSwap calldata _swap) external nonReentrant {
@@ -468,6 +472,7 @@ contract openSwapV2 is ReentrancyGuard {
     }
 
     /// @notice Seeds a 1-wei sentinel on `_to`'s tempHolding slot to warm it for future credits. Caller pays the 1 wei.
+    /// @param _to Address whose tempHolding slot to seed
     function dust(address _to) external payable {
         if (msg.value != 1) revert InvalidMsgValue();
         tempHolding[_to] += 1;
@@ -476,6 +481,8 @@ contract openSwapV2 is ReentrancyGuard {
     /**
      * @notice Withdraws queued ETH gas-comp credits to `_to`. If caller != `_to`, a 1-wei
      *         sentinel is always preserved on `_to`'s slot.
+     * @param _to Recipient of the withdrawn ETH
+     * @param leaveOne If true, preserve the 1-wei sentinel on `_to`'s slot even when caller == `_to`
      */
     function withdraw(address _to, bool leaveOne) external nonReentrant {
         uint256 amount = tempHolding[_to];

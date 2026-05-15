@@ -36,4 +36,6 @@ abstract contract OpenOracleErrors {
     error InsufficientInternalAllowance();
     error NeitherTokenIsETH();
     error InvalidMsgValue();
+    error TimestampsMustBeZero();
+    error NumReportsMustBeZero();
 }

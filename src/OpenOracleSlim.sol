@@ -32,6 +32,7 @@ contract OpenOracle is OpenOracleErrors {
     uint256 internal constant MULTIPLIER_PRECISION = 100;
     address internal constant ETH_SENTINEL = address(0);
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    uint8 internal constant FLAGS_MAX = 0x0F;  // FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_ALL | FLAG_STORE_PRICE
 
     // Permit2 witness: binds the sig to (beneficiary, relayer, swapper, intent).
     bytes32 internal constant WITNESS_TYPEHASH =
@@ -39,10 +40,10 @@ contract OpenOracle is OpenOracleErrors {
     string internal constant WITNESS_TYPE_STRING =
         "Witness witness)TokenPermissions(address token,uint256 amount)Witness(address beneficiary,address relayer,address swapper,bytes32 intent)";
 
-    uint8 public constant FLAG_TIME_TYPE = 1 << 0; // = 1
-    uint8 public constant FLAG_TRACK_DISPUTES = 1 << 1; // = 2
-    uint8 public constant FLAG_STORE_ALL = 1 << 2; // = 4
-    uint8 public constant FLAG_STORE_PRICE = 1 << 3; // = 8
+    uint8 internal constant FLAG_TIME_TYPE = 1 << 0; // = 1
+    uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1; // = 2
+    uint8 internal constant FLAG_STORE_ALL = 1 << 2; // = 4
+    uint8 internal constant FLAG_STORE_PRICE = 1 << 3; // = 8
 
     bytes4 internal constant CALLBACK_SELECTOR =
         bytes4(keccak256("openOracleCallback(uint256,uint256,uint256,uint256,address,address)"));
@@ -64,27 +65,28 @@ contract OpenOracle is OpenOracleErrors {
         uint48 reportTimestamp;
     }
 
+    // which parameters are free for the caller of report() to choose
     struct OracleGame {
-        uint128 currentAmount1;
-        uint128 currentAmount2; //
-        address payable currentReporter;
-        uint48 reportTimestamp;
-        uint48 settlementTimestamp; //
-        address token1;
-        uint48 lastReportOppoTime;
-        uint48 settlementTime; //
-        uint128 escalationHalt; //
-        address protocolFeeRecipient;
-        uint96 settlerReward; //
-        address token2;
-        uint24 numReports;
-        uint24 disputeDelay;
-        uint24 feePercentage;
-        uint16 multiplier; //
-        address callbackContract;
-        uint32 callbackGasLimit;
-        uint24 protocolFee;
-        uint8 flags;
+        uint128 currentAmount1; // free
+        uint128 currentAmount2; // free
+        address currentReporter; // free
+        uint48 reportTimestamp; // set later in report but should be validated on entry
+        uint48 settlementTimestamp; // not free
+        address token1; // free
+        uint48 lastReportOppoTime; // set later in report but should be validated on entry
+        uint48 settlementTime; // free
+        uint128 escalationHalt; // free
+        address protocolFeeRecipient; // free
+        uint96 settlerReward; // free
+        address token2; // free
+        uint24 numReports; // not free
+        uint24 disputeDelay; // free
+        uint24 feePercentage; // free
+        uint16 multiplier; // free
+        address callbackContract; // free
+        uint32 callbackGasLimit; // free
+        uint24 protocolFee; // free
+        uint8 flags; // free
     }
 
     struct PreimageHelper {
@@ -101,22 +103,6 @@ contract OpenOracle is OpenOracleErrors {
         uint256 blockTimestampBound;
     }
 
-    struct CreateReportParams {
-        uint128 escalationHalt; // amount of token1 at which escalation stops but disputes can still happen
-        address token1Address; // address of token1 in the oracle report instance
-        uint96 settlerReward; // eth paid to settler in wei
-        address token2Address; // address of token2 in the oracle report instance
-        uint48 settlementTime; // report instance can settle if no disputes within this timeframe
-        uint24 disputeDelay; // time disputes must wait after every new report
-        uint24 protocolFee; // fee paid to protocolFeeRecipient. 1000 = 0.01%
-        uint32 callbackGasLimit; // gas the settlement callback must use
-        uint24 feePercentage; // fee paid to previous reporter. 1000 = 0.01%
-        uint16 multiplier; // amount by which newAmount1 must increase versus old amount1. 140 = 1.4x. 100 = no escalation.
-        address callbackContract; // contract address for settle to call back into (must implement openOracleCallback(uint256 reportId, uint256 currentAmount1, uint256 currentAmount2, uint256 settlementTimestamp, address token1, address token2))
-        address protocolFeeRecipient; // address that receives protocol fees
-        uint8 flags;
-    }
-
     // Events
     event ReportSubmitted(uint256 indexed reportId);
     event ReportDisputed(uint256 indexed reportId);
@@ -124,35 +110,37 @@ contract OpenOracle is OpenOracleErrors {
     event InternalApproval(address indexed owner, address indexed spender, address indexed token, uint256 amount);
 
     /**
-     * @notice Creates a calldata-mode report instance and submits the initial report in one call.
-     * @param params Report creation parameters
-     * @param amount2 Choose the amount of token2 that equals amount1 in value
-     * @param reporter The address that will receive tokens back when settled or disputed
-     * @param tryInternalBalance1 If true, tries to fund token1 from reporter's internal balance before pulling from msg.sender
-     * @param tryInternalBalance2 If true, tries to fund token2 from reporter's internal balance before pulling from msg.sender
+     * @notice Creates a report instance from a caller-supplied OracleGame and submits the initial
+     *         report in one call. Caller must pass reportTimestamp / lastReportOppoTime /
+     *         settlementTimestamp / numReports as zero; contract overrides reportTimestamp /
+     *         lastReportOppoTime via assembly before hashing.
+     * @param params OracleGame to commit
+     * @param tryInternalBalance1 If true, fund token1 from params.currentReporter's internal balance
+     * @param tryInternalBalance2 If true, fund token2 from params.currentReporter's internal balance
      * @param timing Optional timing bounds. If timing.blockTimestamp is zero, timing validation is skipped.
      * @return reportId The unique identifier for the created report instance
      */
     function report(
-        CreateReportParams calldata params,
-        uint128 amount1,
-        uint128 amount2,
-        address reporter,
+        OracleGame calldata params,
         bool tryInternalBalance1,
         bool tryInternalBalance2,
         TimingBoundaries calldata timing
     ) external payable returns (uint256 reportId) {
+        if (params.flags > FLAGS_MAX) revert InvalidMode();
         bool timeType = _hasFlag(params.flags, FLAG_TIME_TYPE);
         uint48 blockNumber = _getBlockNumber();
         uint48 reportTimestamp = timeType ? uint48(block.timestamp) : blockNumber;
         uint48 oppoTime = timeType ? blockNumber : uint48(block.timestamp);
-        address token1 = params.token1Address;
-        address token2 = params.token2Address;
+        address token1 = params.token1;
+        address token2 = params.token2;
         address protocolFeeRecipient = params.protocolFeeRecipient;
+        uint128 amount1 = params.currentAmount1;
+        uint128 amount2 = params.currentAmount2;
+        address reporter = params.currentReporter;
 
         if (amount1 == 0) revert InvalidAmount1();
         if (token1 == token2) revert TokensCannotBeSame();
-        if (params.settlementTime < params.disputeDelay) revert SettleVsDisputeDelayTiming();
+        if (params.settlementTime <= params.disputeDelay) revert SettleVsDisputeDelayTiming();
         if (params.feePercentage + params.protocolFee > 1e7) revert FeesTooHigh();
         if (params.multiplier < MULTIPLIER_PRECISION) revert MultiplierTooLow();
         if (timing.blockTimestamp > 0) _validateTiming(timing);
@@ -161,36 +149,26 @@ contract OpenOracle is OpenOracleErrors {
         if (msg.value > params.settlerReward && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) {
             revert NeitherTokenIsETH();
         }
-
+        if (params.settlementTimestamp != 0) revert TimestampsMustBeZero();
+        if (params.numReports != 0) revert NumReportsMustBeZero();
+        if (params.reportTimestamp != 0 || params.lastReportOppoTime != 0) revert TimestampsMustBeZero(); // cheap but is it actually needed
+        
         reportId = nextReportId++;
-        OracleGame memory oracle;
 
-        oracle.token1 = token1;
-        oracle.token2 = token2;
-        oracle.feePercentage = params.feePercentage;
-        oracle.multiplier = params.multiplier;
-        oracle.settlementTime = params.settlementTime;
-        oracle.escalationHalt = params.escalationHalt;
-        oracle.disputeDelay = params.disputeDelay;
-        oracle.protocolFee = params.protocolFee;
-        oracle.settlerReward = params.settlerReward;
-        oracle.callbackContract = params.callbackContract;
-        oracle.callbackGasLimit = params.callbackGasLimit;
-        oracle.protocolFeeRecipient = protocolFeeRecipient;
-        oracle.currentAmount1 = amount1;
-        oracle.currentAmount2 = amount2;
-        oracle.currentReporter = payable(reporter);
-        oracle.reportTimestamp = reportTimestamp;
-        oracle.lastReportOppoTime = oppoTime;
-        oracle.flags = params.flags;
-
-        if (_hasFlag(oracle.flags, FLAG_TRACK_DISPUTES)) {
+        bool trackDisputes = _hasFlag(params.flags, FLAG_TRACK_DISPUTES);
+        if (trackDisputes) {
             DisputeRecord storage initialRecord = disputeHistory[reportId][0];
             initialRecord.amount1 = amount1;
             initialRecord.amount2 = amount2;
             initialRecord.reportTimestamp = reportTimestamp;
-            oracle.numReports = 1;
         }
+
+        // Force typed calldata loads for fields only used by later dispute/settle paths.
+        // The raw calldata hash below relies on dirty-calldata regression tests for the
+        // exact deployment compiler/optimizer/EVM target.
+        uint128 escalationHalt = params.escalationHalt;
+        address callbackContract = params.callbackContract;
+        uint32 callbackGasLimit = params.callbackGasLimit;
 
         PreimageHelper memory helper = PreimageHelper({
             reportId: reportId,
@@ -199,7 +177,29 @@ contract OpenOracle is OpenOracleErrors {
             blockNumber: blockNumber
         });
 
-        bytes32 stateHash = _hashOracle(oracle, helper);
+        // Hash via calldatacopy + mstore overrides + mcopy of helper. Skips Solidity's
+        // memory-build of OracleGame (~10k gas vs naive `_hashOracle(params, helper)`).
+        // Layout (matches abi.encode(OracleGame, PreimageHelper)):
+        //   mem + 0x000 .. 0x280   OracleGame (20 × 32 bytes)
+        //   mem + 0x280 .. 0x300   PreimageHelper (4 × 32 bytes)
+        // Override offsets within OracleGame (slot N starts at N*0x20):
+        //   0x060   reportTimestamp     (slot 3, uint48)
+        //   0x0C0   lastReportOppoTime  (slot 6, uint48)
+        //   0x180   numReports          (slot 12, uint24; only when FLAG_TRACK_DISPUTES)
+        bytes32 stateHash;
+        assembly ("memory-safe") {
+            let mem := mload(0x40)
+            calldatacopy(mem, params, 0x280)
+            pop(escalationHalt)
+            pop(callbackContract)
+            pop(callbackGasLimit)
+            mstore(add(mem, 0x60), reportTimestamp)
+            mstore(add(mem, 0xC0), oppoTime)
+            if trackDisputes { mstore(add(mem, 0x180), 1) }
+            mcopy(add(mem, 0x280), helper, 0x80)
+            stateHash := keccak256(mem, 0x300)
+            mstore(0x40, add(mem, 0x300))
+        }
         oracleGame[reportId] = stateHash;
 
         if (params.protocolFee > 0 && protocolFeeRecipient != address(0)) {
@@ -219,6 +219,19 @@ contract OpenOracle is OpenOracleErrors {
         emit ReportSubmitted(reportId);
     }
 
+    /**
+     * @notice Replaces the current report on a report instance with new amounts.
+     * @param reportId The report instance to dispute
+     * @param tokenToSwap Either token1 or token2; selects which side the disputer is buying
+     * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100, capped at escalationHalt (or oldAmount1 + 1 once escalation has halted)
+     * @param newAmount2 New token2 amount proposed by the disputer
+     * @param disputer Address recorded as the new currentReporter and credited for any ETH excess
+     * @param tryInternalBalance1 If true, draw token1 contributions from disputer's internal balance before pulling externally
+     * @param tryInternalBalance2 If true, draw token2 contributions from disputer's internal balance before pulling externally
+     * @param params OracleGame matching the current stored state hash
+     * @param helper PreimageHelper matching the current stored state hash
+     * @param timing Optional timing bounds; validation is skipped when timing.blockTimestamp is zero
+     */
     function dispute(
         uint256 reportId,
         address tokenToSwap,
@@ -282,7 +295,7 @@ contract OpenOracle is OpenOracleErrors {
         {
             oracle.currentAmount1 = newAmount1;
             oracle.currentAmount2 = newAmount2;
-            oracle.currentReporter = payable(disputer);
+            oracle.currentReporter = disputer;
             oracle.reportTimestamp = currentTime;
             oracle.lastReportOppoTime = oppoTime;
 
@@ -376,6 +389,8 @@ contract OpenOracle is OpenOracleErrors {
     /**
      * @notice Settles a report after the settlement time has elapsed
      * @param reportId The unique identifier for the report to settle
+     * @param params OracleGame matching the current stored state hash
+     * @param helper PreimageHelper matching the current stored state hash
      */
     function settle(uint256 reportId, OracleGame calldata params, PreimageHelper calldata helper) external {
         OracleGame memory oracle = params;
@@ -392,7 +407,7 @@ contract OpenOracle is OpenOracleErrors {
         uint256 settlerReward = oracle.settlerReward;
         uint128 currentAmount1 = oracle.currentAmount1;
         uint128 currentAmount2 = oracle.currentAmount2;
-        address payable currentReporter = oracle.currentReporter;
+        address currentReporter = oracle.currentReporter;
         address token1 = oracle.token1;
         address token2 = oracle.token2;
         address callbackContract = oracle.callbackContract;
@@ -540,7 +555,7 @@ contract OpenOracle is OpenOracleErrors {
 
     /**
      * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
-     *         On push failure (ETH call revert / ERC20 non-standard return / OOG within 80k gas),
+     *         On push failure (ETH call revert / ERC20 non-standard return / ETH xfer OOG within 50k gas),
      *         falls back to crediting `to`'s internal balance instead.
      * @dev Caller's slot preserves the 1-unit sentinel.
      */
