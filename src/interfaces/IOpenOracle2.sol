@@ -22,7 +22,7 @@ interface IOpenOracle2 {
     struct OracleGame {
         uint128 currentAmount1;
         uint128 currentAmount2;
-        address payable currentReporter;
+        address currentReporter;
         uint48 reportTimestamp;
         uint48 settlementTimestamp;
         address token1;
@@ -56,22 +56,6 @@ interface IOpenOracle2 {
         uint256 blockTimestampBound;
     }
 
-    struct CreateReportParams {
-        uint128 escalationHalt;
-        address token1Address;
-        uint96 settlerReward;
-        address token2Address;
-        uint48 settlementTime;
-        uint24 disputeDelay;
-        uint24 protocolFee;
-        uint32 callbackGasLimit;
-        uint24 feePercentage;
-        uint16 multiplier;
-        address callbackContract;
-        address protocolFeeRecipient;
-        uint8 flags;
-    }
-
     /* ─── Events ────────────────────────────────────────────── */
 
     event ReportSubmitted(uint256 indexed reportId);
@@ -83,13 +67,6 @@ interface IOpenOracle2 {
         address indexed token,
         uint256 amount
     );
-
-    /* ─── Flag constants ────────────────────────────────────── */
-
-    function FLAG_TIME_TYPE() external view returns (uint8);
-    function FLAG_TRACK_DISPUTES() external view returns (uint8);
-    function FLAG_STORE_ALL() external view returns (uint8);
-    function FLAG_STORE_PRICE() external view returns (uint8);
 
     /* ─── State accessors (public mapping/var getters) ──────── */
 
@@ -107,7 +84,7 @@ interface IOpenOracle2 {
         returns (
             uint128 currentAmount1,
             uint128 currentAmount2,
-            address payable currentReporter,
+            address currentReporter,
             uint48 reportTimestamp,
             uint48 settlementTimestamp,
             address token1,
@@ -134,21 +111,18 @@ interface IOpenOracle2 {
     /* ─── Lifecycle: report → dispute → settle ───────────────── */
 
     /**
-     * @notice Creates a calldata-mode report instance and submits the initial report in one call.
-     * @param params Report creation parameters
-     * @param amount1 Reporter's initial commit of token1
-     * @param amount2 Reporter's initial commit of token2
-     * @param reporter Address that owns the report position (receives payouts on settle/dispute)
-     * @param tryInternalBalance1 If true, fund token1 from reporter's internal balance before pulling externally
-     * @param tryInternalBalance2 If true, fund token2 from reporter's internal balance before pulling externally
+     * @notice Creates a report instance from a caller-supplied OracleGame and submits the initial
+     *         report in one call. Contract overrides reportTimestamp / lastReportOppoTime (and
+     *         numReports when FLAG_TRACK_DISPUTES is set) before hashing.
+     * @param params OracleGame for the new report. Must have reportTimestamp, lastReportOppoTime,
+     *               settlementTimestamp, and numReports set to zero — contract enforces.
+     * @param tryInternalBalance1 If true, fund token1 from params.currentReporter's internal balance.
+     * @param tryInternalBalance2 If true, fund token2 from params.currentReporter's internal balance.
      * @param timing Optional timing bounds. If timing.blockTimestamp is zero, timing validation is skipped.
      * @return reportId The unique identifier for the created report instance
      */
     function report(
-        CreateReportParams calldata params,
-        uint128 amount1,
-        uint128 amount2,
-        address reporter,
+        OracleGame calldata params,
         bool tryInternalBalance1,
         bool tryInternalBalance2,
         TimingBoundaries calldata timing
