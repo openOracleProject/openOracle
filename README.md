@@ -12,10 +12,10 @@ The latest prototype `src/OpenOracleSlim.sol` uses a single state hash with stat
 
 | Path | Oracle Slim |
 | --- | ---: |
-| `report`  | 69k |
-| `dispute` | 60k |
-| `settle` | 48k |
-| **Lifecycle total** | **178k** |
+| `report`  | 68.5k |
+| `dispute` | 59.2k |
+| `settle` | 48.1k |
+| **Lifecycle total** | **175.8k** |
 
 The swapping application `src/OpenSwapSlim.sol` uses a propose -> match -> execute flow, where the match creates an oracle report and execution uses the final oracle price. openSwap matching uses internal oracle balances for swap liquidity as well. Swappers can either use internal oracle game balances for the whole flow or transfer in on swap and receive on execution. 
 
