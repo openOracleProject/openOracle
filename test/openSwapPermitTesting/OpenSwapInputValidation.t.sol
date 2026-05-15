@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 contract OpenSwapInputValidationTest is SlimTestBase {
     function setUp() public {
@@ -9,13 +10,13 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function _bareCall(address sellTok, uint128 sellAmt, uint128 minOut, address buyTok, uint128 minFulfill,
-        openSwapV2.OracleParams memory op, openSwapV2.FulfillFeeParams memory ff) internal
+        SwapCompat.OracleParams memory op, openSwapV2.FulfillFeeParams memory ff) internal
     {
         proposeTs = uint48(block.timestamp);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + op.settlerReward;
         // For ETH-sell case the test caller adds sellAmt to msg.value before this fn; not used here
         vm.prank(swapper);
-        swapContract.propose{value: ethToSend}(
+        SwapCompat.proposeRaw(swapContract, ethToSend, 
             sellAmt, sellTok, minOut, buyTok, minFulfill,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             op, _defaultSlippage(), ff, _emptyPermit2(), false
@@ -68,7 +69,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_SettlementTimeZero_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.settlementTime = 0;
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -76,7 +77,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_InitialLiquidityZero_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.initialLiquidity = 0;
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -84,7 +85,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_DisputeDelayGteSettlementTime_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.disputeDelay = uint24(op.settlementTime); // >= → revert
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -92,7 +93,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_EscalationHaltLtInitialLiquidity_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.escalationHalt = op.initialLiquidity - 1;
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -100,7 +101,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_SettlementTimeTooLong_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.settlementTime = 4 * 60 * 60 + 1; // > 4 hours
         op.maxGameTime = uint24(op.settlementTime) * 20;
         vm.expectRevert();
@@ -109,7 +110,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_ProtocolFeeTooHigh_Reverts() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.protocolFee = uint24(1e7);
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,

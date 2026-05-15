@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 import "../utils/MockPermit2.sol";
 
 /// @notice Lock down that useInternalBalances is part of the Permit2 witness binding.
@@ -16,24 +17,44 @@ contract OpenSwapPermit2WitnessTest is SlimTestBase {
     }
 
     function _expectedWitness(bool useInternalBalances) internal view returns (bytes32) {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        // Build the ProposedSwap and MatcherPreimage exactly as the contract's assembly does
+        // when computing permitIntent:
+        //   - s with swapper = msg.sender (this test's `swapper` EOA), expiration = raw offset
+        //   - m with startFulfillFeeIncrease = 0
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         openSwapV2.SlippageParams memory slip = _defaultSlippage();
         openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
 
-        bytes32 intent = keccak256(
-            abi.encode(
-                MIN_OUT,
-                address(buyToken),
-                MIN_FULFILL_LIQUIDITY,
-                uint48(1 hours),
-                MATCHER_GAS_COMP,
-                EXECUTOR_GAS_COMP,
-                op,
-                slip,
-                ff,
-                useInternalBalances
-            )
-        );
+        openSwapV2.ProposedSwap memory s;
+        s.sellAmt = SELL_AMT;
+        s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
+        s.settlerReward = op.settlerReward;
+        s.maxGameTime = op.maxGameTime;
+        s.blocksPerSecond = op.blocksPerSecond;
+        s.buyToken = address(buyToken);
+        s.matcherGasComp = MATCHER_GAS_COMP;
+        s.sellToken = address(sellToken);
+        s.swapper = swapper; // contract-overridden to msg.sender
+        s.executorGasComp = EXECUTOR_GAS_COMP;
+        s.useInternalBalances = useInternalBalances;
+        s.expiration = uint48(1 hours); // raw offset; NOT the absolute-time override
+        s.slippageParams = slip;
+
+        openSwapV2.MatcherPreimage memory m;
+        m.initialLiquidity = op.initialLiquidity;
+        m.escalationHalt = op.escalationHalt;
+        m.settlementTime = op.settlementTime;
+        m.disputeDelay = op.disputeDelay;
+        m.protocolFee = op.protocolFee;
+        m.multiplier = op.multiplier;
+        // m.startFulfillFeeIncrease = 0 (caller-signed value, contract-overridden after hash)
+        m.maxFee = ff.maxFee;
+        m.startingFee = ff.startingFee;
+        m.roundLength = ff.roundLength;
+        m.growthRate = ff.growthRate;
+        m.maxRounds = ff.maxRounds;
+
+        bytes32 intent = keccak256(abi.encode(s, m, MIN_OUT));
 
         bytes32 WITNESS_TYPEHASH = keccak256(
             "Witness(address beneficiary,address relayer,address swapper,bytes32 intent)"

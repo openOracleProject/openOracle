@@ -33,7 +33,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     function testGasComp_ZeroIsValid() public {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
-        uint256 swapId = swapContract.propose{value: SETTLER_REWARD}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), 0, 0,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
@@ -44,7 +44,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     function testGasComp_HighValueIsValid() public {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
-        uint256 swapId = swapContract.propose{value: 2 ether + SETTLER_REWARD}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, 2 ether + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), 1 ether, 1 ether,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
@@ -110,7 +110,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.InvalidMsgValue.selector);
-        swapContract.propose{value: MATCHER_GAS_COMP}( // missing executor + settler
+        SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP,  // missing executor + settler
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false

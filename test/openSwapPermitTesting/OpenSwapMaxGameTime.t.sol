@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 contract OpenSwapMaxGameTimeTest is SlimTestBase {
     address internal randomUser = address(0x5005);
@@ -76,13 +77,13 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
     }
 
     function testMaxGameTime_ValidationOnPropose_TooLow() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.maxGameTime = uint24(SETTLEMENT_TIME) * 10; // less than settlementTime * 20 → revert
         proposeTs = uint48(block.timestamp);
 
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.InvalidOracleParams.selector);
-        swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
@@ -90,13 +91,13 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
     }
 
     function testMaxGameTime_ValidationOnPropose_TooHigh() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.maxGameTime = uint24(604801); // exceeds 7 days
         proposeTs = uint48(block.timestamp);
 
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.InvalidOracleParams.selector);
-        swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false

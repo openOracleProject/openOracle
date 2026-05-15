@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 /// @notice execute() timing edge cases:
 ///         1. Execute against a mature-but-unsettled oracle (no oracle.settle called)
@@ -228,7 +229,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         s.executorGasComp = egc;
         s.useInternalBalances = false;
         openSwapV2.MatcherPreimage memory m;
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         m.initialLiquidity = op.initialLiquidity;
         m.escalationHalt = op.escalationHalt;
         m.settlementTime = op.settlementTime;
@@ -295,10 +296,11 @@ contract ReentrantSwapper {
     function doPropose(
         uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity,
         uint48 expiration, uint96 matcherGasComp, uint96 executorGasComp,
-        openSwapV2.OracleParams calldata op, openSwapV2.SlippageParams calldata slip,
+        SwapCompat.OracleParams calldata op, openSwapV2.SlippageParams calldata slip,
         openSwapV2.FulfillFeeParams calldata ff, openSwapV2.Permit2Params calldata pp, bool useInternalBalances
     ) external payable returns (uint256) {
-        return sc.propose{value: msg.value}(
+        return SwapCompat.proposeRaw(
+            sc, msg.value,
             sellAmt, sellToken, minOut, buyToken, minFulfillLiquidity,
             expiration, matcherGasComp, executorGasComp, op, slip, ff, pp, useInternalBalances
         );

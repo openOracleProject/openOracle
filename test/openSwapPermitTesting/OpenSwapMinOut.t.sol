@@ -14,7 +14,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
-        swapId = swapContract.propose{value: ethToSend}(
+        swapId = SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT,
             address(sellToken),
             minOut,
@@ -60,7 +60,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
     function testMinOut_ZeroReverts() public {
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.ZeroAmount.selector);
-        swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT,
             address(sellToken),
             0,
@@ -82,7 +82,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
         // and the max fulfillment fee. Setting minOut absurdly high triggers the check.
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.MinOutInconsistent.selector);
-        swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT,
             address(sellToken),
             type(uint128).max, // unreachable minOut

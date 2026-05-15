@@ -41,7 +41,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 nextId = swapContract.nextSwapId();
         vm.prank(other);
         vm.expectRevert(OpenOracleErrors.InsufficientInternalAllowance.selector);
-        swapContract.propose{value: ethToSend}(
+        SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), true
@@ -63,7 +63,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 nextId = swapContract.nextSwapId();
         vm.prank(other);
         vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
-        swapContract.propose{value: ethToSend}(
+        SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), true
@@ -94,7 +94,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         proposeTs = uint48(block.timestamp);
         proposeUseInternal = true;
         vm.prank(tightSwapper);
-        uint256 swapId = swapContract.propose{value: ethToSend}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), true
@@ -123,7 +123,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 openSwapInternalEthBefore = _spendable(address(swapContract), address(0));
 
         vm.prank(swapper);
-        uint256 swapId = swapContract.propose{value: extra}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, extra, 
             ethSell, address(0), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), true
@@ -142,7 +142,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 extra = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         vm.prank(swapper);
         vm.expectRevert(openSwapV2.InvalidMsgValue.selector);
-        swapContract.propose{value: ethSell + extra}(
+        SwapCompat.proposeRaw(swapContract, ethSell + extra, 
             ethSell, address(0), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), true

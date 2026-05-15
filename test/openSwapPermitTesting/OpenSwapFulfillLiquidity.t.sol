@@ -19,7 +19,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
-        swapId = swapContract.propose{value: ethToSend}(
+        swapId = SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), minFulfill,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false

@@ -92,7 +92,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
     function _proposeWithMinOut(uint128 minOut) internal returns (uint256) {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
-        return swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        return SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), minOut, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             _defaultOracleParams(), _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false

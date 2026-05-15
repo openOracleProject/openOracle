@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 /// @notice execute() can auto-settle when the oracle game has passed settlementTime
 ///         but settle() has not yet been called. Locks in the unified-settle
@@ -85,12 +86,12 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         proposeTs = uint48(block.timestamp);
         proposeUseInternal = false;
 
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.settlerReward = 0;
 
         uint256 ethToSend = uint256(MATCHER_GAS_COMP) + uint256(EXECUTOR_GAS_COMP); // no settler reward
         vm.prank(swapper);
-        uint256 swapId = swapContract.propose{value: ethToSend}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false

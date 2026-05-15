@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 import "../../src/oracleFeeReceiver.sol";
 
 contract OpenSwapProtocolFeesTest is SlimTestBase {
@@ -16,8 +17,8 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         buyToken.approve(address(oracle), type(uint256).max);
     }
 
-    function _defaultOracleParams() internal view override returns (openSwapV2.OracleParams memory) {
-        openSwapV2.OracleParams memory p = openSwapV2.OracleParams({
+    function _defaultOracleParams() internal view override returns (SwapCompat.OracleParams memory) {
+        SwapCompat.OracleParams memory p = SwapCompat.OracleParams({
             initialLiquidity: INITIAL_LIQUIDITY,
             escalationHalt: SELL_AMT * 2,
             settlerReward: SETTLER_REWARD,
@@ -52,11 +53,11 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     }
 
     function testProtocolFees_FeeReceiverNotDeployedWhenZero() public {
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.protocolFee = 0;
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
-        uint256 swapId = swapContract.propose{value: MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD}(
+        uint256 swapId = SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
             op, _defaultSlippage(), _defaultFulfillFee(), _emptyPermit2(), false
@@ -361,7 +362,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     ) internal returns (uint256 swapId) {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
-        swapId = swapContract.propose{value: uint256(mgc) + uint256(egc) + SETTLER_REWARD}(
+        swapId = SwapCompat.proposeRaw(swapContract, uint256(mgc) + uint256(egc) + SETTLER_REWARD, 
             sellAmt, address(sellToken), 1, address(0), minFulfill,
             uint48(1 hours), mgc, egc,
             _defaultOracleParams(), slip, _defaultFulfillFee(), _emptyPermit2(), false
@@ -388,7 +389,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         s.matcherGasComp = mgc;
         s.executorGasComp = egc;
 
-        openSwapV2.OracleParams memory op = _defaultOracleParams();
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
         m.initialLiquidity = op.initialLiquidity;
         m.escalationHalt = op.escalationHalt;
         m.settlementTime = op.settlementTime;
