@@ -603,7 +603,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         uint256 b = token1.balanceOf(bob);
 
         vm.prank(bob);
-        oracle.withdraw(address(token1));
+        oracle.withdraw(address(token1), type(uint256).max);
         // Withdraw leaves 1 sentinel; bob recovers the full deposit.
         assertEq(token1.balanceOf(bob), b + 10e18, "full deposit withdrawn");
         assertEq(_heldTokens(bob, address(token1)), 1, "1 sentinel left");
@@ -611,7 +611,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         // Second withdrawal: balance == 1 -> no-op.
         b = token1.balanceOf(bob);
         vm.prank(bob);
-        oracle.withdraw(address(token1));
+        oracle.withdraw(address(token1), type(uint256).max);
         assertEq(token1.balanceOf(bob), b, "no further withdrawal");
         assertEq(_heldTokens(bob, address(token1)), 1, "sentinel still 1");
     }
@@ -642,14 +642,14 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
 
         uint256 bobEthBefore = bob.balance;
         vm.prank(bob);
-        uint256 amt = oracle.withdraw(address(0));
+        uint256 amt = oracle.withdraw(address(0), type(uint256).max);
         assertEq(amt, 1 ether, "withdrew full deposit (sentinel virtual)");
         assertEq(bob.balance, bobEthBefore + 1 ether, "balance reflects full deposit");
         assertEq(oracle.tokenHolder(bob, address(0)), 1, "1 wei sentinel left");
 
         // Second call is a no-op.
         vm.prank(bob);
-        amt = oracle.withdraw(address(0));
+        amt = oracle.withdraw(address(0), type(uint256).max);
         assertEq(amt, 0, "no further withdrawal");
     }
 

@@ -194,7 +194,7 @@ contract OpenOracleGGBlacklistTest is Test {
         // silent re-credit fallback — bob must wait until unblacklisted.
         vm.prank(bob);
         vm.expectRevert();
-        oracle.withdraw(address(token1));
+        oracle.withdraw(address(token1), type(uint256).max);
 
         // Settle and unblacklist; bob can now withdraw.
         vm.warp(block.timestamp + 300);
@@ -205,7 +205,7 @@ contract OpenOracleGGBlacklistTest is Test {
 
         uint256 bobBefore = token1.balanceOf(bob);
         vm.prank(bob);
-        oracle.withdraw(address(token1));
+        oracle.withdraw(address(token1), type(uint256).max);
         // Withdraw leaves 1 unit dust.
         assertEq(token1.balanceOf(bob), bobBefore + expectedBob - 1, "bob withdrew minus dust");
         assertEq(oracle.tokenHolder(bob, address(token1)), 1, "dust sentinel left");
@@ -235,7 +235,7 @@ contract OpenOracleGGBlacklistTest is Test {
         token2.unblacklist(bob);
         uint256 bobBefore = token2.balanceOf(bob);
         vm.prank(bob);
-        oracle.withdraw(address(token2));
+        oracle.withdraw(address(token2), type(uint256).max);
         assertEq(token2.balanceOf(bob), bobBefore + expectedBobInternal - 1, "bob withdrew minus dust");
     }
 
@@ -278,9 +278,9 @@ contract OpenOracleGGBlacklistTest is Test {
         uint256 b1 = token1.balanceOf(bob);
         uint256 b2 = token2.balanceOf(bob);
         vm.prank(bob);
-        oracle.withdraw(address(token1));
+        oracle.withdraw(address(token1), type(uint256).max);
         vm.prank(bob);
-        oracle.withdraw(address(token2));
+        oracle.withdraw(address(token2), type(uint256).max);
         assertEq(token1.balanceOf(bob), b1 + 1e18, "bob recovered token1 (sentinel left)");
         assertEq(token2.balanceOf(bob), b2 + 2000e18, "bob recovered token2 (sentinel left)");
     }
