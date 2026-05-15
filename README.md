@@ -19,7 +19,7 @@ The latest prototype `src/OpenOracleSlim.sol` uses a single state hash with stat
 
 The swapping application `src/OpenSwapSlim.sol` uses a propose -> match -> execute flow, where the match creates an oracle report and execution uses the final oracle price. openSwap matching uses internal oracle balances for swap liquidity as well. Swappers can either use internal oracle game balances for the whole flow or transfer in on swap and receive on execution. 
 
-Tested with the external transfers for the swapper but internal for matcher (ETH in from swapper during propose, matcher puts up USDC, USDC out to swapper on execute, ETH to matcher internally):
+Tested with the external transfers for the swapper but internal for matcher (ETH in from swapper during propose, matcher puts up USDC, USDC out to swapper on execute, ETH to matcher internally) below. Execute handles the oracle settle.
 
 | Path | Swap Slim |
 | --- | ---: |
