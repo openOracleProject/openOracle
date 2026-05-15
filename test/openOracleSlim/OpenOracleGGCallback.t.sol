@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 // Callback contracts with controllable behavior.
@@ -51,10 +52,10 @@ contract ReporterCallback {
 
     receive() external payable {}
 
-    function fundOracleReport(Slim.CreateReportParams calldata p, uint128 amount1, uint128 amount2) external {
+    function fundOracleReport(CompatTypes.CreateReportParams calldata p, uint128 amount1, uint128 amount2) external {
         IERC20Like(p.token1Address).approve(address(oracle), type(uint256).max);
         IERC20Like(p.token2Address).approve(address(oracle), type(uint256).max);
-        lastReportId = oracle.report{value: p.settlerReward}(
+        lastReportId = CompatTypes.reportRaw(oracle, p.settlerReward,
             p, amount1, amount2, address(this), false, false,
             Slim.TimingBoundaries({blockNumber: 0, blockNumberBound: 0, blockTimestamp: 0, blockTimestampBound: 0})
         );
@@ -158,7 +159,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
     function _paramsWithCallback(address cb, uint32 gasLimit)
         internal
         view
-        returns (Slim.CreateReportParams memory p)
+        returns (CompatTypes.CreateReportParams memory p)
     {
         p = _defaultParams();
         p.callbackContract = cb;
@@ -169,7 +170,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
     // Successful callback: state commits
     // -------------------------------------------------------------------------
     function testCallback_Success_CommitsState() public {
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -189,7 +190,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
     // Reverting callback (enough gas): swallowed, settlement still commits
     // -------------------------------------------------------------------------
     function testCallback_Revert_Swallowed_SettlementCommits() public {
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(revertingCb), 100_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(revertingCb), 100_000);
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -213,7 +214,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
     function testCallback_InsufficientGas_RevertsWithInvalidGasLimit() public {
         // Callback that burns all forwarded gas. Ample callbackGasLimit so
         // when the call returns, gasleft < callbackGasLimit/63 triggers revert.
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(guzzlerCb), 1_000_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(guzzlerCb), 1_000_000);
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -261,7 +262,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
         uint128 amount1 = 1e18;
         uint128 amount2 = 2000e18;
 
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
         assertEq(p.flags & FLAG_STORE_PRICE, 0, "STORE_PRICE flag is OFF");
 
         vm.prank(alice);
@@ -295,7 +296,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
         // Point callbackContract at the actual token1 contract.
         // The callback would have to match `openOracleCallback(...)` selector — token1
         // doesn't have that function — call reverts inside token1, settle swallows it.
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(token1), 200_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(token1), 200_000);
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -322,7 +323,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
         ReporterCallback cb = new ReporterCallback(oracle);
 
         // cb is BOTH the reporter and the callbackContract
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(cb), 200_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(cb), 200_000);
 
         // Fund cb's external balances and approve, so cb can fund the report
         token1.transfer(address(cb), 10e18);
@@ -344,7 +345,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
     // Callback receives post-dispute currentAmount1/currentAmount2 (not the original report).
     // -------------------------------------------------------------------------
     function testCallback_FinalRatio_AfterDispute() public {
-        Slim.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
+        CompatTypes.CreateReportParams memory p = _paramsWithCallback(address(successCb), 200_000);
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);

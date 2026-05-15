@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 // Calldata-mode is the only mode in OpenOracleSlim. These tests exercise:
@@ -90,7 +91,7 @@ contract OpenOracleGGCalldataModeTest is BaseGGTest {
     }
 
     function testCalldataMode_TrackDisputes() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags |= FLAG_TRACK_DISPUTES;
 
         vm.prank(alice);

@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/Vm.sol";
 import {OpenOracle as Slim} from "../../src/OpenOracleSlim.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 
 // Shared base for OpenOracleSlim behavioral tests.
 // OpenOracleSlim is calldata-mode-only: there's a single `report()` entry that
@@ -39,6 +40,10 @@ abstract contract BaseGGTest is Test {
         Slim.OracleGame game;
         Slim.PreimageHelper helper;
     }
+
+    // CompatTypes.CreateReportParams type alias — defined in CompatTypes for shared reuse with
+    // standalone tests that don't inherit BaseGGTest.
+    // (Use CompatTypes.CompatTypes.CreateReportParams or import CompatTypes if outside this contract.)
 
     function setUp() public virtual {
         oracle = new Slim();
@@ -86,8 +91,8 @@ abstract contract BaseGGTest is Test {
     }
 
     // Default params for ERC20-pair, time-typed reports with no fancy flags.
-    function _defaultParams() internal view returns (Slim.CreateReportParams memory) {
-        return Slim.CreateReportParams({
+    function _defaultParams() internal view returns (CompatTypes.CreateReportParams memory) {
+        return CompatTypes.CreateReportParams({
             escalationHalt: 10e18,
             settlerReward: 0.001 ether,
             token1Address: address(token1),
@@ -116,7 +121,7 @@ abstract contract BaseGGTest is Test {
     // Build the OracleGame struct as it exists immediately after `report()`.
     // Caller provides the (reportTimestamp, oppoTime) captured at report time.
     function _gameAfterReport(
-        Slim.CreateReportParams memory params,
+        CompatTypes.CreateReportParams memory params,
         uint128 amount1,
         uint128 amount2,
         address reporter,
@@ -138,7 +143,7 @@ abstract contract BaseGGTest is Test {
         g.flags = params.flags;
         g.currentAmount1 = amount1;
         g.currentAmount2 = amount2;
-        g.currentReporter = payable(reporter);
+        g.currentReporter = reporter;
         g.reportTimestamp = reportTimestamp;
         g.lastReportOppoTime = oppoTime;
         if ((params.flags & FLAG_TRACK_DISPUTES) != 0) {
@@ -159,7 +164,7 @@ abstract contract BaseGGTest is Test {
         g = prev;
         g.currentAmount1 = newAmount1;
         g.currentAmount2 = newAmount2;
-        g.currentReporter = payable(disputer);
+        g.currentReporter = disputer;
         g.reportTimestamp = currentTime;
         g.lastReportOppoTime = oppoTime;
         if ((g.flags & FLAG_TRACK_DISPUTES) != 0 && g.numReports < type(uint24).max) {
@@ -178,7 +183,7 @@ abstract contract BaseGGTest is Test {
     }
 
     // Compute the ETH side amount that msg.value must cover (in addition to settlerReward).
-    function _ethSide(Slim.CreateReportParams memory params, uint128 amount1, uint128 amount2)
+    function _ethSide(CompatTypes.CreateReportParams memory params, uint128 amount1, uint128 amount2)
         internal
         pure
         returns (uint256)
@@ -195,9 +200,28 @@ abstract contract BaseGGTest is Test {
         oppoTime = timeType ? uint48(block.number) : uint48(block.timestamp);
     }
 
+    // Mirrors the pre-hash-refactor oracle.report() signature for tests written before the
+    // OracleGame-calldata refactor. Delegates to CompatTypes.reportRaw().
+    function _oracleReport(
+        uint256 value,
+        CompatTypes.CreateReportParams memory params,
+        uint128 amount1,
+        uint128 amount2,
+        address reporter,
+        bool tib1,
+        bool tib2,
+        Slim.TimingBoundaries memory timing
+    ) internal returns (uint256 reportId) {
+        return CompatTypes.reportRaw(oracle, value, params, amount1, amount2, reporter, tib1, tib2, timing);
+    }
+
     // Wrapper: call report(), capture preimage. msg.sender is the caller (or pranked).
+    // Translates the convenience CompatTypes.CreateReportParams + amounts + reporter into the new
+    // oracle.report's OracleGame-calldata input. Reportable-by-contract fields
+    // (reportTimestamp / lastReportOppoTime / settlementTimestamp / numReports) are left zero
+    // — oracle.report validates and overrides them.
     function _report(
-        Slim.CreateReportParams memory params,
+        CompatTypes.CreateReportParams memory params,
         uint128 amount1,
         uint128 amount2,
         address reporter,
@@ -210,8 +234,26 @@ abstract contract BaseGGTest is Test {
         (uint48 rts, uint48 oppo) = _timestamps(params.flags);
         uint256 value = uint256(params.settlerReward) + _ethSide(params, amount1, amount2);
 
-        ctx.reportId =
-            oracle.report{value: value}(params, amount1, amount2, reporter, tib1, tib2, _emptyTiming());
+        Slim.OracleGame memory input;
+        input.token1 = params.token1Address;
+        input.token2 = params.token2Address;
+        input.feePercentage = params.feePercentage;
+        input.multiplier = params.multiplier;
+        input.settlementTime = params.settlementTime;
+        input.escalationHalt = params.escalationHalt;
+        input.disputeDelay = params.disputeDelay;
+        input.protocolFee = params.protocolFee;
+        input.settlerReward = params.settlerReward;
+        input.callbackContract = params.callbackContract;
+        input.callbackGasLimit = params.callbackGasLimit;
+        input.protocolFeeRecipient = params.protocolFeeRecipient;
+        input.flags = params.flags;
+        input.currentAmount1 = amount1;
+        input.currentAmount2 = amount2;
+        input.currentReporter = reporter;
+        // reportTimestamp / lastReportOppoTime / settlementTimestamp / numReports = 0
+
+        ctx.reportId = oracle.report{value: value}(input, tib1, tib2, _emptyTiming());
 
         ctx.game = _gameAfterReport(params, amount1, amount2, reporter, rts, oppo);
         ctx.helper = Slim.PreimageHelper({
@@ -223,7 +265,7 @@ abstract contract BaseGGTest is Test {
     }
 
     // Convenience: reporter = _oracleCaller().
-    function _report(Slim.CreateReportParams memory params, uint128 amount1, uint128 amount2, bool tib1, bool tib2)
+    function _report(CompatTypes.CreateReportParams memory params, uint128 amount1, uint128 amount2, bool tib1, bool tib2)
         internal
         returns (ReportContext memory)
     {

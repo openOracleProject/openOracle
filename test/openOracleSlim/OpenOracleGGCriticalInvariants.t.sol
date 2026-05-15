@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import "forge-std/StdInvariant.sol";
 import "forge-std/Vm.sol";
 
@@ -89,8 +90,8 @@ contract InvariantHandler {
 
     function _emptyTiming() internal pure returns (Slim.TimingBoundaries memory t) {}
 
-    function _defaultParams() internal view returns (Slim.CreateReportParams memory) {
-        return Slim.CreateReportParams({
+    function _defaultParams() internal view returns (CompatTypes.CreateReportParams memory) {
+        return CompatTypes.CreateReportParams({
             escalationHalt: 10e18,
             settlerReward: SETTLER_REWARD,
             token1Address: address(token1),
@@ -108,13 +109,13 @@ contract InvariantHandler {
     }
 
     function createReport() external {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         uint128 amount1 = 1e18;
         uint128 amount2 = 1e18;
         uint256 createTs = block.timestamp;
         uint256 createBn = block.number;
 
-        uint256 id = oracle.report{value: SETTLER_REWARD}(
+        uint256 id = CompatTypes.reportRaw(oracle, SETTLER_REWARD, 
             p, amount1, amount2, address(this), false, false, _emptyTiming()
         );
 

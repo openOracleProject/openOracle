@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 
 // Coverage for FLAG_STORE_PRICE and FLAG_STORE_ALL — the optional opt-in
 // composability flags that persist final price / final game state on settle.
@@ -17,7 +18,7 @@ contract OpenOracleGGStorageFlagsTest is BaseGGTest {
         internal
         returns (ReportContext memory ctx, uint256 expectedPrice)
     {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags = flags;
 
         vm.prank(alice);
@@ -114,7 +115,7 @@ contract OpenOracleGGStorageFlagsTest is BaseGGTest {
     // ratio reflects the dispute outcome (not the initial report).
     // -------------------------------------------------------------------------
     function testSettle_StorePriceAfterDispute_ReflectsDisputedAmounts() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags = FLAG_TIME_TYPE | FLAG_STORE_PRICE;
 
         vm.prank(alice);

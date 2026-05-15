@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 // Coverage for oracle games where one of the report tokens is ETH (address(0)).
@@ -22,13 +23,13 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.deal(charlie, 100 ether);
     }
 
-    function _ethAsToken1Params() internal view returns (Slim.CreateReportParams memory p) {
+    function _ethAsToken1Params() internal view returns (CompatTypes.CreateReportParams memory p) {
         p = _defaultParams();
         p.token1Address = ETH_SENTINEL;
         p.token2Address = address(token2);
     }
 
-    function _ethAsToken2Params() internal view returns (Slim.CreateReportParams memory p) {
+    function _ethAsToken2Params() internal view returns (CompatTypes.CreateReportParams memory p) {
         p = _defaultParams();
         p.token1Address = address(token1);
         p.token2Address = ETH_SENTINEL;
@@ -40,7 +41,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
     // ETH as token1: alice sends settlerReward + amount1 of ETH.
     function testReport_EthAsToken1() public {
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
@@ -58,7 +59,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
     // ETH as token2: alice sends settlerReward + amount2.
     function testReport_EthAsToken2() public {
-        Slim.CreateReportParams memory p = _ethAsToken2Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken2Params();
         uint128 amount1 = 1e18;
         uint128 amount2 = 2 ether;
 
@@ -78,14 +79,14 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         oracle.deposit{value: 5 ether}(ETH_SENTINEL, 5 ether, alice);
         assertEq(oracle.tokenHolder(alice, ETH_SENTINEL), 1 + 5 ether, "alice internal ETH");
 
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
         uint256 aliceEthBefore = alice.balance;
 
         vm.prank(alice);
-        oracle.report{value: p.settlerReward}(p, amount1, amount2, alice, true, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, amount1, amount2, alice, true, false, _emptyTiming());
 
         // Alice paid only settlerReward externally.
         assertEq(alice.balance, aliceEthBefore - p.settlerReward, "only settlerReward paid externally");
@@ -99,7 +100,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(alice);
         oracle.deposit{value: 0.5 ether}(ETH_SENTINEL, 0.5 ether, alice);
 
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
@@ -109,7 +110,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         uint256 aliceEthBefore = alice.balance;
 
         vm.prank(alice);
-        oracle.report{value: msgValue}(p, amount1, amount2, alice, true, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, msgValue, p, amount1, amount2, alice, true, false, _emptyTiming());
 
         assertEq(alice.balance, aliceEthBefore - msgValue, "alice paid settlerReward + 0.5 ether");
         // Internal ETH drained to sentinel.
@@ -118,7 +119,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
     // Excess msg.value: credited to the REPORTER's ETH internal balance (not msg.sender's).
     function testReport_EthAsToken1_ExcessMsgValue_Credited() public {
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
@@ -126,7 +127,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         uint256 sent = expected + 0.5 ether; // overpay
 
         vm.prank(alice);
-        oracle.report{value: sent}(p, amount1, amount2, alice, false, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, sent, p, amount1, amount2, alice, false, false, _emptyTiming());
 
         // Excess credited to alice's internal ETH balance (alice is both msg.sender and reporter).
         assertEq(oracle.tokenHolder(alice, ETH_SENTINEL), 1 + 0.5 ether, "excess credited to reporter (sentinel + 0.5)");
@@ -134,7 +135,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
     // Sponsor mode: alice (msg.sender) funds, bob (reporter) gets the position AND excess credit.
     function testReport_EthAsToken1_SponsorMode_ExcessCreditedToReporter() public {
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
@@ -145,7 +146,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         uint256 bobEthBefore = bob.balance;
 
         vm.prank(alice);
-        oracle.report{value: sent}(p, amount1, amount2, bob, false, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, sent, p, amount1, amount2, bob, false, false, _emptyTiming());
 
         // alice (msg.sender) paid the whole msg.value out-of-pocket
         assertEq(alice.balance, aliceEthBefore - sent, "alice paid msg.value externally");
@@ -168,7 +169,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.approveInternal(alice, ETH_SENTINEL, 2 ether);
 
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         uint128 amount1 = 1 ether;
         uint128 amount2 = 2000e18;
 
@@ -177,7 +178,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         uint256 bobInternalBefore = oracle.tokenHolder(bob, ETH_SENTINEL);
 
         vm.prank(alice);
-        oracle.report{value: p.settlerReward}(p, amount1, amount2, bob, true, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, amount1, amount2, bob, true, false, _emptyTiming());
 
         // alice paid only settlerReward
         assertEq(alice.balance, aliceEthBefore - p.settlerReward, "alice paid only settler reward");
@@ -195,10 +196,10 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.approveInternal(alice, ETH_SENTINEL, 0.1 ether);
 
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         vm.prank(alice);
         vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
-        oracle.report{value: p.settlerReward}(p, 1 ether, 2000e18, bob, true, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1 ether, 2000e18, bob, true, false, _emptyTiming());
     }
 
     // Delegated dispute: tokenToSwap = ETH, disputer != msg.sender, tib1=true.
@@ -268,13 +269,13 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
     // -------------------------------------------------------------------------
 
     function _aliceReportsEthToken1(uint128 amount1, uint128 amount2) internal returns (ReportContext memory ctx) {
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         vm.prank(alice);
         ctx = _report(p, amount1, amount2, alice, false, false);
     }
 
     function _aliceReportsEthToken2(uint128 amount1, uint128 amount2) internal returns (ReportContext memory ctx) {
-        Slim.CreateReportParams memory p = _ethAsToken2Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken2Params();
         vm.prank(alice);
         ctx = _report(p, amount1, amount2, alice, false, false);
     }
@@ -546,12 +547,12 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
     }
 
     function testReport_EthSide_Underfunded_Reverts() public {
-        Slim.CreateReportParams memory p = _ethAsToken1Params();
+        CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         // settlerReward + amount1 = 0.001 + 1 = 1.001 ether expected.
         // Send less.
         vm.prank(alice);
         vm.expectRevert(OpenOracleErrors.MsgValueTooLow.selector);
-        oracle.report{value: p.settlerReward}(p, 1 ether, 2000e18, alice, false, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1 ether, 2000e18, alice, false, false, _emptyTiming());
     }
 
     function testDispute_EthSide_Underfunded_Reverts() public {

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 // Feature tests for OpenOracleSlim:
@@ -376,7 +377,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
 
     // tokenToSwap = token2. Self-dispute where token2Needed < oldA2 -> bob receives refund credit.
     function testSelfDispute_Token2_Netting_ReceivesRefund() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.protocolFee = 0;
         p.feePercentage = 0;
 
@@ -510,9 +511,9 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
             blockTimestampBound: 60
         });
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, false, false, timing);
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
     function testTimingBounds_RejectsStaleTimestamp() public {
@@ -525,10 +526,10 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
 
         vm.warp(block.timestamp + 200); // 200s elapsed, bound is 60.
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
         vm.expectRevert(OpenOracleErrors.InvalidTiming.selector);
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, false, false, timing);
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
     function testTimingBounds_ZeroSkipsValidation() public {
@@ -540,9 +541,9 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
             blockTimestampBound: 0
         });
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, false, false, timing);
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
     function testTimingBounds_OnDispute() public {

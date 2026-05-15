@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 
 // Gas snapshot suite for OpenOracleSlim happy paths.
 //
@@ -40,11 +41,11 @@ contract OpenOracleGGGasTest is BaseGGTest {
     // report (ERC20 pair, no flags)
     // -------------------------------------------------------------------------
     function testGas_Report_Erc20() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         _coolAll();
         vm.prank(alice);
         uint256 g0 = gasleft();
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, false, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
         emit log_named_uint("report (ERC20 pair)", g0 - gasleft());
     }
 
@@ -52,14 +53,14 @@ contract OpenOracleGGGasTest is BaseGGTest {
     // report (ETH-as-token, ETH from msg.value)
     // -------------------------------------------------------------------------
     function testGas_Report_EthToken1() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.token1Address = ETH_SENTINEL;
         uint128 amount1 = 1 ether;
         uint256 value = uint256(p.settlerReward) + amount1;
         _coolAll();
         vm.prank(alice);
         uint256 g0 = gasleft();
-        oracle.report{value: value}(p, amount1, 2000e18, alice, false, false, _emptyTiming());
+        CompatTypes.reportRaw(oracle, value, p, amount1, 2000e18, alice, false, false, _emptyTiming());
         emit log_named_uint("report (ETH as token1)", g0 - gasleft());
     }
 
@@ -73,11 +74,11 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(alice);
         oracle.deposit(address(token2), 5000e18, alice);
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         _coolAll();
         vm.prank(alice);
         uint256 g0 = gasleft();
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, true, true, _emptyTiming());
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, true, true, _emptyTiming());
         emit log_named_uint("report (internal balance)", g0 - gasleft());
     }
 
@@ -209,7 +210,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
     // settle (FLAG_STORE_PRICE)
     // -------------------------------------------------------------------------
     function testGas_Settle_StorePrice() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags |= FLAG_STORE_PRICE;
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -226,7 +227,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
     // settle (FLAG_STORE_ALL)
     // -------------------------------------------------------------------------
     function testGas_Settle_StoreAll() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags |= FLAG_STORE_ALL;
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
@@ -244,7 +245,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
     // External-pull path: tib=false everywhere, alice/bob spend external tokens.
     // -------------------------------------------------------------------------
     function testGas_FullLifecycle_ExternalPulls() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
 
         _coolAll();
         vm.prank(alice);
@@ -290,7 +291,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(bob);
         oracle.deposit(address(token2), 10000e18, bob);
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
 
         _coolAll();
         vm.prank(alice);

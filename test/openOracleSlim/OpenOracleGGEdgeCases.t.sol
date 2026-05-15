@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 // Edge-case and regression coverage for OpenOracleSlim:
@@ -119,7 +120,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
     // are effectively burned (no one can prank as address(0) and call withdraw).
     // Dispute must NOT revert in this case.
     function testProtocolFeeRecipient_ZeroAddress_BurnsFees() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.protocolFeeRecipient = address(0);
 
         vm.prank(alice);
@@ -155,7 +156,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
     // cause _validateTiming to revert. Defends against regressions to the
     // block-clock branch of the validator.
     function testTimingBounds_RejectsStaleBlockNumber() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
 
         // Advance block.number a lot, but keep block.timestamp identical.
         vm.roll(block.number + 1000);
@@ -169,7 +170,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
 
         vm.prank(alice);
         vm.expectRevert(OpenOracleErrors.InvalidTiming.selector);
-        oracle.report{value: p.settlerReward}(p, 1e18, 2000e18, alice, false, false, timing);
+        CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
     // =========================================================================
@@ -180,7 +181,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
     // are measured in blocks. Asserts the block-clock branch of the
     // dispute-too-early / settle-too-early checks works.
     function testBlockClockLifecycle() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         // Clear FLAG_TIME_TYPE → block-clock.
         p.flags = p.flags & ~FLAG_TIME_TYPE;
         p.settlementTime = 10; // 10 blocks

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
 
 /// @notice Behavioral tests for slim primitives added in V3:
@@ -243,7 +244,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         assertEq(oracle.tokenHolder(freshPfr, address(token1)), 0, "PFR token1 slot uninit");
         assertEq(oracle.tokenHolder(freshPfr, address(token2)), 0, "PFR token2 slot uninit");
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.protocolFeeRecipient = payable(freshPfr);
 
         vm.prank(alice);
@@ -258,7 +259,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
     function testReport_NoDustWhenProtocolFeeZero() public {
         address freshPfr = address(0xBEEF);
 
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.protocolFeeRecipient = payable(freshPfr);
         p.protocolFee = 0;
 
@@ -271,7 +272,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
     }
 
     function testReport_NoDustWhenPfrIsZeroAddress() public {
-        Slim.CreateReportParams memory p = _defaultParams();
+        CompatTypes.CreateReportParams memory p = _defaultParams();
         p.protocolFeeRecipient = payable(address(0));
 
         vm.prank(alice);

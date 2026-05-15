@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import {CompatTypes} from "./CompatTypes.sol";
 import "forge-std/Vm.sol";
 import {OpenOracle as Slim} from "../../src/OpenOracleSlim.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -87,8 +88,8 @@ contract OpenOracleGGBlacklistTest is Test {
             Slim.TimingBoundaries({blockNumber: 0, blockNumberBound: 0, blockTimestamp: 0, blockTimestampBound: 0});
     }
 
-    function _params() internal view returns (Slim.CreateReportParams memory) {
-        return Slim.CreateReportParams({
+    function _params() internal view returns (CompatTypes.CreateReportParams memory) {
+        return CompatTypes.CreateReportParams({
             escalationHalt: 10e18,
             settlerReward: SETTLER_REWARD,
             token1Address: address(token1),
@@ -114,12 +115,12 @@ contract OpenOracleGGBlacklistTest is Test {
 
     // Bob calls report() — becomes both creator and reporter.
     function _bobReports(uint128 amount1, uint128 amount2) internal returns (Ctx memory ctx) {
-        Slim.CreateReportParams memory p = _params();
+        CompatTypes.CreateReportParams memory p = _params();
         uint256 createTs = block.timestamp;
         uint256 createBn = block.number;
 
         vm.prank(bob);
-        ctx.reportId = oracle.report{value: SETTLER_REWARD}(p, amount1, amount2, bob, false, false, _emptyTiming());
+        ctx.reportId = CompatTypes.reportRaw(oracle, SETTLER_REWARD, p, amount1, amount2, bob, false, false, _emptyTiming());
 
         ctx.game.token1 = p.token1Address;
         ctx.game.token2 = p.token2Address;
