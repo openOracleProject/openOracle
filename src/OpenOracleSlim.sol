@@ -114,10 +114,10 @@ contract OpenOracle is OpenOracleErrors {
      *      (dispute, settle) must supply the exact OracleGame + PreimageHelper that
      *      reconstructs the current hash; off-chain indexing of report state is the
      *      caller's responsibility (events + tx data, or via the FLAG_STORE_ALL opt-in).
-     * @param params OracleGame to commit
-     * @param tryInternalBalance1 If true, fund token1 from params.currentReporter's internal balance
-     * @param tryInternalBalance2 If true, fund token2 from params.currentReporter's internal balance
-     * @param timing Optional timing bounds. If timing.blockTimestamp is zero, timing validation is skipped.
+     * @param params OracleGame to commit. currentReporter decides who receives the report tokens when the round completes
+     * @param tryInternalBalance1 If true, fund token1 from params.currentReporter's internal balance first
+     * @param tryInternalBalance2 If true, fund token2 from params.currentReporter's internal balance first
+     * @param timing Optional timing bounds. If timing.blockTimestamp is zero, timing validation is skipped
      * @return reportId The unique identifier for the created report instance
      */
     function report(
