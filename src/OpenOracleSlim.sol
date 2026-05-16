@@ -579,6 +579,16 @@ contract OpenOracle is OpenOracleErrors {
         }
     }
 
+    /**
+    * @notice Approves `spender` to spend caller's internal balance of `token`.
+    * @dev This allowance is only for balances tracked inside OpenOracle. `type(uint256).max` 
+    *      is treated as infinite allowance and is not decremented. Setting `amount` to zero revokes.
+    *      A spender may use this through internalTransferFrom or delegated report/dispute
+    *      funding when the corresponding tryInternalBalance flag is true.
+    * @param spender Address allowed to spend caller's internal balance
+    * @param token Token address, or address(0) for internal ETH balance
+    * @param amount Allowance amount
+    */
     function approveInternal(address spender, address token, uint256 amount) external {
         if (spender == address(0)) revert AddressCannotBeZero();
         internalAllowance[msg.sender][spender][token] = amount;
