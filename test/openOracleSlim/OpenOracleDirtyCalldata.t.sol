@@ -99,4 +99,117 @@ contract OpenOracleDirtyCalldataTest is BaseGGTest {
     function testBoundary_CallbackGasLimit() public { _assertBoundary(0x220, 4, "callbackGasLimit"); }
     function testBoundary_ProtocolFee() public { _assertBoundary(0x240, 3, "protocolFee"); }
     function testBoundary_Flags() public { _assertBoundary(0x260, 1, "flags"); }
+
+    // ─── Comprehensive every-padding-byte fuzz ────────────────────────────────
+    //
+    // Strong invariant: dirtying ANY single padding byte of the report() calldata
+    // must produce one of two outcomes:
+    //   (a) call reverts AND nextReportId is unchanged AND no stored state hash is created
+    //   (b) call succeeds AND the new oracleGame[id] equals what a clean report() would store
+    //
+    // report() calldata layout:
+    //   0x000  OracleGame (20 slots)
+    //   0x280  tryInternalBalance1 (bool)
+    //   0x2A0  tryInternalBalance2 (bool)
+    //   0x2C0  TimingBoundaries (4 uint256 slots, no padding)
+    //
+    // Padding bytes: OracleGame 437 + tib1 31 + tib2 31 + timing 0 = 499 byte positions.
+    function testFuzzAllPaddingBytes_Report_StateHashInvariant() public {
+        uint256[] memory padBytes = _allReportPaddingByteOffsets();
+        bytes1 DIRTY = 0xFF;
+
+        // Compute clean reference: expected stored hash for a clean call.
+        bytes32 expectedHash;
+        {
+            uint256 snap = vm.snapshotState();
+            Slim.OracleGame memory input = _cleanInput();
+            vm.prank(alice);
+            uint256 rid = oracle.report{value: _defaultParams().settlerReward}(input, false, false, _emptyTiming());
+            expectedHash = oracle.oracleGame(rid);
+            vm.revertToState(snap);
+        }
+
+        for (uint256 i = 0; i < padBytes.length; i++) {
+            uint256 snap = vm.snapshotState();
+
+            uint256 nextBefore = oracle.nextReportId();
+
+            Slim.OracleGame memory input = _cleanInput();
+            bytes memory data = abi.encodeCall(oracle.report, (input, false, false, _emptyTiming()));
+            data[4 + padBytes[i]] = DIRTY;
+
+            vm.prank(alice);
+            (bool ok, bytes memory ret) =
+                address(oracle).call{value: _defaultParams().settlerReward}(data);
+
+            // Strict: every dirty padding byte MUST revert at the type-decode layer
+            // (empty returndata from Solidity's `revert(0, 0)`), not via a downstream
+            // custom error from business validation.
+            assertFalse(ok, string.concat("dirty must revert @ byte ", vm.toString(padBytes[i])));
+            assertEq(
+                ret.length,
+                0,
+                string.concat("dirty must revert at type-decode (empty data) @ byte ", vm.toString(padBytes[i]))
+            );
+            assertEq(
+                oracle.nextReportId(),
+                nextBefore,
+                string.concat("dirty revert must not advance nextReportId @ byte ", vm.toString(padBytes[i]))
+            );
+            assertEq(
+                oracle.oracleGame(nextBefore),
+                bytes32(0),
+                string.concat("dirty revert must not store state hash @ byte ", vm.toString(padBytes[i]))
+            );
+            expectedHash; // silence unused
+
+            vm.revertToState(snap);
+        }
+    }
+
+    function _allReportPaddingByteOffsets() internal pure returns (uint256[] memory out) {
+        // (slotOffset, valueBytes). Skipping reportId (no such field here) and timing
+        // boundary fields (all uint256). OracleGame matches the table at top of file.
+        uint256[2][22] memory fields = [
+            // OracleGame at 0x000
+            [uint256(0x000), uint256(16)], // currentAmount1
+            [uint256(0x020), uint256(16)], // currentAmount2
+            [uint256(0x040), uint256(20)], // currentReporter
+            [uint256(0x060), uint256(6)],  // reportTimestamp
+            [uint256(0x080), uint256(6)],  // settlementTimestamp
+            [uint256(0x0A0), uint256(20)], // token1
+            [uint256(0x0C0), uint256(6)],  // lastReportOppoTime
+            [uint256(0x0E0), uint256(6)],  // settlementTime
+            [uint256(0x100), uint256(16)], // escalationHalt
+            [uint256(0x120), uint256(20)], // protocolFeeRecipient
+            [uint256(0x140), uint256(12)], // settlerReward
+            [uint256(0x160), uint256(20)], // token2
+            [uint256(0x180), uint256(3)],  // numReports
+            [uint256(0x1A0), uint256(3)],  // disputeDelay
+            [uint256(0x1C0), uint256(3)],  // feePercentage
+            [uint256(0x1E0), uint256(2)],  // multiplier
+            [uint256(0x200), uint256(20)], // callbackContract
+            [uint256(0x220), uint256(4)],  // callbackGasLimit
+            [uint256(0x240), uint256(3)],  // protocolFee
+            [uint256(0x260), uint256(1)],  // flags
+            // top-level bools
+            [uint256(0x280), uint256(1)],  // tryInternalBalance1
+            [uint256(0x2A0), uint256(1)]   // tryInternalBalance2
+        ];
+
+        uint256 total = 0;
+        for (uint256 i = 0; i < fields.length; i++) {
+            total += 32 - fields[i][1];
+        }
+
+        out = new uint256[](total);
+        uint256 k = 0;
+        for (uint256 i = 0; i < fields.length; i++) {
+            uint256 slotOff = fields[i][0];
+            uint256 padLen = 32 - fields[i][1];
+            for (uint256 p = 0; p < padLen; p++) {
+                out[k++] = slotOff + p;
+            }
+        }
+    }
 }
