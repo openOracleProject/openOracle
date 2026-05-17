@@ -7,6 +7,7 @@ import {openSwapV2} from "../../src/OpenSwapSlim.sol";
 import {IOpenOracle2} from "../../src/interfaces/IOpenOracle2.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
 import {NoReturnToken} from "./AdversarialMocks.sol";
+import {SwapCompat} from "../openSwapPermitTesting/SwapCompat.sol";
 
 /// @notice Drives propose / match / cancel / bailOut / settleOracle / execute / withdraw across multiple
 ///         actors and tokens (ETH + vanilla + USDT-style). Tracks per-swap state so the invariant test
@@ -118,7 +119,7 @@ contract SwapSystemHandler is Test {
     function _emptyTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory t) {}
     function _emptyPermit2() internal pure returns (openSwapV2.Permit2Params memory p) {}
 
-    function _defaultSlip() internal pure returns (openSwapV2.SlippageParams memory s) {
+    function _defaultSlip() internal pure returns (SwapCompat.SlippageParams memory s) {
         s.priceTolerated = PRICE_TOLERATED;
         s.toleranceRange = TOLERANCE_RANGE;
     }
@@ -153,7 +154,9 @@ contract SwapSystemHandler is Test {
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = useInternal;
         s.expiration = expirationOffset;
-        s.slippageParams = _defaultSlip();
+        SwapCompat.SlippageParams memory slip = _defaultSlip();
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
 
         openSwapV2.MatcherPreimage memory m;
         m.initialLiquidity = INITIAL_LIQUIDITY;
@@ -232,7 +235,8 @@ contract SwapSystemHandler is Test {
             // fulfillmentFee = calcFee with maxFee=startingFee, growthRate=1.0x → always startingFee.
             ms.fulfillmentFee = STARTING_FEE;
             ms.feeRecipient = address(0); // PROTOCOL_FEE == 0 → no feeRecipient clone
-            ms.slippageParams = t.s.slippageParams;
+            ms.priceTolerated = t.s.priceTolerated;
+            ms.toleranceRange = t.s.toleranceRange;
 
             t.ms = ms;
             t.reportId = reportIdAtMatch;
