@@ -78,7 +78,8 @@ contract openSwapV2 is ReentrancyGuard {
         uint48 start; // timestamp at which order is matched
         uint24 fulfillmentFee; // 1000 = 0.01%, fee paid to matcher
         address feeRecipient; // contract holding protocol fees from oracle game
-        SlippageParams slippageParams;
+        uint232 priceTolerated;  // example: WETH (18 dec) / USDC (6 dec) at $4442.99/ETH → priceTolerated ≈ 1e18 * 1e30 / (4442.99 * 1e6) ≈ 2.25e38.
+        uint24 toleranceRange; // 100000 = 1%, max slippage against priceTolerated
     }
 
     struct ProposedSwap {
@@ -94,12 +95,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint96 executorGasComp;
         bool useInternalBalances;
         uint48 expiration; // swapper passes a time offset but is stored in swapHash as an absolute timestamp expiry
-        SlippageParams slippageParams;
-    }
-
-    struct SlippageParams {
-        uint232 priceTolerated; // user-set reference price for slippage check at settlement. Encoded as oracleAmount1 * 1e30 / oracleAmount2 at the desired price,
-            // example: WETH (18 dec) / USDC (6 dec) at $4442.99/ETH → priceTolerated ≈ 1e18 * 1e30 / (4442.99 * 1e6) ≈ 2.25e38.
+        uint232 priceTolerated;  // example: WETH (18 dec) / USDC (6 dec) at $4442.99/ETH → priceTolerated ≈ 1e18 * 1e30 / (4442.99 * 1e6) ≈ 2.25e38.
         uint24 toleranceRange; // 100000 = 1%, max slippage against priceTolerated
     }
 
@@ -134,11 +130,18 @@ contract openSwapV2 is ReentrancyGuard {
         uint16 maxRounds;
     }
 
-    event SwapCreated(uint256 indexed swapId);
+    bytes32 private constant SWAP_CREATED_SIG =
+        keccak256("SwapCreated(uint256,address,bytes)");
+    bytes32 private constant SWAP_MATCHED_SIG =
+        keccak256("SwapMatched(uint256,bytes)");
+
+    // Emitted via raw log opcodes. `packed` is raw bytes from _packMem,
+    // not ABI-encoded dynamic bytes.
+    event SwapCreated(uint256 indexed swapId, address indexed swapper, bytes packed);
     event SwapCancelled(uint256 swapId);
     event SwapRefunded(uint256 swapId, address indexed swapper, address indexed matcher);
     event SwapExecuted(uint256 swapId);
-    event SwapMatched(uint256 indexed swapId);
+    event SwapMatched(uint256 indexed swapId, bytes packed);
     event FeesTransferred(
         address indexed swapper,
         address indexed matcher,
@@ -188,8 +191,8 @@ contract openSwapV2 is ReentrancyGuard {
         if (m.maxFee >= 1e7) revert InvalidFulfillFee();
 
         if (
-            s.slippageParams.priceTolerated == 0 || s.slippageParams.toleranceRange == 0
-                || s.slippageParams.toleranceRange > 1e7
+            s.priceTolerated == 0 || s.toleranceRange == 0
+                || s.toleranceRange > 1e7
         ) revert InvalidSlippage();
 
         if (
@@ -207,7 +210,7 @@ contract openSwapV2 is ReentrancyGuard {
         if (s.swapper != address(0) || m.startFulfillFeeIncrease != 0) revert MustBeZero();
 
         uint256 upperPrice =
-            Math.mulDiv(s.slippageParams.priceTolerated, uint256(1e7) + s.slippageParams.toleranceRange, 1e7);
+            Math.mulDiv(s.priceTolerated, uint256(1e7) + s.toleranceRange, 1e7);
         uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice);
         worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, m.maxFee, 1e7);
 
@@ -215,13 +218,15 @@ contract openSwapV2 is ReentrancyGuard {
 
         swapId = nextSwapId++;
 
-        // Two hashes share one buffer. Layout matches abi.encode(ProposedSwap, MatcherPreimage[, minOut]):
-        //   0x000..0x1C0 ProposedSwap (14 slots) · 0x1C0..0x340 MatcherPreimage (12 slots) · 0x340..0x360 minOut
+        // Two hashes share one buffer. swapHash layout matches abi.encode(ProposedSwap, MatcherPreimage):
+        //   0x000..0x1C0 ProposedSwap (14 slots) · 0x1C0..0x340 MatcherPreimage (12 slots)
+        // permitIntent temporarily appends minOut at 0x340 and hashes 0x360 bytes.
         // Overrides (slot N at N*0x20): 0x100 s.swapper←caller · 0x160 s.expiration←absolute · 0x280 m.startFulfillFeeIncrease←ts
         // permitIntent skips the timestamp overrides so the user signs runtime-independent inputs.
         uint256 absoluteExpiration = uint256(block.timestamp) + uint256(s.expiration);
         bytes32 swapHash;
         bytes32 permitIntent;
+        uint256 stagedMem;
         assembly ("memory-safe") {
             let mem := mload(0x40)
             calldatacopy(mem, s, 0x1C0)
@@ -237,6 +242,7 @@ contract openSwapV2 is ReentrancyGuard {
             mstore(add(mem, 0x160), absoluteExpiration) // expiration → absolute
             mstore(add(mem, 0x280), timestamp()) // startFulfillFeeIncrease
             swapHash := keccak256(mem, 0x340)
+            stagedMem := mem
             mstore(0x40, add(mem, 0x360))
         }
 
@@ -263,7 +269,11 @@ contract openSwapV2 is ReentrancyGuard {
 
         swaps[swapId] = swapHash; // CEI inversion: swap becomes live only after funding succeeds.
 
-        emit SwapCreated(swapId);
+        uint256 packedLen = _packMem(stagedMem, 1);
+        bytes32 sig = SWAP_CREATED_SIG;
+        assembly ("memory-safe") {
+            log3(stagedMem, packedLen, sig, swapId, caller())
+        }
     }
 
     /**
@@ -281,7 +291,19 @@ contract openSwapV2 is ReentrancyGuard {
         MatcherPreimage calldata preimage,
         IOpenOracle2.TimingBoundaries calldata timing
     ) external {
-        if ((keccak256(abi.encode(_swap, preimage))) != swaps[swapId]) revert WrongHash();
+        bytes32 passedHash;
+        uint256 stagedMem;
+
+        assembly ("memory-safe") {
+            stagedMem := mload(0x40)
+            calldatacopy(stagedMem, _swap, 0x1c0)
+            calldatacopy(add(stagedMem, 0x1c0), preimage, 0x180)
+            passedHash := keccak256(stagedMem, 0x340)
+            mstore(0x40, add(stagedMem, 0x340))
+        }
+
+        if (passedHash != swaps[swapId]) revert WrongHash();
+
         MatchedSwap memory s;
 
         s.sellAmt = _swap.sellAmt;
@@ -293,7 +315,8 @@ contract openSwapV2 is ReentrancyGuard {
         s.swapper = _swap.swapper;
         s.executorGasComp = _swap.executorGasComp;
         s.useInternalBalances = _swap.useInternalBalances;
-        s.slippageParams = _swap.slippageParams;
+        s.priceTolerated = _swap.priceTolerated;
+        s.toleranceRange = _swap.toleranceRange;
 
         address buyToken = s.buyToken;
         address sellToken = s.sellToken;
@@ -301,7 +324,6 @@ contract openSwapV2 is ReentrancyGuard {
         uint96 matcherGasComp = _swap.matcherGasComp;
         uint96 settlerReward = _swap.settlerReward;
 
-        // Defensive: hash-shape check above already enforces pre-match state, but these spell it out.
         if (s.matcher != address(0)) revert AlreadyMatched();
         if (s.swapper == address(0)) revert NotActive();
         if (block.timestamp > _swap.expiration) revert Expired();
@@ -329,7 +351,14 @@ contract openSwapV2 is ReentrancyGuard {
             s.feeRecipient = feeReceiver;
         }
         s.reportId = uint128(oracle.nextReportId());
-        swaps[swapId] = keccak256(abi.encode(s));
+
+        uint256 matchedMem;
+        bytes32 matchedHash;
+        assembly ("memory-safe") {
+            matchedMem := s
+            matchedHash := keccak256(matchedMem, 0x200)
+        }
+        swaps[swapId] = matchedHash;
 
         if (s.feeRecipient != address(0)) {
             oracleFeeReceiver(s.feeRecipient).initialize(
@@ -339,15 +368,19 @@ contract openSwapV2 is ReentrancyGuard {
         oracleGame(s, preimage, timing, amount2, matcher, settlerReward);
         oracle.internalTransferFrom(matcher, address(this), buyToken, minFulfillLiquidity);
 
-        emit SwapMatched(swapId);
+        uint256 packedLen = _packMem(matchedMem, 2);
+        bytes32 sig = SWAP_MATCHED_SIG;
+        assembly ("memory-safe") {
+            log2(matchedMem, packedLen, sig, swapId)
+        }
+
     }
 
     /**
-     * @notice Swapper cancels swap, receiving tokens back.
-     *            Must be called prior to match.
-     *            At or before expiration: only the swapper can call.
-     *            After expiration: anyone can call; caller receives 20% of (matcherGasComp + executorGasComp),
-     *            swapper receives the remaining 80% plus the settler reward.
+     * @notice Swapper cancels swap, receiving tokens back. Must be called prior to match.
+     *         At or before expiration: only the swapper can call.
+     *         After expiration: anyone can call; caller receives matcherGasComp,
+     *         swapper receives executorGasComp + settlerReward.
      * @param swapId Unique identifier of swapping instance
      * @param _swap ProposedSwap committed at propose
      * @param preimage MatcherPreimage committed at propose
@@ -361,7 +394,6 @@ contract openSwapV2 is ReentrancyGuard {
 
         ProposedSwap memory s = _swap;
 
-        // Defensive: hash-shape check above already enforces pre-match state.
         if (s.swapper == address(0)) revert NotActive();
 
         address caller;
@@ -381,7 +413,7 @@ contract openSwapV2 is ReentrancyGuard {
         } else {
             if (msg.sender != swapper) {
                 caller = msg.sender;
-                callerPiece = totalGasComp / 5;
+                callerPiece = s.matcherGasComp;
                 swapperPiece = totalGasComp - callerPiece;
             } else {
                 swapperPiece = totalGasComp;
@@ -393,7 +425,7 @@ contract openSwapV2 is ReentrancyGuard {
         if (s.useInternalBalances) {
             tempHolding[swapper] += swapperPiece + settlerReward;
         }
-        if (caller == msg.sender) tempHolding[caller] += callerPiece;
+        if (caller == msg.sender && callerPiece > 0) tempHolding[caller] += callerPiece;
 
         if (s.useInternalBalances) {
             oracle.internalTransferFrom(address(this), swapper, sellToken, sellAmt);
@@ -453,7 +485,6 @@ contract openSwapV2 is ReentrancyGuard {
 
         MatchedSwap memory s = _swap;
 
-        // Defensive: hash-shape check above already enforces post-match state.
         if (s.matcher == address(0)) revert NotMatched();
         if (s.swapper == address(0)) revert NotActive();
 
@@ -522,32 +553,56 @@ contract openSwapV2 is ReentrancyGuard {
         IOpenOracle2.PreimageHelper calldata oracleHelper,
         bool looseTiming
     ) external {
-        if (keccak256(abi.encode(swapState)) != swaps[swapId]) revert WrongHash();
-        MatchedSwap memory s = swapState;
+        MatchedSwap memory s;
+        bytes32 passedSwapHash;
 
-        // Defensive: hash-shape check above already enforces post-match state.
+        assembly ("memory-safe") {
+            let mem := mload(0x40)
+            calldatacopy(mem, swapState, 0x200)
+            passedSwapHash := keccak256(mem, 0x200)
+            s := mem
+            mstore(0x40, add(mem, 0x200))
+        }
+
+        if (passedSwapHash != swaps[swapId]) revert WrongHash();
+
         if (s.matcher == address(0)) revert NotMatched();
         if (s.swapper == address(0)) revert NotActive();
 
         uint256 reportId = s.reportId;
         bytes32 oracleHash = oracle.oracleGame(reportId);
-        bytes32 passedHash = keccak256(abi.encode(oracleState, oracleHelper));
+
+        bytes32 passedHash;
+        uint256 oracleMem;
+
+        assembly ("memory-safe") {
+            oracleMem := mload(0x40)
+            calldatacopy(oracleMem, oracleState, 0x280)
+            calldatacopy(add(oracleMem, 0x280), oracleHelper, 0x80)
+            passedHash := keccak256(oracleMem, 0x300)
+            mstore(0x40, add(oracleMem, 0x300))
+        }
+
         bool matches = oracleHash == passedHash;
         bool alreadySettled;
 
         // loose hash if settle beat you in the same block
         if (!matches && oracleState.settlementTimestamp == 0 && looseTiming) {
-            IOpenOracle2.OracleGame memory o = oracleState;
-            o.settlementTimestamp = uint48(block.timestamp);
-            matches = oracleHash == keccak256(abi.encode(o, oracleHelper));
+            assembly ("memory-safe") {
+                mstore(add(oracleMem, 0x80), timestamp())
+                passedHash := keccak256(oracleMem, 0x300)
+            }
+            matches = oracleHash == passedHash;
             alreadySettled = true;
         }
 
         // loose hash for block boundaries
         if (!matches && oracleState.settlementTimestamp > 2 && looseTiming) {
-            IOpenOracle2.OracleGame memory o = oracleState;
-            o.settlementTimestamp -= 2;
-            matches = oracleHash == keccak256(abi.encode(o, oracleHelper));
+            assembly ("memory-safe") {
+                mstore(add(oracleMem, 0x80), sub(timestamp(), 2))
+                passedHash := keccak256(oracleMem, 0x300)
+            }
+            matches = oracleHash == passedHash;
             alreadySettled = true;
         }
 
@@ -586,7 +641,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint256 fulfillAmt = Math.mulDiv(sellAmt, oracleAmount2, oracleAmount1);
         fulfillAmt -= Math.mulDiv(fulfillAmt, fulfillmentFee, 1e7);
 
-        bool slippageOk = toleranceCheck(price, s.slippageParams.priceTolerated, s.slippageParams.toleranceRange);
+        bool slippageOk = toleranceCheck(price, s.priceTolerated, s.toleranceRange);
         bool blocksPerSecondOk =
             impliedBlocksPerSecond(oracleState.reportTimestamp, oracleState.lastReportOppoTime, blocksPerSecond);
         bool slippageBailout = fulfillAmt > minFulfillLiquidity || !slippageOk;
@@ -705,5 +760,72 @@ contract openSwapV2 is ReentrancyGuard {
                 s.feeRecipient
             );
         } catch {}
+    }
+
+    /**
+     * @dev Packs committed OpenSwap preimages in place for raw-log event emission.
+     *      kind == 1: input is abi.encode(ProposedSwap, MatcherPreimage), 0x340 bytes.
+     *                 output is 237 raw bytes.
+     *      kind == 2: input is abi.encode(MatchedSwap), 0x200 bytes.
+     *                 output is 207 raw bytes.
+     */
+    function _packMem(uint256 mem, uint8 kind) internal pure returns (uint256 packedLen) {
+        assembly ("memory-safe") {
+            switch kind
+            case 1 {
+                // ProposedSwap (14 slots -> 172 bytes)
+                mstore(mem,             shl(128, mload(mem)))                 // sellAmt              (W=16)
+                mstore(add(mem,  16),   shl(128, mload(add(mem, 0x20))))      // minFulfillLiquidity  (W=16)
+                mstore(add(mem,  32),   shl(160, mload(add(mem, 0x40))))      // settlerReward        (W=12)
+                mstore(add(mem,  44),   shl(232, mload(add(mem, 0x60))))      // maxGameTime          (W=3)
+                mstore(add(mem,  47),   shl(240, mload(add(mem, 0x80))))      // blocksPerSecond      (W=2)
+                mstore(add(mem,  49),   shl( 96, mload(add(mem, 0xa0))))      // buyToken             (W=20)
+                mstore(add(mem,  69),   shl(160, mload(add(mem, 0xc0))))      // matcherGasComp       (W=12)
+                mstore(add(mem,  81),   shl( 96, mload(add(mem, 0xe0))))      // sellToken            (W=20)
+                mstore(add(mem, 101),   shl( 96, mload(add(mem, 0x100))))     // swapper              (W=20)
+                mstore(add(mem, 121),   shl(160, mload(add(mem, 0x120))))     // executorGasComp      (W=12)
+                mstore8(add(mem, 133),  byte(31, mload(add(mem, 0x140))))     // useInternalBalances  (W=1)
+                mstore(add(mem, 134),   shl(208, mload(add(mem, 0x160))))     // expiration           (W=6)
+                mstore(add(mem, 140),   shl( 24, mload(add(mem, 0x180))))     // priceTolerated       (W=29)
+                mstore(add(mem, 169),   shl(232, mload(add(mem, 0x1a0))))     // toleranceRange       (W=3)
+
+                // MatcherPreimage starts at source 0x1c0 (12 slots -> 65 bytes)
+                mstore(add(mem, 172),   shl(128, mload(add(mem, 0x1c0))))     // initialLiquidity     (W=16)
+                mstore(add(mem, 188),   shl(128, mload(add(mem, 0x1e0))))     // escalationHalt       (W=16)
+                mstore(add(mem, 204),   shl(208, mload(add(mem, 0x200))))     // settlementTime       (W=6)
+                mstore(add(mem, 210),   shl(232, mload(add(mem, 0x220))))     // disputeDelay         (W=3)
+                mstore(add(mem, 213),   shl(232, mload(add(mem, 0x240))))     // protocolFee          (W=3)
+                mstore(add(mem, 216),   shl(240, mload(add(mem, 0x260))))     // multiplier           (W=2)
+                mstore(add(mem, 218),   shl(208, mload(add(mem, 0x280))))     // startFulfillFeeIncrease (W=6)
+                mstore(add(mem, 224),   shl(232, mload(add(mem, 0x2a0))))     // maxFee               (W=3)
+                mstore(add(mem, 227),   shl(232, mload(add(mem, 0x2c0))))     // startingFee          (W=3)
+                mstore(add(mem, 230),   shl(232, mload(add(mem, 0x2e0))))     // roundLength          (W=3)
+                mstore(add(mem, 233),   shl(240, mload(add(mem, 0x300))))     // growthRate           (W=2)
+                mstore(add(mem, 235),   shl(240, mload(add(mem, 0x320))))     // maxRounds            (W=2)
+
+                packedLen := 237
+            }
+            case 2 {
+                // MatchedSwap (16 slots -> 207 bytes)
+                mstore(mem,             shl(128, mload(mem)))                 // sellAmt              (W=16)
+                mstore(add(mem,  16),   shl(128, mload(add(mem, 0x20))))      // minFulfillLiquidity  (W=16)
+                mstore(add(mem,  32),   shl(232, mload(add(mem, 0x40))))      // maxGameTime          (W=3)
+                mstore(add(mem,  35),   shl(240, mload(add(mem, 0x60))))      // blocksPerSecond      (W=2)
+                mstore(add(mem,  37),   shl( 96, mload(add(mem, 0x80))))      // buyToken             (W=20)
+                mstore(add(mem,  57),   shl( 96, mload(add(mem, 0xa0))))      // sellToken            (W=20)
+                mstore(add(mem,  77),   shl( 96, mload(add(mem, 0xc0))))      // swapper              (W=20)
+                mstore(add(mem,  97),   shl(160, mload(add(mem, 0xe0))))      // executorGasComp      (W=12)
+                mstore8(add(mem, 109),  byte(31, mload(add(mem, 0x100))))     // useInternalBalances  (W=1)
+                mstore(add(mem, 110),   shl(128, mload(add(mem, 0x120))))     // reportId             (W=16)
+                mstore(add(mem, 126),   shl( 96, mload(add(mem, 0x140))))     // matcher              (W=20)
+                mstore(add(mem, 146),   shl(208, mload(add(mem, 0x160))))     // start                (W=6)
+                mstore(add(mem, 152),   shl(232, mload(add(mem, 0x180))))     // fulfillmentFee       (W=3)
+                mstore(add(mem, 155),   shl( 96, mload(add(mem, 0x1a0))))     // feeRecipient         (W=20)
+                mstore(add(mem, 175),   shl( 24, mload(add(mem, 0x1c0))))     // priceTolerated       (W=29)
+                mstore(add(mem, 204),   shl(232, mload(add(mem, 0x1e0))))     // toleranceRange       (W=3)
+
+                packedLen := 207
+            }
+        }
     }
 }

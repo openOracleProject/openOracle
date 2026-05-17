@@ -38,4 +38,5 @@ abstract contract OpenOracleErrors {
     error InvalidMsgValue();
     error TimestampsMustBeZero();
     error NumReportsMustBeZero();
+    error InvalidToken();
 }

@@ -102,8 +102,16 @@ contract OpenOracle is OpenOracleErrors {
     }
 
     // Events
-    event ReportSubmitted(uint256 indexed reportId);
-    event ReportDisputed(uint256 indexed reportId);
+
+    bytes32 private constant REPORT_SUBMITTED_SIG =
+            keccak256("ReportSubmitted(uint256,bytes)");
+    bytes32 private constant REPORT_DISPUTED_SIG =
+        keccak256("ReportDisputed(uint256,bytes)");
+
+    // Emitted via raw log2. `packed` is 235 raw bytes from _packMem,
+    // not ABI-encoded dynamic bytes.
+    event ReportSubmitted(uint256 indexed reportId, bytes packed);
+    event ReportDisputed(uint256 indexed reportId, bytes packed);
     event ReportSettled(uint256 indexed reportId);
     event InternalApproval(address indexed owner, address indexed spender, address indexed token, uint256 amount);
 
@@ -181,6 +189,7 @@ contract OpenOracle is OpenOracleErrors {
         //   0x000..0x280  OracleGame (20 slots)        0x280..0x300  PreimageHelper (4 slots)
         // Overrides (slot N at N*0x20): 0x060 reportTimestamp · 0x0C0 lastReportOppoTime · 0x180 numReports (if trackDisputes)
         bytes32 stateHash;
+        uint256 stagedMem;
         assembly ("memory-safe") {
             let mem := mload(0x40)
             calldatacopy(mem, params, 0x280)
@@ -192,8 +201,10 @@ contract OpenOracle is OpenOracleErrors {
             if trackDisputes { mstore(add(mem, 0x180), 1) }
             mcopy(add(mem, 0x280), helper, 0x80)
             stateHash := keccak256(mem, 0x300)
+            stagedMem := mem
             mstore(0x40, add(mem, 0x300))
         }
+
         oracleGame[reportId] = stateHash;
 
         if (params.protocolFee > 0 && protocolFeeRecipient != address(0)) {
@@ -210,7 +221,11 @@ contract OpenOracle is OpenOracleErrors {
         uint256 excess = msg.value - ethRequired;
         if (excess > 0) _credit(reporter, ETH_SENTINEL, excess);
 
-        emit ReportSubmitted(reportId);
+        uint256 packedLen = _packMem(stagedMem);
+        bytes32 sig = REPORT_SUBMITTED_SIG;
+        assembly ("memory-safe") {
+            log2(stagedMem, packedLen, sig, reportId)
+        }
     }
 
     /**
@@ -239,9 +254,17 @@ contract OpenOracle is OpenOracleErrors {
         TimingBoundaries calldata timing
     ) external payable {
         OracleGame memory oracle;
+        uint256 stagedMem;
+        bytes32 preStateHash;
+        assembly ("memory-safe") {
+            stagedMem := mload(0x40)
+            calldatacopy(stagedMem, params, 0x280)
+            calldatacopy(add(stagedMem, 0x280), helper, 0x80)
+            preStateHash := keccak256(stagedMem, 0x300)
+            oracle := stagedMem
+            mstore(0x40, add(stagedMem, 0x300))
+        }
 
-        oracle = params;
-        bytes32 preStateHash = _hashOracle(params, helper);
         if (preStateHash != oracleGame[reportId]) revert InvalidStateHash();
 
         (uint256 oldAmount1, uint256 oldAmount2) = (oracle.currentAmount1, oracle.currentAmount2);
@@ -303,7 +326,10 @@ contract OpenOracle is OpenOracleErrors {
                 if (nextIndex < type(uint24).max) oracle.numReports = nextIndex + 1;
             }
 
-            bytes32 nextStateHash = _hashOracle(oracle, helper);
+            bytes32 nextStateHash;
+            assembly ("memory-safe") {
+                nextStateHash := keccak256(stagedMem, 0x300)
+            }
             oracleGame[reportId] = nextStateHash;
         }
 
@@ -378,7 +404,11 @@ contract OpenOracle is OpenOracleErrors {
         uint256 excess = msg.value - ethRequired;
         if (excess > 0) _credit(disputer, ETH_SENTINEL, excess);
 
-        emit ReportDisputed(reportId);
+        uint256 packedLen = _packMem(stagedMem);
+        bytes32 sig = REPORT_DISPUTED_SIG;
+        assembly ("memory-safe") {
+            log2(stagedMem, packedLen, sig, reportId)
+        }
     }
 
     /**
@@ -388,8 +418,18 @@ contract OpenOracle is OpenOracleErrors {
      * @param helper PreimageHelper matching the current stored state hash
      */
     function settle(uint256 reportId, OracleGame calldata params, PreimageHelper calldata helper) external {
-        OracleGame memory oracle = params;
-        bytes32 preStateHash = _hashOracle(params, helper);
+        OracleGame memory oracle;
+        uint256 stagedMem;
+        bytes32 preStateHash;
+        assembly ("memory-safe") {
+            stagedMem := mload(0x40)
+            calldatacopy(stagedMem, params, 0x280)
+            calldatacopy(add(stagedMem, 0x280), helper, 0x80)
+            preStateHash := keccak256(stagedMem, 0x300)
+            oracle := stagedMem
+            mstore(0x40, add(stagedMem, 0x300))
+        }
+
         if (preStateHash != oracleGame[reportId]) revert InvalidStateHash();
 
         uint256 settlementTimestamp = oracle.settlementTimestamp;
@@ -417,8 +457,13 @@ contract OpenOracle is OpenOracleErrors {
         if (reportTimestamp == 0) revert NoReportYet();
 
         oracle.settlementTimestamp = uint48(currentTime);
-        bytes32 nextStateHash = _hashOracle(oracle, helper);
+
+        bytes32 nextStateHash;
+        assembly ("memory-safe") {
+            nextStateHash := keccak256(stagedMem, 0x300)
+        }
         oracleGame[reportId] = nextStateHash;
+
         if (storePrice) finalPrice[reportId] = finalRatio;
         if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) finalizedGame[reportId] = oracle;
 
@@ -427,7 +472,6 @@ contract OpenOracle is OpenOracleErrors {
         if (settlerReward > 0) _credit(sender, ETH_SENTINEL, settlerReward);
 
         if (hasCallback) {
-            // Prepare callback data
             bytes memory callbackData = abi.encodeWithSelector(
                 CALLBACK_SELECTOR, reportId, currentAmount1, currentAmount2, currentTime, token1, token2
             );
@@ -512,6 +556,8 @@ contract OpenOracle is OpenOracleErrors {
         bytes calldata signature
     ) external {
         if (beneficiary == address(0)) revert AddressCannotBeZero();
+        if (permit.permitted.token == ETH_SENTINEL) revert InvalidToken();
+        if (permit.permitted.token.code.length == 0) revert InvalidToken();
         if (permit.permitted.amount != amount) revert Permit2AmountMismatch();
 
         bytes32 witness = keccak256(abi.encode(WITNESS_TYPEHASH, beneficiary, msg.sender, from, intent));
@@ -623,11 +669,6 @@ contract OpenOracle is OpenOracleErrors {
         }
     }
 
-    function _hashOracle(OracleGame memory oracle, PreimageHelper memory helper) internal pure returns (bytes32) {
-        bytes32 hashedOracle = keccak256(abi.encode(oracle, helper));
-        return hashedOracle;
-    }
-
     function _getDustAmounts(address reporter, address token1, address token2) internal {
         _dust(reporter, token1);
         _dust(reporter, token2);
@@ -703,4 +744,51 @@ contract OpenOracle is OpenOracleErrors {
     function _hasFlag(uint8 flags, uint8 mask) internal pure returns (bool) {
         return flags & mask != 0;
     }
+    /**
+     * @dev Packs the canonical (OracleGame, PreimageHelper) memory buffer at `mem`
+     *      (laid out as abi.encode(OracleGame, PreimageHelper), 0x300 bytes) into a
+     *      tight 235-byte blob in place. Returns the packed length.
+     *
+     *      Layout assumptions:
+     *        mem[0x000 .. 0x280)  OracleGame  (20 slots)
+     *        mem[0x280 .. 0x300)  PreimageHelper (4 slots)
+     *
+     *      Read-before-write ordering is enforced by processing fields left-to-right
+     *      in slot order. For every packed offset P_N the corresponding source slot
+     *      offset 32*N satisfies P_N + 32 ≤ 32*(N+1), so a 32-byte mstore at P_N
+     *      cannot trample any unread source slot. The trailing bytes past the final
+     *      packed offset (235) are scratch and ignored by the log2 length.
+     */
+    function _packMem(uint256 mem) internal pure returns (uint256 packedLen) {
+        assembly ("memory-safe") {
+            // OracleGame (20 slots → 203 bytes)
+            mstore(mem,             shl(128, mload(mem)))                 // currentAmount1   (W=16)
+            mstore(add(mem,  16),   shl(128, mload(add(mem, 0x20))))      // currentAmount2   (W=16)
+            mstore(add(mem,  32),   shl( 96, mload(add(mem, 0x40))))      // currentReporter  (W=20)
+            mstore(add(mem,  52),   shl(208, mload(add(mem, 0x60))))      // reportTimestamp  (W=6)
+            mstore(add(mem,  58),   shl(208, mload(add(mem, 0x80))))      // settlementTimestamp (W=6)
+            mstore(add(mem,  64),   shl( 96, mload(add(mem, 0xa0))))      // token1           (W=20)
+            mstore(add(mem,  84),   shl(208, mload(add(mem, 0xc0))))      // lastReportOppoTime  (W=6)
+            mstore(add(mem,  90),   shl(208, mload(add(mem, 0xe0))))      // settlementTime   (W=6)
+            mstore(add(mem,  96),   shl(128, mload(add(mem, 0x100))))     // escalationHalt   (W=16)
+            mstore(add(mem, 112),   shl( 96, mload(add(mem, 0x120))))     // protocolFeeRecipient (W=20)
+            mstore(add(mem, 132),   shl(160, mload(add(mem, 0x140))))     // settlerReward    (W=12)
+            mstore(add(mem, 144),   shl( 96, mload(add(mem, 0x160))))     // token2           (W=20)
+            mstore(add(mem, 164),   shl(232, mload(add(mem, 0x180))))     // numReports       (W=3)
+            mstore(add(mem, 167),   shl(232, mload(add(mem, 0x1a0))))     // disputeDelay     (W=3)
+            mstore(add(mem, 170),   shl(232, mload(add(mem, 0x1c0))))     // feePercentage    (W=3)
+            mstore(add(mem, 173),   shl(240, mload(add(mem, 0x1e0))))     // multiplier       (W=2)
+            mstore(add(mem, 175),   shl( 96, mload(add(mem, 0x200))))     // callbackContract (W=20)
+            mstore(add(mem, 195),   shl(224, mload(add(mem, 0x220))))     // callbackGasLimit (W=4)
+            mstore(add(mem, 199),   shl(232, mload(add(mem, 0x240))))     // protocolFee      (W=3)
+            mstore8(add(mem, 202),  byte(31, mload(add(mem, 0x260))))     // flags            (W=1)
+
+            // PreimageHelper (skip reportId at slot 20 — already topic1)
+            mstore(add(mem, 203),   shl( 96, mload(add(mem, 0x2a0))))     // creator          (W=20)
+            mstore(add(mem, 223),   shl(208, mload(add(mem, 0x2c0))))     // blockTimestamp   (W=6 narrow)
+            mstore(add(mem, 229),   shl(208, mload(add(mem, 0x2e0))))     // blockNumber      (W=6 narrow)
+        }
+        packedLen = 235;
+    }
+
 }
