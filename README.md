@@ -12,10 +12,10 @@ The latest prototype `src/OpenOracleSlim.sol` uses a single state hash with stat
 
 | Path | Oracle Slim |
 | --- | ---: |
-| `report`  | 68.5k |
-| `dispute` | 59.2k |
-| `settle` | 48.1k |
-| **Lifecycle total** | **175.8k** |
+| `report`  | 71.3k |
+| `dispute` | 57.4k |
+| `settle` | 44.1k |
+| **Lifecycle total** | **172.8k** |
 
 The swapping application `src/OpenSwapSlim.sol` uses a propose -> match -> execute flow, where the match creates an oracle report and execution uses the final oracle price. openSwap matching uses internal oracle balances for swap liquidity as well. Swappers can either use internal oracle game balances for the whole flow or transfer in on swap and receive on execution. 
 
@@ -23,21 +23,21 @@ Tested with the external transfers for the swapper but internal for matcher (ETH
 
 | Path | Swap Slim |
 | --- | ---: |
-| `propose`  | 76k |
-| `match` | 104.4k |
-| `execute` | 113k |
-| **Lifecycle total** | **293.4k** |
+| `propose`  | 78.9k |
+| `match` | 107.3k |
+| `execute` | 106.4k |
+| **Lifecycle total** | **292.6k** |
 
 Swapper sells USDC for ETH with the same mechanics is ~45k more expensive in total (~338k)
 
-Swapper using internal balance to fund the sell leg is ~273k life cycle for both ETH and USDC:
+Swapper using internal balance to fund the sell leg is ~272k life cycle for both ETH and USDC:
 
 | Path | Swap Fully Internal |
 | --- | ---: |
-| `propose`  | 76.9k |
-| `match` | 104.3k |
-| `execute` | 91.6k |
-| **Lifecycle total** | **272.9k** |
+| `propose`  | 79.8k |
+| `match` | 107.3k |
+| `execute` | 85.0k |
+| **Lifecycle total** | **272.1k** |
 
 ```
 
