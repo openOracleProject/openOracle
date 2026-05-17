@@ -58,8 +58,8 @@ interface IOpenOracle2 {
 
     /* ─── Events ────────────────────────────────────────────── */
 
-    event ReportSubmitted(uint256 indexed reportId);
-    event ReportDisputed(uint256 indexed reportId);
+    event ReportSubmitted(uint256 indexed reportId, bytes packed);
+    event ReportDisputed(uint256 indexed reportId, bytes packed);
     event ReportSettled(uint256 indexed reportId);
     event InternalApproval(
         address indexed owner,
@@ -202,13 +202,13 @@ interface IOpenOracle2 {
     function dust(address token1, address token2) external;
 
     /**
-     * @notice Withdraws msg.sender's full internal balance of `tokenToGet` (less the 1-unit sentinel)
-     *         to msg.sender.
+     * @notice Withdraws up to `amount` of `tokenToGet` (capped at available internal balance
+     *         minus the 1-unit sentinel) to msg.sender. Returns the amount actually sent.
      */
-    function withdraw(address tokenToGet) external returns (uint256 sent);
+    function withdraw(address tokenToGet, uint256 amount) external returns (uint256 sent);
 
     /**
      * @notice Same as `withdraw`, but sends to `to` instead of msg.sender.
      */
-    function withdrawTo(address tokenToGet, address to) external returns (uint256 sent);
+    function withdrawTo(address tokenToGet, uint256 amount, address to) external returns (uint256 sent);
 }
