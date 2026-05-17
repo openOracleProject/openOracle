@@ -138,8 +138,8 @@ abstract contract SlimTestBase is Test {
         return _defaultOracleParams();
     }
 
-    function _defaultSlippage() internal view virtual returns (openSwapV2.SlippageParams memory) {
-        return openSwapV2.SlippageParams({priceTolerated: 5e26, toleranceRange: 1e7 - 1});
+    function _defaultSlippage() internal view virtual returns (SwapCompat.SlippageParams memory) {
+        return SwapCompat.SlippageParams({priceTolerated: 5e26, toleranceRange: 1e7 - 1});
     }
 
     function _defaultFulfillFee() internal view virtual returns (openSwapV2.FulfillFeeParams memory) {
@@ -262,7 +262,9 @@ abstract contract SlimTestBase is Test {
         s.maxGameTime = MAX_GAME_TIME;
         s.blocksPerSecond = 500;
         s.settlerReward = SETTLER_REWARD;
-        s.slippageParams = _defaultSlippage();
+        SwapCompat.SlippageParams memory slip = _defaultSlippage();
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = proposeUseInternal;
@@ -298,7 +300,8 @@ abstract contract SlimTestBase is Test {
         sp.swapper = s.swapper;
         sp.executorGasComp = s.executorGasComp;
         sp.useInternalBalances = s.useInternalBalances;
-        sp.slippageParams = s.slippageParams;
+        sp.priceTolerated = s.priceTolerated;
+        sp.toleranceRange = s.toleranceRange;
 
         sp.matcher = matcher;
         sp.start = startTs;
