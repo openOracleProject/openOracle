@@ -203,8 +203,8 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         uint128 minFulfill = 3 ether;
         uint96 mgc = 0.001 ether;
         uint96 egc = 0.001 ether;
-        openSwapV2.SlippageParams memory slip =
-            openSwapV2.SlippageParams({priceTolerated: 5e29, toleranceRange: 1e7 - 1});
+        SwapCompat.SlippageParams memory slip =
+            SwapCompat.SlippageParams({priceTolerated: 5e29, toleranceRange: 1e7 - 1});
 
         proposeTs = uint48(block.timestamp);
         uint256 swapId = attacker.doPropose{value: uint256(mgc) + uint256(egc) + SETTLER_REWARD}(
@@ -224,7 +224,8 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         s.maxGameTime = MAX_GAME_TIME;
         s.blocksPerSecond = 500;
         s.settlerReward = SETTLER_REWARD;
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
         s.matcherGasComp = mgc;
         s.executorGasComp = egc;
         s.useInternalBalances = false;
@@ -296,7 +297,7 @@ contract ReentrantSwapper {
     function doPropose(
         uint128 sellAmt, address sellToken, uint128 minOut, address buyToken, uint128 minFulfillLiquidity,
         uint48 expiration, uint96 matcherGasComp, uint96 executorGasComp,
-        SwapCompat.OracleParams calldata op, openSwapV2.SlippageParams calldata slip,
+        SwapCompat.OracleParams calldata op, SwapCompat.SlippageParams calldata slip,
         openSwapV2.FulfillFeeParams calldata ff, openSwapV2.Permit2Params calldata pp, bool useInternalBalances
     ) external payable returns (uint256) {
         return SwapCompat.proposeRaw(

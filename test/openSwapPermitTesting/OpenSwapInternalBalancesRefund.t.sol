@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 /// @notice Force a slippage-bailout during execute under useInternalBalances=true and
 ///         assert refunds land in oracle internal balances (not external pushes).
@@ -12,10 +13,10 @@ contract OpenSwapInternalBalancesRefundTest is SlimTestBase {
     }
 
     // Use a tight tolerance around an off-band price so the slippage check fails at execute.
-    function _defaultSlippage() internal view override returns (openSwapV2.SlippageParams memory) {
+    function _defaultSlippage() internal view override returns (SwapCompat.SlippageParams memory) {
         // Price for amount2=2000e18, amount1=1e18 → 5e26.
         // We propose with priceTolerated far from 5e26 and a tight band → slippage fails at execute.
-        return openSwapV2.SlippageParams({priceTolerated: 1e27, toleranceRange: 1000});
+        return SwapCompat.SlippageParams({priceTolerated: 1e27, toleranceRange: 1000});
     }
 
     function testInternalBalance_ExecuteSlippageBailout_RefundsInternally() public {

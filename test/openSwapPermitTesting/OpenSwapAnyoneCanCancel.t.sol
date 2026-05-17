@@ -78,12 +78,12 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
         vm.prank(thirdParty);
         swapContract.cancelSwap(swapId, s, m);
 
-        uint96 total = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP;
-        uint256 callerPiece = total / 5;
-        uint256 swapperPiece = total - callerPiece;
+        // Post-expire third-party cancel: caller takes matcherGasComp, swapper gets executorGasComp + reward.
+        uint256 callerPiece = MATCHER_GAS_COMP;
+        uint256 swapperPiece = EXECUTOR_GAS_COMP;
 
-        assertEq(swapper.balance, swapperEthAfterPropose + swapperPiece + SETTLER_REWARD, "swapper got 4/5 + settlerReward");
-        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "third party 1/5 queued in tempHolding");
+        assertEq(swapper.balance, swapperEthAfterPropose + swapperPiece + SETTLER_REWARD, "swapper got executorGasComp + settlerReward");
+        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "third party got matcherGasComp queued in tempHolding");
         assertEq(thirdParty.balance, thirdPartyEthBefore, "third party not paid directly");
     }
 
@@ -115,24 +115,23 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
         vm.prank(thirdParty);
         swapContract.cancelSwap(swapId, s, m);
 
-        // Third-party caller piece stays in tempHolding until they withdraw.
-        uint96 total = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP;
-        uint256 callerPiece = total / 5;
+        // Third-party caller piece (matcherGasComp) stays in tempHolding until they withdraw.
+        uint256 callerPiece = MATCHER_GAS_COMP;
         assertEq(address(swapContract).balance, callerPiece, "openSwap holds only caller's queued piece");
-        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "caller queued in tempHolding");
+        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "caller's matcherGasComp queued in tempHolding");
         assertEq(_spendable(address(swapContract), address(sellToken)), 0, "openSwap sellToken drained");
     }
 
     // ── Conservation across odd gas-comp totals ─────────────────────────
 
-    function testGasCompSplit_OddValueConservation() public {
-        // Use a known totalGasComp value (matcher + executor) and verify swapper + caller pieces sum to total
+    function testGasCompSplit_Conservation() public pure {
+        // Post-expire third-party cancel: caller takes matcherGasComp, swapper takes executorGasComp.
+        // Sum equals total gas comp regardless of M/E ratio.
         uint96 mgc = MATCHER_GAS_COMP;
         uint96 egc = EXECUTOR_GAS_COMP;
-        uint96 total = mgc + egc;
 
-        uint256 callerPiece = total / 5;
-        uint256 swapperPiece = total - callerPiece;
-        assertEq(callerPiece + swapperPiece, total, "split conservation");
+        uint256 callerPiece = mgc;
+        uint256 swapperPiece = egc;
+        assertEq(callerPiece + swapperPiece, uint256(mgc) + uint256(egc), "split conservation");
     }
 }

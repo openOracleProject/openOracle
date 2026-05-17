@@ -23,7 +23,7 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
         returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
-        openSwapV2.SlippageParams memory slip = _defaultSlippage();
+        SwapCompat.SlippageParams memory slip = _defaultSlippage();
         openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         s.sellAmt = SELL_AMT;
@@ -37,7 +37,8 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = useInternalBalances;
         s.expiration = expirationOffset;
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
 
         m.initialLiquidity = op.initialLiquidity;
         m.escalationHalt = op.escalationHalt;

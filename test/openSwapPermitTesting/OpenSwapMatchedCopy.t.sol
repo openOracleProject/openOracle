@@ -2,9 +2,10 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
-/// @notice Regression test for the slippageParams copy in matchSwap. If the manual
-///         field-by-field copy from ProposedSwap → MatchedSwap omits slippageParams,
+/// @notice Regression test for the slippage fields copied in matchSwap. If the manual
+///         field-by-field copy from ProposedSwap → MatchedSwap omits these fields,
 ///         the stored MatchedSwap has zero slippage params. At execute, toleranceCheck
 ///         against zero params fails for any real price, forcing a SlippageBailout
 ///         refund instead of a successful swap.
@@ -14,7 +15,7 @@ contract OpenSwapMatchedCopyTest is SlimTestBase {
     }
 
     /// @notice Non-trivial slippage params + a price that sits inside the band must
-    ///         result in a clean execute (no SlippageBailout). If slippageParams were
+    ///         result in a clean execute (no SlippageBailout). If slippage fields were
     ///         dropped during copy, toleranceCheck(price, 0, 0) → false → refund.
     function testMatchedCopy_SlippageParamsSurviveMatch() public {
         (uint256 swapId, uint48 expiration) = _propose();
@@ -22,9 +23,9 @@ contract OpenSwapMatchedCopyTest is SlimTestBase {
         (uint128 reportId, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, amount2, expiration);
 
         // Confirm slippage params actually copied through.
-        openSwapV2.SlippageParams memory sp = _defaultSlippage();
-        assertEq(sPost.slippageParams.priceTolerated, sp.priceTolerated, "priceTolerated copied");
-        assertEq(sPost.slippageParams.toleranceRange, sp.toleranceRange, "toleranceRange copied");
+        SwapCompat.SlippageParams memory sp = _defaultSlippage();
+        assertEq(sPost.priceTolerated, sp.priceTolerated, "priceTolerated copied");
+        assertEq(sPost.toleranceRange, sp.toleranceRange, "toleranceRange copied");
 
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);

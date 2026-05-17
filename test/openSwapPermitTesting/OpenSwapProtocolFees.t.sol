@@ -310,8 +310,8 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint128 minFulfill = 3 ether;
         uint96 mgc = 0.001 ether;
         uint96 egc = 0.001 ether;
-        openSwapV2.SlippageParams memory slip =
-            openSwapV2.SlippageParams({priceTolerated: 5e29, toleranceRange: 1e7 - 1});
+        SwapCompat.SlippageParams memory slip =
+            SwapCompat.SlippageParams({priceTolerated: 5e29, toleranceRange: 1e7 - 1});
 
         uint256 swapId = _proposeEthBuyWith(sellAmt, minFulfill, mgc, egc, slip);
 
@@ -358,7 +358,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint128 minFulfill,
         uint96 mgc,
         uint96 egc,
-        openSwapV2.SlippageParams memory slip
+        SwapCompat.SlippageParams memory slip
     ) internal returns (uint256 swapId) {
         proposeTs = uint48(block.timestamp);
         vm.prank(swapper);
@@ -374,7 +374,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint128 minFulfill,
         uint96 mgc,
         uint96 egc,
-        openSwapV2.SlippageParams memory slip
+        SwapCompat.SlippageParams memory slip
     ) internal view returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) {
         s.swapper = swapper;
         s.sellAmt = sellAmt;
@@ -385,7 +385,8 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         s.maxGameTime = MAX_GAME_TIME;
         s.blocksPerSecond = 500;
         s.settlerReward = SETTLER_REWARD;
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
         s.matcherGasComp = mgc;
         s.executorGasComp = egc;
 

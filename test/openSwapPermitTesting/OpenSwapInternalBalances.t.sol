@@ -227,17 +227,17 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         vm.prank(thirdParty);
         swapContract.cancelSwap(swapId, s, m);
 
-        uint256 total = uint256(MATCHER_GAS_COMP) + uint256(EXECUTOR_GAS_COMP);
-        uint256 callerPiece = total / 5;
-        uint256 swapperPiece = total - callerPiece;
+        // Post-expire third-party cancel: caller takes matcherGasComp, swapper gets executorGasComp + reward.
+        uint256 callerPiece = MATCHER_GAS_COMP;
+        uint256 swapperPiece = EXECUTOR_GAS_COMP;
 
         assertEq(_spendable(swapper, address(sellToken)), swapperInternalSellBefore, "sellToken returned internally");
         assertEq(
             swapContract.tempHolding(swapper),
             swapperPiece + SETTLER_REWARD,
-            "swapper got 4/5 + settler reward queued"
+            "swapper got executorGasComp + settler reward queued"
         );
-        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "caller got 1/5 queued");
+        assertEq(swapContract.tempHolding(thirdParty), callerPiece, "caller got matcherGasComp queued");
         assertEq(swapper.balance, swapperEthBefore - uint256(MATCHER_GAS_COMP) - uint256(EXECUTOR_GAS_COMP) - uint256(SETTLER_REWARD), "no direct ETH refund");
         assertEq(thirdParty.balance, thirdPartyEthBefore, "third party not paid directly");
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap hash deleted");

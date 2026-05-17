@@ -19,7 +19,7 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
         returns (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m)
     {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
-        openSwapV2.SlippageParams memory slip = _defaultSlippage();
+        SwapCompat.SlippageParams memory slip = _defaultSlippage();
         openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         s.sellAmt = SELL_AMT;
@@ -33,7 +33,8 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = false;
         s.expiration = uint48(1 hours);
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
 
         m.initialLiquidity = op.initialLiquidity;
         m.escalationHalt = op.escalationHalt;
@@ -148,4 +149,105 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     function testBoundary_GrowthRate() public { _assertBoundary(0x300, 2, "growthRate"); }
     function testBoundary_MaxRounds() public { _assertBoundary(0x320, 2, "maxRounds"); }
     function testBoundary_MinOut() public { _assertBoundary(0x360, 16, "minOut"); }
+
+    // ─── Comprehensive every-padding-byte fuzz ────────────────────────────────
+    //
+    // Strict invariant: dirtying ANY single padding byte in the static portion of
+    // propose() calldata must cause a pure type-decode revert (empty returndata).
+    //
+    // propose() does extensive typed-arg validation BEFORE the staging assembly
+    // (s.flags/s.token2/s.sellToken/.../m.maxFee/...), so each `s.X` / `m.Y`
+    // calldata read passes through Solidity's strict ABI decode and rejects any
+    // dirty high bits before any business logic runs.
+    //
+    // Static padding coverage:
+    //   ProposedSwap (14 fields)            → 276 bytes
+    //   MatcherPreimage (12 fields)         → 319 bytes
+    //   minOut (uint128)                    → 16 bytes
+    //   Total                               → 611 byte positions
+    //
+    // We skip the dynamic Permit2Params region (0x340 offset + 0x380+ tail) — its
+    // signature is variable-length and contract usage is bounded by the permit2
+    // pre-deployed contract's own validation.
+    function testFuzzAllPaddingBytes_Propose_TypeDecodeRevert() public {
+        uint256[] memory padBytes = _allProposePaddingByteOffsets();
+        bytes1 DIRTY = 0xFF;
+
+        for (uint256 i = 0; i < padBytes.length; i++) {
+            uint256 snap = vm.snapshotState();
+
+            uint256 nextIdBefore = swapContract.nextSwapId();
+            (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _buildCleanInputs();
+            bytes memory data = abi.encodeCall(swapContract.propose, (s, m, _emptyPermit2(), MIN_OUT));
+            data[4 + padBytes[i]] = DIRTY;
+
+            uint256 eth = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
+            vm.prank(swapper);
+            (bool ok, bytes memory ret) = address(swapContract).call{value: eth}(data);
+
+            assertFalse(ok, string.concat("dirty must revert @ byte ", vm.toString(padBytes[i])));
+            assertEq(
+                ret.length,
+                0,
+                string.concat("dirty must revert at type-decode (empty data) @ byte ", vm.toString(padBytes[i]))
+            );
+            assertEq(
+                swapContract.nextSwapId(),
+                nextIdBefore,
+                string.concat("dirty revert must not advance nextSwapId @ byte ", vm.toString(padBytes[i]))
+            );
+            assertEq(
+                swapContract.swaps(nextIdBefore),
+                bytes32(0),
+                string.concat("dirty revert must not store swap hash @ byte ", vm.toString(padBytes[i]))
+            );
+
+            vm.revertToState(snap);
+        }
+    }
+
+    function _allProposePaddingByteOffsets() internal pure returns (uint256[] memory out) {
+        uint256[2][27] memory fields = [
+            // ProposedSwap at 0x000
+            [uint256(0x000), uint256(16)], // sellAmt
+            [uint256(0x020), uint256(16)], // minFulfillLiquidity
+            [uint256(0x040), uint256(12)], // settlerReward
+            [uint256(0x060), uint256(3)],  // maxGameTime
+            [uint256(0x080), uint256(2)],  // blocksPerSecond
+            [uint256(0x0A0), uint256(20)], // buyToken
+            [uint256(0x0C0), uint256(12)], // matcherGasComp
+            [uint256(0x0E0), uint256(20)], // sellToken
+            [uint256(0x100), uint256(20)], // swapper (override; expected 0)
+            [uint256(0x120), uint256(12)], // executorGasComp
+            [uint256(0x140), uint256(1)],  // useInternalBalances
+            [uint256(0x160), uint256(6)],  // expiration
+            [uint256(0x180), uint256(29)], // priceTolerated
+            [uint256(0x1A0), uint256(3)],  // toleranceRange
+            // MatcherPreimage at 0x1C0
+            [uint256(0x1C0), uint256(16)], // initialLiquidity
+            [uint256(0x1E0), uint256(16)], // escalationHalt
+            [uint256(0x200), uint256(6)],  // settlementTime
+            [uint256(0x220), uint256(3)],  // disputeDelay
+            [uint256(0x240), uint256(3)],  // protocolFee
+            [uint256(0x260), uint256(2)],  // multiplier
+            [uint256(0x280), uint256(6)],  // startFulfillFeeIncrease (override; expected 0)
+            [uint256(0x2A0), uint256(3)],  // maxFee
+            [uint256(0x2C0), uint256(3)],  // startingFee
+            [uint256(0x2E0), uint256(3)],  // roundLength
+            [uint256(0x300), uint256(2)],  // growthRate
+            [uint256(0x320), uint256(2)],  // maxRounds
+            // minOut (top-level uint128) at 0x360
+            [uint256(0x360), uint256(16)]
+        ];
+
+        uint256 total = 0;
+        for (uint256 i = 0; i < fields.length; i++) total += 32 - fields[i][1];
+        out = new uint256[](total);
+        uint256 k = 0;
+        for (uint256 i = 0; i < fields.length; i++) {
+            uint256 slotOff = fields[i][0];
+            uint256 padLen = 32 - fields[i][1];
+            for (uint256 p = 0; p < padLen; p++) out[k++] = slotOff + p;
+        }
+    }
 }

@@ -109,7 +109,9 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         s.maxGameTime = MAX_GAME_TIME;
         s.blocksPerSecond = 500;
         s.settlerReward = 0;
-        s.slippageParams = _defaultSlippage();
+        SwapCompat.SlippageParams memory slip = _defaultSlippage();
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = false;

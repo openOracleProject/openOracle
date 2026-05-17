@@ -22,6 +22,11 @@ library SwapCompat {
         uint16 blocksPerSecond;
     }
 
+    struct SlippageParams {
+        uint232 priceTolerated;
+        uint24 toleranceRange;
+    }
+
     /// @dev Translates the pre-hash-refactor 13-arg propose shape into the new
     ///      (ProposedSwap, MatcherPreimage, Permit2Params, minOut) call. Caller-supplied
     ///      override slots (s.swapper, m.startFulfillFeeIncrease) are zero — contract overrides
@@ -38,7 +43,7 @@ library SwapCompat {
         uint96 matcherGasComp,
         uint96 executorGasComp,
         OracleParams memory op,
-        openSwapV2.SlippageParams memory slip,
+        SlippageParams memory slip,
         openSwapV2.FulfillFeeParams memory ff,
         openSwapV2.Permit2Params memory permit2,
         bool useInternalBalances
@@ -56,7 +61,8 @@ library SwapCompat {
         s.executorGasComp = executorGasComp;
         s.useInternalBalances = useInternalBalances;
         s.expiration = expirationOffset;
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
 
         openSwapV2.MatcherPreimage memory m;
         m.initialLiquidity = op.initialLiquidity;

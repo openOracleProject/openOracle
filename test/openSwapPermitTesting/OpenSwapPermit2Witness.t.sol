@@ -22,7 +22,7 @@ contract OpenSwapPermit2WitnessTest is SlimTestBase {
         //   - s with swapper = msg.sender (this test's `swapper` EOA), expiration = raw offset
         //   - m with startFulfillFeeIncrease = 0
         SwapCompat.OracleParams memory op = _defaultOracleParams();
-        openSwapV2.SlippageParams memory slip = _defaultSlippage();
+        SwapCompat.SlippageParams memory slip = _defaultSlippage();
         openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         openSwapV2.ProposedSwap memory s;
@@ -38,7 +38,8 @@ contract OpenSwapPermit2WitnessTest is SlimTestBase {
         s.executorGasComp = EXECUTOR_GAS_COMP;
         s.useInternalBalances = useInternalBalances;
         s.expiration = uint48(1 hours); // raw offset; NOT the absolute-time override
-        s.slippageParams = slip;
+        s.priceTolerated = slip.priceTolerated;
+        s.toleranceRange = slip.toleranceRange;
 
         openSwapV2.MatcherPreimage memory m;
         m.initialLiquidity = op.initialLiquidity;

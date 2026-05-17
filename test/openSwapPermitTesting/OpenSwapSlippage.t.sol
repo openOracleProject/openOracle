@@ -2,23 +2,24 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
+import {SwapCompat} from "./SwapCompat.sol";
 
 contract OpenSwapSlippageTest is SlimTestBase {
     // State that the overridable param helper reads.
-    openSwapV2.SlippageParams internal _slippage;
+    SwapCompat.SlippageParams internal _slippage;
 
     function setUp() public {
         _setUpAll();
         // Default loose slippage so happy-flow tests pass.
-        _slippage = openSwapV2.SlippageParams({priceTolerated: 5e26, toleranceRange: 1e7 - 1});
+        _slippage = SwapCompat.SlippageParams({priceTolerated: 5e26, toleranceRange: 1e7 - 1});
     }
 
-    function _defaultSlippage() internal view override returns (openSwapV2.SlippageParams memory) {
+    function _defaultSlippage() internal view override returns (SwapCompat.SlippageParams memory) {
         return _slippage;
     }
 
     function _setSlippage(uint232 priceTolerated, uint24 toleranceRange) internal {
-        _slippage = openSwapV2.SlippageParams({priceTolerated: priceTolerated, toleranceRange: toleranceRange});
+        _slippage = SwapCompat.SlippageParams({priceTolerated: priceTolerated, toleranceRange: toleranceRange});
     }
 
     function _runToExecute(uint128 amount2) internal {
