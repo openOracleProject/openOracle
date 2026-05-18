@@ -39,4 +39,5 @@ abstract contract OpenOracleErrors {
     error TimestampsMustBeZero();
     error NumReportsMustBeZero();
     error InvalidToken();
+    error NonZeroAllowance();
 }
