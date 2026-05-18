@@ -42,7 +42,6 @@ contract openSwapV2 is ReentrancyGuard {
     error MinOutInconsistent();
     error WrongHash();
     error WrongOracleHash();
-    error AlreadyMatched();
     error NotActive();
     error Expired();
     error NotSwapper();
@@ -324,7 +323,6 @@ contract openSwapV2 is ReentrancyGuard {
         uint96 matcherGasComp = _swap.matcherGasComp;
         uint96 settlerReward = _swap.settlerReward;
 
-        if (s.matcher != address(0)) revert AlreadyMatched();
         if (s.swapper == address(0)) revert NotActive();
         if (block.timestamp > _swap.expiration) revert Expired();
 
