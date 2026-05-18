@@ -235,7 +235,7 @@ contract OpenOracle is OpenOracleErrors {
      *      true when the disputer is intended to fund via approveInternal; any false flag makes
      *      that token's required contribution come from msg.sender externally.
      * @param reportId The report instance to dispute
-     * @param tokenToSwap Either token1 or token2; disputer is selling chosen token to previous reporter at the quoted ratio
+     * @param tokenToSwap Either token1 or token2; disputer is selling chosen token to previous reporter at the previously quoted exchange rate
      * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100 unless at escalationHalt where it must equal oldAmount1 + 1
      * @param newAmount2 New token2 amount proposed by the disputer. Ratio of newAmount1 and newAmount2 is the new price disputer is quoting.
      * @param disputer Address recorded as the new currentReporter, credited for any ETH excess. Also receives tokens back when the round completes.
