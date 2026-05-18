@@ -82,9 +82,8 @@ contract OpenOracle is OpenOracleErrors {
         uint24 feePercentage; //1000 = 0.01%, portion per swap going to previous reporter
         uint16 multiplier; // 140 = 1.4x, how much currentAmount1 must grow by each round
         address callbackContract; // settlement callback calls into this address
-        // Gas forwarded to settlement callback. Values above practical tx gas limits can make settlement impossible,
-        // leaving the current reporter's two-sided limit-order amounts locked. Every disputer inherits this parameter.
-        uint32 callbackGasLimit;
+        uint32 callbackGasLimit;  // Gas forwarded to settlement callback. Values above practical tx gas limits can make settlement impossible,
+                                  // leaving the current reporter's two-sided limit-order amounts locked. Every disputer inherits this parameter.
         uint24 protocolFee; // 1000 = 0.01%, portion per swap going to protocolFeeRecipient
         uint8 flags; // see flags above. timeType true means the game's clock uses timestamps, false, block numbers.
     }
