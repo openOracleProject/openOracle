@@ -166,6 +166,7 @@ contract OpenOracle is OpenOracleErrors {
 
         bool trackDisputes = _hasFlag(params.flags, FLAG_TRACK_DISPUTES);
         if (trackDisputes) {
+            // Index 0 records the initial report, not a dispute; tokenToSwap is intentionally unset.
             DisputeRecord storage initialRecord = disputeHistory[reportId][0];
             initialRecord.amount1 = amount1;
             initialRecord.amount2 = amount2;
