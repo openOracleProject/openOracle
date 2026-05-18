@@ -82,7 +82,9 @@ contract OpenOracle is OpenOracleErrors {
         uint24 feePercentage; //1000 = 0.01%, portion per swap going to previous reporter
         uint16 multiplier; // 140 = 1.4x, how much currentAmount1 must grow by each round
         address callbackContract; // settlement callback calls into this address
-        uint32 callbackGasLimit; // gas forwarded to settlement callback; unsafe values above practical tx gas limits can make settlement impossible.
+        // Gas forwarded to settlement callback. Values above practical tx gas limits can make settlement impossible,
+        // leaving the current reporter's two-sided limit-order amounts locked. Every disputer inherits this parameter.
+        uint32 callbackGasLimit;
         uint24 protocolFee; // 1000 = 0.01%, portion per swap going to protocolFeeRecipient
         uint8 flags; // see flags above. timeType true means the game's clock uses timestamps, false, block numbers.
     }
@@ -230,6 +232,9 @@ contract OpenOracle is OpenOracleErrors {
 
     /**
      * @notice Swaps against and replaces the current report with new amounts.
+     * @dev For delegated disputes where msg.sender != disputer, set both tryInternalBalance flags
+     *      true when the disputer is intended to fund via approveInternal; any false flag makes
+     *      that token's required contribution come from msg.sender externally.
      * @param reportId The report instance to dispute
      * @param tokenToSwap Either token1 or token2; disputer is selling chosen token to previous reporter at the quoted ratio
      * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100 unless at escalationHalt where it must equal oldAmount1 + 1
@@ -344,10 +349,7 @@ contract OpenOracle is OpenOracleErrors {
             uint256 netToken2Receive = newAmount2 < oldAmount2 ? oldAmount2 - newAmount2 : 0;
 
             if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) {
-                // gas optimization for intentional burn w/o writing to storage
-                address pfr = oracle.protocolFeeRecipient;
-                uint256 bal = tokenHolder[pfr][token1];
-                tokenHolder[pfr][token1] = bal == 0 ? protocolFee + 1 : bal + protocolFee;
+                tokenHolder[oracle.protocolFeeRecipient][token1] += protocolFee;
             }
 
             if (netToken2Contribution > 0) {
@@ -374,9 +376,7 @@ contract OpenOracle is OpenOracleErrors {
             uint256 netToken1Contribution = newAmount1 > (oldAmount1) ? newAmount1 - oldAmount1 : 0;
 
             if (protocolFee > 0 && oracle.protocolFeeRecipient != address(0)) {
-                address pfr = oracle.protocolFeeRecipient;
-                uint256 bal = tokenHolder[pfr][token2];
-                tokenHolder[pfr][token2] = bal == 0 ? protocolFee + 1 : bal + protocolFee;
+                tokenHolder[oracle.protocolFeeRecipient][token2] += protocolFee;
             }
 
             if (netToken1Contribution > 0) {
@@ -637,6 +637,7 @@ contract OpenOracle is OpenOracleErrors {
     */
     function approveInternal(address spender, address token, uint256 amount) external {
         if (spender == address(0)) revert AddressCannotBeZero();
+        if (internalAllowance[msg.sender][spender][token] != 0 && amount != 0) revert NonZeroAllowance();
         internalAllowance[msg.sender][spender][token] = amount;
         emit InternalApproval(msg.sender, spender, token, amount);
     }
