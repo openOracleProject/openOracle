@@ -28,7 +28,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     // ── Propose validation ──────────────────────────────────────────────
 
     function testSwap_SellTokenEqualsBuyToken_Reverts() public {
-        vm.expectRevert(Errors.SameToken.selector);
+        vm.expectRevert(Errors.TokensCannotBeSame.selector);
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(sellToken), MIN_FULFILL_LIQUIDITY,
             _defaultOracleParams(), _defaultFulfillFee());
     }

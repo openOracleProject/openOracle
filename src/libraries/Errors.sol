@@ -11,24 +11,17 @@ library Errors {
     error InvalidGasLimit();
     error SettleTooEarly();
     error AlreadySettled();
-    error ExactToken1CannotBeZero();
     error SettleVsDisputeDelayTiming();
     error MsgValueTooLow();
-    error MsgValueTooHigh();
     error FeesTooHigh();
     error MultiplierTooLow();
-    error ReportAlreadySubmitted();
-    error InvalidReportId();
     error AddressCannotBeZero();
-    error InvalidAmount2Expected();
     error InvalidTokenToSwap();
     error NoReportYet();
     error EscalationHalted();
     error AmountsCannotBeZero();
     error DisputeTooLate();
     error DisputeTooEarly();
-    error NewPriceInsideFeeBoundary();
-    error ReportNotSettled();
     error InvalidMode();
     error InvalidTiming();
     error Permit2AmountMismatch();
@@ -40,8 +33,6 @@ library Errors {
     error NumReportsMustBeZero();
     error InvalidToken();
     error NonZeroAllowance();
-    error MsgValueMismatch();
-    error SameToken();
     error ZeroAmount();
     error InvalidExpiration();
     error InvalidFulfillFee();
@@ -57,7 +48,6 @@ library Errors {
     error NotMatched();
     error CantBailOutYet();
     error NothingToWithdraw();
-    error EthSendFailed();
     error OracleSettlementNotEligible();
     error MustBeZero();
 }

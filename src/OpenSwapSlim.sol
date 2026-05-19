@@ -163,7 +163,7 @@ contract openSwapV2 is ReentrancyGuard {
 
         if (msg.value != expected) revert Errors.InvalidMsgValue();
 
-        if (sellToken == buyToken) revert Errors.SameToken();
+        if (sellToken == buyToken) revert Errors.TokensCannotBeSame();
         if (sellAmt == 0 || minOut == 0 || s.minFulfillLiquidity == 0) revert Errors.ZeroAmount();
         if (expiration == 0 || expiration > 30 days) revert Errors.InvalidExpiration();
         if (m.maxFee >= 1e7) revert Errors.InvalidFulfillFee();
@@ -503,7 +503,7 @@ contract openSwapV2 is ReentrancyGuard {
         tempHolding[_to] = keepSentinel ? 1 : 0;
 
         (bool ok,) = payable(_to).call{value: payout}("");
-        if (!ok) revert Errors.EthSendFailed();
+        if (!ok) revert Errors.EthTransferFailed();
     }
 
     /// @dev Bounded-gas ETH push used during state transitions. On failure, credits
