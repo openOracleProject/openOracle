@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 /// @notice openSwap's `tempHolding` is the credit/withdraw store for ETH gas comps.
@@ -81,7 +83,7 @@ contract OpenSwapTempHoldingTest is SlimTestBase {
     function testWithdraw_RevertsOnZero() public {
         // No credit exists
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.NothingToWithdraw.selector);
+        vm.expectRevert(Errors.NothingToWithdraw.selector);
         swapContract.withdraw(matcher, false);
     }
 
@@ -93,7 +95,7 @@ contract OpenSwapTempHoldingTest is SlimTestBase {
 
         // Second attempt with leaveOne=true reverts (only the sentinel remains)
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.NothingToWithdraw.selector);
+        vm.expectRevert(Errors.NothingToWithdraw.selector);
         swapContract.withdraw(matcher, true);
     }
 

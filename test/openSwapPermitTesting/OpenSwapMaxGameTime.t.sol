@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
 
@@ -82,7 +84,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         proposeTs = uint48(block.timestamp);
 
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.InvalidOracleParams.selector);
+        vm.expectRevert(Errors.InvalidOracleParams.selector);
         SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
@@ -96,7 +98,7 @@ contract OpenSwapMaxGameTimeTest is SlimTestBase {
         proposeTs = uint48(block.timestamp);
 
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.InvalidOracleParams.selector);
+        vm.expectRevert(Errors.InvalidOracleParams.selector);
         SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,

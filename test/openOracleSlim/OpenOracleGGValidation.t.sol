@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Compact negative-validation matrix for report / dispute / settle.
 // Each test sets up the smallest possible state and asserts the expected
@@ -21,14 +21,14 @@ contract OpenOracleGGValidationTest is BaseGGTest {
     function testReport_RevertsAmount1Zero() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidAmount1.selector);
+        vm.expectRevert(Errors.InvalidAmount1.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 0, 2000e18, alice, false, false, _emptyTiming());
     }
 
     function testReport_RevertsAmount2Zero() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidAmount2.selector);
+        vm.expectRevert(Errors.InvalidAmount2.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 0, alice, false, false, _emptyTiming());
     }
 
@@ -36,7 +36,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         p.token2Address = p.token1Address;
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.TokensCannotBeSame.selector);
+        vm.expectRevert(Errors.TokensCannotBeSame.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -46,7 +46,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         p.feePercentage = uint24(5_000_000);
         p.protocolFee = uint24(5_000_001);
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.FeesTooHigh.selector);
+        vm.expectRevert(Errors.FeesTooHigh.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -54,7 +54,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         p.multiplier = uint16(99); // < MULTIPLIER_PRECISION (100)
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.MultiplierTooLow.selector);
+        vm.expectRevert(Errors.MultiplierTooLow.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -63,7 +63,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         p.settlementTime = 5;
         p.disputeDelay = 10; // > settlementTime
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.SettleVsDisputeDelayTiming.selector);
+        vm.expectRevert(Errors.SettleVsDisputeDelayTiming.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -74,7 +74,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         p.settlementTime = 10;
         p.disputeDelay = 10; // equal — dispute window is empty
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.SettleVsDisputeDelayTiming.selector);
+        vm.expectRevert(Errors.SettleVsDisputeDelayTiming.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -115,7 +115,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         Slim.OracleGame memory g = _buildDirtyOracleGame(p, 1e18, 2000e18);
         g.reportTimestamp = uint48(1234);
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.TimestampsMustBeZero.selector);
+        vm.expectRevert(Errors.TimestampsMustBeZero.selector);
         oracle.report{value: p.settlerReward}(g, false, false, _emptyTiming());
     }
 
@@ -124,7 +124,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         Slim.OracleGame memory g = _buildDirtyOracleGame(p, 1e18, 2000e18);
         g.lastReportOppoTime = uint48(5678);
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.TimestampsMustBeZero.selector);
+        vm.expectRevert(Errors.TimestampsMustBeZero.selector);
         oracle.report{value: p.settlerReward}(g, false, false, _emptyTiming());
     }
 
@@ -133,7 +133,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         Slim.OracleGame memory g = _buildDirtyOracleGame(p, 1e18, 2000e18);
         g.settlementTimestamp = uint48(9999);
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.TimestampsMustBeZero.selector);
+        vm.expectRevert(Errors.TimestampsMustBeZero.selector);
         oracle.report{value: p.settlerReward}(g, false, false, _emptyTiming());
     }
 
@@ -142,7 +142,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         Slim.OracleGame memory g = _buildDirtyOracleGame(p, 1e18, 2000e18);
         g.numReports = 1;
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.NumReportsMustBeZero.selector);
+        vm.expectRevert(Errors.NumReportsMustBeZero.selector);
         oracle.report{value: p.settlerReward}(g, false, false, _emptyTiming());
     }
 
@@ -150,7 +150,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags = 0x10; // bit 4 — no flag uses it, must revert
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidMode.selector);
+        vm.expectRevert(Errors.InvalidMode.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -166,7 +166,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
     function testReport_RevertsZeroReporter() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, address(0), false, false, _emptyTiming());
     }
 
@@ -174,7 +174,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         // settlerReward = 0.001 ether but we send 0.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.MsgValueTooLow.selector);
+        vm.expectRevert(Errors.MsgValueTooLow.selector);
         CompatTypes.reportRaw(oracle, 0, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -182,7 +182,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // ERC20 pair, but sending more than settlerReward.
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.NeitherTokenIsETH.selector);
+        vm.expectRevert(Errors.NeitherTokenIsETH.selector);
         CompatTypes.reportRaw(oracle, uint256(p.settlerReward) + 1, 
             p, 1e18, 2000e18, alice, false, false, _emptyTiming()
         );
@@ -204,7 +204,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         address randomToken = address(0xDEADBEEF);
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InvalidTokenToSwap.selector);
+        vm.expectRevert(Errors.InvalidTokenToSwap.selector);
         oracle.dispute(
             ctx.reportId, randomToken, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -216,7 +216,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         // newAmount1 will pass escalation check (1e18 * 110/100 = 1.1e18).
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AmountsCannotBeZero.selector);
+        vm.expectRevert(Errors.AmountsCannotBeZero.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 0, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -228,7 +228,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         vm.warp(block.timestamp + 301);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.DisputeTooLate.selector);
+        vm.expectRevert(Errors.DisputeTooLate.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -239,7 +239,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // disputeDelay is 5; we haven't warped at all.
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.DisputeTooEarly.selector);
+        vm.expectRevert(Errors.DisputeTooEarly.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -259,7 +259,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // Roll back time and try again.
         vm.warp(block.timestamp - 250);
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AlreadySettled.selector);
+        vm.expectRevert(Errors.AlreadySettled.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -270,7 +270,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         vm.warp(block.timestamp + 6);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.dispute(
             ctx.reportId,
             address(token1),
@@ -298,7 +298,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         // At halt, expectedAmount1 = oldAmount1 + 1. Submitting a different value reverts.
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.EscalationHalted.selector);
+        vm.expectRevert(Errors.EscalationHalted.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.5e18, 2900e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -311,7 +311,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // newAmount1 should equal oldAmount1 * multiplier / MULTIPLIER_PRECISION = 1e18 * 110 / 100 = 1.1e18.
         // Submit something else.
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InvalidAmount1.selector);
+        vm.expectRevert(Errors.InvalidAmount1.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.05e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
@@ -326,7 +326,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // settlementTime is 300; we haven't warped enough.
 
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.SettleTooEarly.selector);
+        vm.expectRevert(Errors.SettleTooEarly.selector);
         oracle.settle(ctx.reportId, ctx.game, ctx.helper);
     }
 
@@ -340,7 +340,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // Try to settle again — the post-settle game/helper still hashes to the
         // current stored hash, but settlementTimestamp != 0 triggers AlreadySettled.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.AlreadySettled.selector);
+        vm.expectRevert(Errors.AlreadySettled.selector);
         oracle.settle(ctx.reportId, ctx.game, ctx.helper);
     }
 }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
@@ -32,7 +34,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(thirdParty);
-        vm.expectRevert(openSwapV2.NotSwapper.selector);
+        vm.expectRevert(Errors.NotSwapper.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -58,7 +60,7 @@ contract OpenSwapAnyoneCanCancelTest is SlimTestBase {
         vm.roll(block.number + 1);
 
         vm.prank(thirdParty);
-        vm.expectRevert(openSwapV2.NotSwapper.selector);
+        vm.expectRevert(Errors.NotSwapper.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 

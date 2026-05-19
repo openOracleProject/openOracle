@@ -7,6 +7,7 @@ import {oracleFeeReceiver} from "./oracleFeeReceiver.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
+import {Errors} from "./libraries/Errors.sol";
 
 /**
  * @title openSwap
@@ -29,28 +30,6 @@ import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
 contract openSwapV2 is ReentrancyGuard {
     IOpenOracle2 public immutable oracle;
     address public immutable feeReceiverImpl;
-
-    error InvalidMsgValue();
-    error MsgValueMismatch();
-    error SameToken();
-    error ZeroAmount();
-    error InvalidExpiration();
-    error InvalidFulfillFee();
-    error InvalidSlippage();
-    error InvalidOracleParams();
-    error InvalidFulfillFeeParams();
-    error MinOutInconsistent();
-    error WrongHash();
-    error WrongOracleHash();
-    error NotActive();
-    error Expired();
-    error NotSwapper();
-    error NotMatched();
-    error CantBailOutYet();
-    error NothingToWithdraw();
-    error EthSendFailed();
-    error OracleSettlementNotEligible();
-    error MustBeZero();
 
     constructor(address oracle_) {
         oracle = IOpenOracle2(oracle_);
@@ -182,38 +161,38 @@ contract openSwapV2 is ReentrancyGuard {
         bool needsPermit2 = !useInternalBalances && !isEth;
         uint256 expected = (isEth && !useInternalBalances) ? sellAmt + extraEth : extraEth;
 
-        if (msg.value != expected) revert InvalidMsgValue();
+        if (msg.value != expected) revert Errors.InvalidMsgValue();
 
-        if (sellToken == buyToken) revert SameToken();
-        if (sellAmt == 0 || minOut == 0 || s.minFulfillLiquidity == 0) revert ZeroAmount();
-        if (expiration == 0 || expiration > 30 days) revert InvalidExpiration();
-        if (m.maxFee >= 1e7) revert InvalidFulfillFee();
+        if (sellToken == buyToken) revert Errors.SameToken();
+        if (sellAmt == 0 || minOut == 0 || s.minFulfillLiquidity == 0) revert Errors.ZeroAmount();
+        if (expiration == 0 || expiration > 30 days) revert Errors.InvalidExpiration();
+        if (m.maxFee >= 1e7) revert Errors.InvalidFulfillFee();
 
         if (
             s.priceTolerated == 0 || s.toleranceRange == 0
                 || s.toleranceRange > 1e7
-        ) revert InvalidSlippage();
+        ) revert Errors.InvalidSlippage();
 
         if (
             m.settlementTime == 0 || m.initialLiquidity == 0 || s.blocksPerSecond == 0
                 || m.disputeDelay >= m.settlementTime || m.escalationHalt < m.initialLiquidity
                 || m.settlementTime > 4 * 60 * 60 || m.protocolFee >= 1e7 || s.maxGameTime < m.settlementTime * 20
                 || s.maxGameTime > 604800 || m.multiplier < 100
-        ) revert InvalidOracleParams();
+        ) revert Errors.InvalidOracleParams();
 
         if (
             m.maxFee == 0 || m.startingFee == 0 || m.growthRate < 10000 || m.maxRounds == 0 || m.maxRounds > 100
                 || m.roundLength == 0 || m.maxFee < m.startingFee || m.maxFee > 1e7
-        ) revert InvalidFulfillFeeParams();
+        ) revert Errors.InvalidFulfillFeeParams();
 
-        if (s.swapper != address(0) || m.startFulfillFeeIncrease != 0) revert MustBeZero();
+        if (s.swapper != address(0) || m.startFulfillFeeIncrease != 0) revert Errors.MustBeZero();
 
         uint256 upperPrice =
             Math.mulDiv(s.priceTolerated, uint256(1e7) + s.toleranceRange, 1e7);
         uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice);
         worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, m.maxFee, 1e7);
 
-        if (minOut > worstFulfillAmt) revert MinOutInconsistent();
+        if (minOut > worstFulfillAmt) revert Errors.MinOutInconsistent();
 
         swapId = nextSwapId++;
 
@@ -301,7 +280,7 @@ contract openSwapV2 is ReentrancyGuard {
             mstore(0x40, add(stagedMem, 0x340))
         }
 
-        if (passedHash != swaps[swapId]) revert WrongHash();
+        if (passedHash != swaps[swapId]) revert Errors.WrongHash();
 
         MatchedSwap memory s;
 
@@ -323,8 +302,8 @@ contract openSwapV2 is ReentrancyGuard {
         uint96 matcherGasComp = _swap.matcherGasComp;
         uint96 settlerReward = _swap.settlerReward;
 
-        if (s.swapper == address(0)) revert NotActive();
-        if (block.timestamp > _swap.expiration) revert Expired();
+        if (s.swapper == address(0)) revert Errors.NotActive();
+        if (block.timestamp > _swap.expiration) revert Errors.Expired();
 
         address matcher = msg.sender;
         uint24 fulfillmentFee = uint24(
@@ -388,11 +367,11 @@ contract openSwapV2 is ReentrancyGuard {
         nonReentrant
     {
         bytes32 passedHash = keccak256(abi.encode(_swap, preimage));
-        if (passedHash != swaps[swapId]) revert WrongHash();
+        if (passedHash != swaps[swapId]) revert Errors.WrongHash();
 
         ProposedSwap memory s = _swap;
 
-        if (s.swapper == address(0)) revert NotActive();
+        if (s.swapper == address(0)) revert Errors.NotActive();
 
         address caller;
         uint256 callerPiece;
@@ -405,7 +384,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint128 sellAmt = s.sellAmt;
 
         if (block.timestamp <= s.expiration) {
-            if (msg.sender != swapper) revert NotSwapper();
+            if (msg.sender != swapper) revert Errors.NotSwapper();
             callerPiece = 0;
             swapperPiece = totalGasComp;
         } else {
@@ -479,12 +458,12 @@ contract openSwapV2 is ReentrancyGuard {
      */
     function bailOut(uint256 swapId, MatchedSwap calldata _swap) external nonReentrant {
         bytes32 passedHash = keccak256(abi.encode(_swap));
-        if (passedHash != swaps[swapId]) revert WrongHash();
+        if (passedHash != swaps[swapId]) revert Errors.WrongHash();
 
         MatchedSwap memory s = _swap;
 
-        if (s.matcher == address(0)) revert NotMatched();
-        if (s.swapper == address(0)) revert NotActive();
+        if (s.matcher == address(0)) revert Errors.NotMatched();
+        if (s.swapper == address(0)) revert Errors.NotActive();
 
         bool isGameTooLong = block.timestamp - s.start > s.maxGameTime;
 
@@ -498,13 +477,13 @@ contract openSwapV2 is ReentrancyGuard {
             return;
         }
 
-        revert CantBailOutYet();
+        revert Errors.CantBailOutYet();
     }
 
     /// @notice Seeds a 1-wei sentinel on `_to`'s tempHolding slot to warm it for future credits. Caller pays the 1 wei.
     /// @param _to Address whose tempHolding slot to seed
     function dust(address _to) external payable {
-        if (msg.value != 1) revert InvalidMsgValue();
+        if (msg.value != 1) revert Errors.InvalidMsgValue();
         tempHolding[_to] += 1;
     }
 
@@ -518,13 +497,13 @@ contract openSwapV2 is ReentrancyGuard {
         uint256 amount = tempHolding[_to];
         bool keepSentinel = leaveOne || msg.sender != _to;
 
-        if (keepSentinel ? amount <= 1 : amount == 0) revert NothingToWithdraw();
+        if (keepSentinel ? amount <= 1 : amount == 0) revert Errors.NothingToWithdraw();
 
         uint256 payout = keepSentinel ? amount - 1 : amount;
         tempHolding[_to] = keepSentinel ? 1 : 0;
 
         (bool ok,) = payable(_to).call{value: payout}("");
-        if (!ok) revert EthSendFailed();
+        if (!ok) revert Errors.EthSendFailed();
     }
 
     /// @dev Bounded-gas ETH push used during state transitions. On failure, credits
@@ -562,10 +541,10 @@ contract openSwapV2 is ReentrancyGuard {
             mstore(0x40, add(mem, 0x200))
         }
 
-        if (passedSwapHash != swaps[swapId]) revert WrongHash();
+        if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
 
-        if (s.matcher == address(0)) revert NotMatched();
-        if (s.swapper == address(0)) revert NotActive();
+        if (s.matcher == address(0)) revert Errors.NotMatched();
+        if (s.swapper == address(0)) revert Errors.NotActive();
 
         uint256 reportId = s.reportId;
         bytes32 oracleHash = oracle.oracleGame(reportId);
@@ -604,10 +583,10 @@ contract openSwapV2 is ReentrancyGuard {
             alreadySettled = true;
         }
 
-        if (!matches) revert WrongOracleHash();
+        if (!matches) revert Errors.WrongOracleHash();
 
         if (uint48(block.timestamp) < oracleState.reportTimestamp + oracleState.settlementTime) {
-            revert OracleSettlementNotEligible();
+            revert Errors.OracleSettlementNotEligible();
         }
 
         delete swaps[swapId];

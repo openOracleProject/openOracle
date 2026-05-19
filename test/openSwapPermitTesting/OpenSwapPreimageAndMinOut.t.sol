@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 /// @notice MatcherPreimage tampering tests + minOut validation at propose.
@@ -17,7 +19,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
             _buildSwapAndPreimage(swapId, expiration);
         m = tamperFn(m);
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -83,7 +85,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
         m.startFulfillFeeIncrease = uint48(block.timestamp); // wrong — should be the propose timestamp
 
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -101,7 +103,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
 
     function testMinOutValidation_ExceedsWorstCase_Reverts() public {
         // minOut larger than worstFulfillAmt
-        vm.expectRevert(openSwapV2.MinOutInconsistent.selector);
+        vm.expectRevert(Errors.MinOutInconsistent.selector);
         _proposeWithMinOut(type(uint128).max);
     }
 
@@ -111,7 +113,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
     }
 
     function testMinOutValidation_ZeroReverts() public {
-        vm.expectRevert(openSwapV2.ZeroAmount.selector);
+        vm.expectRevert(Errors.ZeroAmount.selector);
         _proposeWithMinOut(0);
     }
 }

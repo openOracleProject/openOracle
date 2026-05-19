@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 /// @notice ETH-pair swap tests. Either sellToken or buyToken is address(0).
@@ -177,7 +179,7 @@ contract OpenSwapETHTest is SlimTestBase {
         // propose for ETH-sell must have msg.value == sellAmt + extraEth
         uint256 wrongEth = SELL_AMT; // missing the gas comps
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.InvalidMsgValue.selector);
+        vm.expectRevert(Errors.InvalidMsgValue.selector);
         SwapCompat.proposeRaw(swapContract, wrongEth, 
             SELL_AMT,
             address(0),

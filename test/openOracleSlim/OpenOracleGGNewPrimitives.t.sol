@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 /// @notice Behavioral tests for slim primitives added in V3:
 ///         internalTransferFrom, pushOrCredit, and the protocolFeeRecipient
@@ -69,7 +69,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         oracle.approveInternal(alice, address(token1), 1e18);
 
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalAllowance.selector);
+        vm.expectRevert(Errors.InsufficientInternalAllowance.selector);
         oracle.internalTransferFrom(bob, charlie, address(token1), 2e18);
     }
 
@@ -79,7 +79,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         oracle.deposit(address(token1), 1e18, bob);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         oracle.internalTransferFrom(bob, alice, address(token1), 2e18);
     }
 
@@ -90,7 +90,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
 
         // Raw balance is 5e18 + 1 (sentinel). Spendable is 5e18. Attempting to transfer 5e18 + 1 reverts.
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         oracle.internalTransferFrom(bob, alice, address(token1), uint128(5e18 + 1));
 
         // Transferring exactly the spendable amount is OK
@@ -119,7 +119,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         oracle.deposit(address(token1), 5e18, bob);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.internalTransferFrom(bob, address(0), address(token1), 1e18);
     }
 
@@ -192,7 +192,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         oracle.deposit(address(token1), 1e18, bob);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         oracle.pushOrCredit(address(token1), alice, 2e18);
     }
 
@@ -202,7 +202,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
 
         // Can't push raw balance (5e18 + 1) — sentinel must remain
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         oracle.pushOrCredit(address(token1), alice, uint128(5e18 + 1));
 
         // Pushing exact spendable is OK
@@ -232,7 +232,7 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         oracle.deposit(address(token1), 5e18, bob);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.pushOrCredit(address(token1), address(0), 1e18);
     }
 

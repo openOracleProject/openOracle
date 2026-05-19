@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 import {ISignatureTransfer} from "../../src/interfaces/ISignatureTransfer.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -225,7 +225,7 @@ contract OpenOracleGGDepositPermit2Test is BaseGGTest {
             1e18, 1, type(uint256).max, address(0), address(this), signer.addr, intent
         );
 
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.depositFromPermit2(
             1e18,
             address(0),
@@ -265,7 +265,7 @@ contract OpenOracleGGDepositPermit2Test is BaseGGTest {
             1e18, 1, type(uint256).max, bob, address(this), signer.addr, intent
         );
 
-        vm.expectRevert(OpenOracleErrors.Permit2AmountMismatch.selector);
+        vm.expectRevert(Errors.Permit2AmountMismatch.selector);
         oracle.depositFromPermit2(
             2e18,   // amount arg mismatches permit.permitted.amount
             bob,

@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {OpenOracleErrors} from "./OpenOracleErrors.sol";
+import {Errors} from "./libraries/Errors.sol";
 import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
 
 /**
@@ -24,7 +24,7 @@ import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
  * @custom:version 0.2.0
  * @custom:documentation https://docs.openoracle.org
  */
-contract OpenOracle is OpenOracleErrors {
+contract OpenOracle {
     using SafeERC20 for IERC20;
 
     // Constants
@@ -135,7 +135,7 @@ contract OpenOracle is OpenOracleErrors {
         bool tryInternalBalance2,
         TimingBoundaries calldata timing
     ) external payable returns (uint256 reportId) {
-        if (params.flags > FLAGS_MAX) revert InvalidMode();
+        if (params.flags > FLAGS_MAX) revert Errors.InvalidMode();
         bool timeType = _hasFlag(params.flags, FLAG_TIME_TYPE);
         uint48 blockNumber = _getBlockNumber();
         uint48 reportTimestamp = timeType ? uint48(block.timestamp) : blockNumber;
@@ -147,20 +147,20 @@ contract OpenOracle is OpenOracleErrors {
         uint128 amount2 = params.currentAmount2;
         address reporter = params.currentReporter;
 
-        if (amount1 == 0) revert InvalidAmount1();
-        if (token1 == token2) revert TokensCannotBeSame();
-        if (params.settlementTime <= params.disputeDelay) revert SettleVsDisputeDelayTiming();
-        if (params.feePercentage + params.protocolFee > 1e7) revert FeesTooHigh();
-        if (params.multiplier < MULTIPLIER_PRECISION) revert MultiplierTooLow();
+        if (amount1 == 0) revert Errors.InvalidAmount1();
+        if (token1 == token2) revert Errors.TokensCannotBeSame();
+        if (params.settlementTime <= params.disputeDelay) revert Errors.SettleVsDisputeDelayTiming();
+        if (params.feePercentage + params.protocolFee > 1e7) revert Errors.FeesTooHigh();
+        if (params.multiplier < MULTIPLIER_PRECISION) revert Errors.MultiplierTooLow();
         if (timing.blockTimestamp > 0) _validateTiming(timing);
-        if (amount2 == 0) revert InvalidAmount2();
-        if (reporter == address(0)) revert AddressCannotBeZero();
+        if (amount2 == 0) revert Errors.InvalidAmount2();
+        if (reporter == address(0)) revert Errors.AddressCannotBeZero();
         if (msg.value > params.settlerReward && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) {
-            revert NeitherTokenIsETH();
+            revert Errors.NeitherTokenIsETH();
         }
-        if (params.settlementTimestamp != 0) revert TimestampsMustBeZero();
-        if (params.numReports != 0) revert NumReportsMustBeZero();
-        if (params.reportTimestamp != 0 || params.lastReportOppoTime != 0) revert TimestampsMustBeZero();
+        if (params.settlementTimestamp != 0) revert Errors.TimestampsMustBeZero();
+        if (params.numReports != 0) revert Errors.NumReportsMustBeZero();
+        if (params.reportTimestamp != 0 || params.lastReportOppoTime != 0) revert Errors.TimestampsMustBeZero();
 
         reportId = nextReportId++;
 
@@ -219,7 +219,7 @@ contract OpenOracle is OpenOracleErrors {
         ethRequired += _tryInternalBalanceFull(reporter, token1, amount1, tryInternalBalance1);
         ethRequired += _tryInternalBalanceFull(reporter, token2, amount2, tryInternalBalance2);
 
-        if (msg.value < ethRequired) revert MsgValueTooLow();
+        if (msg.value < ethRequired) revert Errors.MsgValueTooLow();
         uint256 excess = msg.value - ethRequired;
         if (excess > 0) _credit(reporter, ETH_SENTINEL, excess);
 
@@ -270,7 +270,7 @@ contract OpenOracle is OpenOracleErrors {
             mstore(0x40, add(stagedMem, 0x300))
         }
 
-        if (preStateHash != oracleGame[reportId]) revert InvalidStateHash();
+        if (preStateHash != oracleGame[reportId]) revert Errors.InvalidStateHash();
 
         (uint256 oldAmount1, uint256 oldAmount2) = (oracle.currentAmount1, oracle.currentAmount2);
         address token1 = oracle.token1;
@@ -297,21 +297,21 @@ contract OpenOracle is OpenOracleErrors {
 
             if (newAmount1 != expectedAmount1) {
                 if (escalationHalt <= oldAmount1) {
-                    revert EscalationHalted();
+                    revert Errors.EscalationHalted();
                 } else {
-                    revert InvalidAmount1();
+                    revert Errors.InvalidAmount1();
                 }
             }
 
-            if (newAmount1 == 0 || newAmount2 == 0) revert AmountsCannotBeZero();
-            if (previousReporter == address(0)) revert NoReportToDispute();
-            if (currentTime >= prevReportTimestamp + oracle.settlementTime) revert DisputeTooLate();
-            if (oracle.settlementTimestamp != 0) revert AlreadySettled();
-            if (tokenToSwap != token1 && tokenToSwap != token2) revert InvalidTokenToSwap();
-            if (currentTime < prevReportTimestamp + oracle.disputeDelay) revert DisputeTooEarly();
-            if (disputer == address(0)) revert AddressCannotBeZero();
+            if (newAmount1 == 0 || newAmount2 == 0) revert Errors.AmountsCannotBeZero();
+            if (previousReporter == address(0)) revert Errors.NoReportToDispute();
+            if (currentTime >= prevReportTimestamp + oracle.settlementTime) revert Errors.DisputeTooLate();
+            if (oracle.settlementTimestamp != 0) revert Errors.AlreadySettled();
+            if (tokenToSwap != token1 && tokenToSwap != token2) revert Errors.InvalidTokenToSwap();
+            if (currentTime < prevReportTimestamp + oracle.disputeDelay) revert Errors.DisputeTooEarly();
+            if (disputer == address(0)) revert Errors.AddressCannotBeZero();
             if (timing.blockTimestamp > 0) _validateTiming(timing);
-            if (msg.value > 0 && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) revert NeitherTokenIsETH();
+            if (msg.value > 0 && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) revert Errors.NeitherTokenIsETH();
         }
 
         {
@@ -400,7 +400,7 @@ contract OpenOracle is OpenOracleErrors {
             }
         }
 
-        if (msg.value < ethRequired) revert MsgValueTooLow();
+        if (msg.value < ethRequired) revert Errors.MsgValueTooLow();
         uint256 excess = msg.value - ethRequired;
         if (excess > 0) _credit(disputer, ETH_SENTINEL, excess);
 
@@ -430,10 +430,10 @@ contract OpenOracle is OpenOracleErrors {
             mstore(0x40, add(stagedMem, 0x300))
         }
 
-        if (preStateHash != oracleGame[reportId]) revert InvalidStateHash();
+        if (preStateHash != oracleGame[reportId]) revert Errors.InvalidStateHash();
 
         uint256 settlementTimestamp = oracle.settlementTimestamp;
-        if (settlementTimestamp != 0) revert AlreadySettled();
+        if (settlementTimestamp != 0) revert Errors.AlreadySettled();
 
         uint256 settlementTime = oracle.settlementTime;
         uint256 reportTimestamp = oracle.reportTimestamp;
@@ -453,8 +453,8 @@ contract OpenOracle is OpenOracleErrors {
         uint256 finalRatio;
         if (storePrice) finalRatio = (currentAmount1 * PRICE_PRECISION) / currentAmount2;
 
-        if (currentTime < reportTimestamp + settlementTime) revert SettleTooEarly();
-        if (reportTimestamp == 0) revert NoReportYet();
+        if (currentTime < reportTimestamp + settlementTime) revert Errors.SettleTooEarly();
+        if (reportTimestamp == 0) revert Errors.NoReportYet();
 
         oracle.settlementTimestamp = uint48(currentTime);
 
@@ -480,7 +480,7 @@ contract OpenOracle is OpenOracleErrors {
             (bool success,) = callbackContract.call{gas: callbackGasLimit}(callbackData);
             success; // silence unused-variable warning; callback success is intentionally ignored
             if (gasleft() < callbackGasLimit / 63) {
-                revert InvalidGasLimit();
+                revert Errors.InvalidGasLimit();
             }
         }
 
@@ -503,7 +503,7 @@ contract OpenOracle is OpenOracleErrors {
      * @param to Recipient of the withdrawn tokens
      */
     function _withdraw(address tokenToGet, uint256 amount, address to) internal returns (uint256 sent) {
-        if (to == address(0)) revert AddressCannotBeZero();
+        if (to == address(0)) revert Errors.AddressCannotBeZero();
         uint256 balance = tokenHolder[msg.sender][tokenToGet];
         if (balance <= 1 || amount == 0) return 0;
 
@@ -514,7 +514,7 @@ contract OpenOracle is OpenOracleErrors {
         if (tokenToGet == ETH_SENTINEL) {
             (bool success,) = (to).call{value: amount}("");
             if (!success) {
-                revert EthTransferFailed();
+                revert Errors.EthTransferFailed();
             }
         } else {
             _transferTokens(tokenToGet, address(this), to, amount);
@@ -530,12 +530,12 @@ contract OpenOracle is OpenOracleErrors {
     }
 
     function deposit(address token, uint128 amount, address beneficiary) external payable {
-        if (beneficiary == address(0)) revert AddressCannotBeZero();
-        if (token != ETH_SENTINEL && msg.value > 0) revert InvalidMsgValue();
+        if (beneficiary == address(0)) revert Errors.AddressCannotBeZero();
+        if (token != ETH_SENTINEL && msg.value > 0) revert Errors.InvalidMsgValue();
         _credit(beneficiary, token, amount);
 
         if (token == ETH_SENTINEL) {
-            if (msg.value != amount) revert InvalidMsgValue();
+            if (msg.value != amount) revert Errors.InvalidMsgValue();
         } else {
             IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         }
@@ -555,10 +555,10 @@ contract OpenOracle is OpenOracleErrors {
         ISignatureTransfer.PermitTransferFrom calldata permit,
         bytes calldata signature
     ) external {
-        if (beneficiary == address(0)) revert AddressCannotBeZero();
-        if (permit.permitted.token == ETH_SENTINEL) revert InvalidToken();
-        if (permit.permitted.token.code.length == 0) revert InvalidToken();
-        if (permit.permitted.amount != amount) revert Permit2AmountMismatch();
+        if (beneficiary == address(0)) revert Errors.AddressCannotBeZero();
+        if (permit.permitted.token == ETH_SENTINEL) revert Errors.InvalidToken();
+        if (permit.permitted.token.code.length == 0) revert Errors.InvalidToken();
+        if (permit.permitted.amount != amount) revert Errors.Permit2AmountMismatch();
 
         bytes32 witness = keccak256(abi.encode(WITNESS_TYPEHASH, beneficiary, msg.sender, from, intent));
 
@@ -580,19 +580,19 @@ contract OpenOracle is OpenOracleErrors {
      *      `from`'s internal allowance to msg.sender. Preserves the 1-unit sentinel on `from`'s slot.
      */
     function internalTransferFrom(address from, address to, address token, uint128 amount) external {
-        if (to == address(0)) revert AddressCannotBeZero();
+        if (to == address(0)) revert Errors.AddressCannotBeZero();
         if (amount == 0) return;
 
         if (from != msg.sender) {
             uint256 allowed = internalAllowance[from][msg.sender][token];
-            if (allowed < amount) revert InsufficientInternalAllowance();
+            if (allowed < amount) revert Errors.InsufficientInternalAllowance();
             if (allowed != type(uint256).max) {
                 internalAllowance[from][msg.sender][token] = allowed - amount;
             }
         }
 
         uint256 bal = tokenHolder[from][token];
-        if (bal <= amount) revert InsufficientInternalBalance();
+        if (bal <= amount) revert Errors.InsufficientInternalBalance();
         tokenHolder[from][token] = bal - amount;
         _credit(to, token, amount);
     }
@@ -604,10 +604,10 @@ contract OpenOracle is OpenOracleErrors {
      * @dev Caller's slot preserves the 1-unit sentinel.
      */
     function pushOrCredit(address token, address to, uint128 amount) external {
-        if (to == address(0)) revert AddressCannotBeZero();
+        if (to == address(0)) revert Errors.AddressCannotBeZero();
         if (amount == 0) return;
         uint256 bal = tokenHolder[msg.sender][token];
-        if (bal <= amount) revert InsufficientInternalBalance();
+        if (bal <= amount) revert Errors.InsufficientInternalBalance();
         tokenHolder[msg.sender][token] = bal - amount;
 
         if (token == ETH_SENTINEL) {
@@ -636,8 +636,8 @@ contract OpenOracle is OpenOracleErrors {
     * @param amount Allowance amount
     */
     function approveInternal(address spender, address token, uint256 amount) external {
-        if (spender == address(0)) revert AddressCannotBeZero();
-        if (internalAllowance[msg.sender][spender][token] != 0 && amount != 0) revert NonZeroAllowance();
+        if (spender == address(0)) revert Errors.AddressCannotBeZero();
+        if (internalAllowance[msg.sender][spender][token] != 0 && amount != 0) revert Errors.NonZeroAllowance();
         internalAllowance[msg.sender][spender][token] = amount;
         emit InternalApproval(msg.sender, spender, token, amount);
     }
@@ -662,11 +662,11 @@ contract OpenOracle is OpenOracleErrors {
         uint256 blockNumberBound = timing.blockNumberBound;
         uint256 currentBlockNumber = _getBlockNumber();
         if (block.timestamp + timestampBound < timestamp || block.timestamp > timestamp + timestampBound) {
-            revert InvalidTiming();
+            revert Errors.InvalidTiming();
         }
         if (currentBlockNumber + blockNumberBound < blockNumber || currentBlockNumber > blockNumber + blockNumberBound)
         {
-            revert InvalidTiming();
+            revert Errors.InvalidTiming();
         }
     }
 
@@ -724,7 +724,7 @@ contract OpenOracle is OpenOracleErrors {
 
         // Strict delegation: if caller asked to fund from `owner`'s internal balance but the
         // available balance + allowance falls short, revert.
-        if (tib && owner != msg.sender && fromInternal < amount) revert InsufficientInternalBalance();
+        if (tib && owner != msg.sender && fromInternal < amount) revert Errors.InsufficientInternalBalance();
 
         uint256 fromExternal = amount - fromInternal;
 

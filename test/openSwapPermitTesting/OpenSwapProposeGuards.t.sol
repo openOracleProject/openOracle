@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
 import "../utils/MockPermit2.sol";
@@ -60,7 +62,7 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
 
         uint256 eth = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.MustBeZero.selector);
+        vm.expectRevert(Errors.MustBeZero.selector);
         swapContract.propose{value: eth}(s, m, _emptyPermit2(), MIN_OUT);
     }
 
@@ -71,7 +73,7 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
 
         uint256 eth = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.MustBeZero.selector);
+        vm.expectRevert(Errors.MustBeZero.selector);
         swapContract.propose{value: eth}(s, m, _emptyPermit2(), MIN_OUT);
     }
 

@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Callback contracts with controllable behavior.
 contract RevertingCallback {
@@ -229,7 +229,7 @@ contract OpenOracleGGCallbackTest is BaseGGTest {
         // settle reverts with InvalidGasLimit. Tight gas budget so that after
         // the callback consumes everything, gasleft() < callbackGasLimit/63.
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InvalidGasLimit.selector);
+        vm.expectRevert(Errors.InvalidGasLimit.selector);
         oracle.settle{gas: 500_000}(ctx.reportId, ctx.game, ctx.helper);
 
         // All state changes rolled back.

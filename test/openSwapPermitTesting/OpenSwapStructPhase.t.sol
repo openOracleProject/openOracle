@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 /// @notice Hash-shape phase separation:
@@ -42,7 +44,7 @@ contract OpenSwapStructPhaseTest is SlimTestBase {
         _match(swapId, 2000e18, expiration);
 
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -52,7 +54,7 @@ contract OpenSwapStructPhaseTest is SlimTestBase {
         (uint256 swapId,) = _propose();
         openSwapV2.MatchedSwap memory empty;
 
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, empty);
     }
 
@@ -63,7 +65,7 @@ contract OpenSwapStructPhaseTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og;
         IOpenOracle2.PreimageHelper memory ph;
 
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.execute(swapId, empty, og, ph, false);
     }
 }

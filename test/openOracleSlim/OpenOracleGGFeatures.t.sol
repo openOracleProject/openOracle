@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Feature tests for OpenOracleSlim:
 //   - Internal balance funding (initial report, dispute) with hybrid coverage
@@ -154,7 +154,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         // Strict delegation: tib=true with delegated owner whose internal balance + allowance is short
         // reverts instead of silently falling back to msg.sender's external balance.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         _report(_defaultParams(), 1e18, 2000e18, bob, true, false);
     }
 
@@ -178,7 +178,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         // alice tries to dispute on charlie's behalf with tib=true. token1 dispute needs
         // newAmount1 + oldAmount1 + fee + protocolFee ≈ 2.1e18 of token1.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         _dispute(ctx, address(token1), 1.1e18, 2100e18, charlie, true, true, 0);
     }
 
@@ -199,7 +199,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         oracle.approveInternal(alice, address(token2), 100e18); // need 2000e18
 
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         _report(_defaultParams(), 1e18, 2000e18, bob, true, true);
     }
 
@@ -528,7 +528,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
 
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidTiming.selector);
+        vm.expectRevert(Errors.InvalidTiming.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
@@ -560,7 +560,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         vm.warp(block.timestamp + 200);
 
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InvalidTiming.selector);
+        vm.expectRevert(Errors.InvalidTiming.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, charlie, false, false, ctx.game, ctx.helper, timing
         );
@@ -679,17 +679,17 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
 
     function testDeposit_RevertsZeroBeneficiary() public {
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.deposit(address(token1), 5e18, address(0));
 
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.deposit{value: 1 wei}(address(0), 1, address(0));
     }
 
     function testApproveInternal_RevertsZeroSpender() public {
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.AddressCannotBeZero.selector);
+        vm.expectRevert(Errors.AddressCannotBeZero.selector);
         oracle.approveInternal(address(0), address(token1), 1);
     }
 }

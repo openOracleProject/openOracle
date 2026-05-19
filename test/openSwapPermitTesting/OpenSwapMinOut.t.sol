@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 contract OpenSwapMinOutTest is SlimTestBase {
@@ -59,7 +61,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
 
     function testMinOut_ZeroReverts() public {
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.ZeroAmount.selector);
+        vm.expectRevert(Errors.ZeroAmount.selector);
         SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT,
             address(sellToken),
@@ -81,7 +83,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
         // With the default slippage params, worstFulfillAmt is computed against the upper price
         // and the max fulfillment fee. Setting minOut absurdly high triggers the check.
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.MinOutInconsistent.selector);
+        vm.expectRevert(Errors.MinOutInconsistent.selector);
         SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT,
             address(sellToken),

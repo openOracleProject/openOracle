@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-abstract contract OpenOracleErrors {
+library Errors {
     error TokensCannotBeSame();
     error NoReportToDispute();
     error EthTransferFailed();
@@ -40,4 +40,24 @@ abstract contract OpenOracleErrors {
     error NumReportsMustBeZero();
     error InvalidToken();
     error NonZeroAllowance();
+    error MsgValueMismatch();
+    error SameToken();
+    error ZeroAmount();
+    error InvalidExpiration();
+    error InvalidFulfillFee();
+    error InvalidSlippage();
+    error InvalidOracleParams();
+    error InvalidFulfillFeeParams();
+    error MinOutInconsistent();
+    error WrongHash();
+    error WrongOracleHash();
+    error NotActive();
+    error Expired();
+    error NotSwapper();
+    error NotMatched();
+    error CantBailOutYet();
+    error NothingToWithdraw();
+    error EthSendFailed();
+    error OracleSettlementNotEligible();
+    error MustBeZero();
 }

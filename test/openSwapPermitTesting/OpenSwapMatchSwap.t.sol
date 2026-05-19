@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 contract OpenSwapMatchSwapTest is SlimTestBase {
@@ -193,7 +195,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         s.sellAmt = SELL_AMT + 1;
 
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -208,7 +210,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.Expired.selector);
+        vm.expectRevert(Errors.Expired.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -220,7 +222,7 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 }

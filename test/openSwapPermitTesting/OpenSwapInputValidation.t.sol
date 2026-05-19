@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
 
@@ -26,7 +28,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     // ── Propose validation ──────────────────────────────────────────────
 
     function testSwap_SellTokenEqualsBuyToken_Reverts() public {
-        vm.expectRevert(openSwapV2.SameToken.selector);
+        vm.expectRevert(Errors.SameToken.selector);
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(sellToken), MIN_FULFILL_LIQUIDITY,
             _defaultOracleParams(), _defaultFulfillFee());
     }
@@ -35,19 +37,19 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     // hardcodes a WETH address. Swappers can freely propose WETH↔ETH if they want (silly but valid).
 
     function testSwap_ZeroSellAmt_Reverts() public {
-        vm.expectRevert(openSwapV2.ZeroAmount.selector);
+        vm.expectRevert(Errors.ZeroAmount.selector);
         _bareCall(address(sellToken), 0, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             _defaultOracleParams(), _defaultFulfillFee());
     }
 
     function testSwap_ZeroMinOut_Reverts() public {
-        vm.expectRevert(openSwapV2.ZeroAmount.selector);
+        vm.expectRevert(Errors.ZeroAmount.selector);
         _bareCall(address(sellToken), SELL_AMT, 0, address(buyToken), MIN_FULFILL_LIQUIDITY,
             _defaultOracleParams(), _defaultFulfillFee());
     }
 
     function testSwap_ZeroMinFulfillLiquidity_Reverts() public {
-        vm.expectRevert(openSwapV2.ZeroAmount.selector);
+        vm.expectRevert(Errors.ZeroAmount.selector);
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), 0,
             _defaultOracleParams(), _defaultFulfillFee());
     }
@@ -126,7 +128,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         // Tamper one field
         m.protocolFee = m.protocolFee + 1;
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -137,7 +139,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         vm.warp(uint256(expiration) + 1);
         vm.roll(block.number + 1);
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.Expired.selector);
+        vm.expectRevert(Errors.Expired.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -148,7 +150,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -160,7 +162,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         swapContract.cancelSwap(swapId, s, m);
         // Pre-cancel struct now hash-mismatches
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 
@@ -168,7 +170,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(999, uint48(block.timestamp + 1 hours));
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.matchSwap(999, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
     }
 }

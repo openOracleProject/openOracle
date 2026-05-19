@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Edge-case and regression coverage for OpenOracleSlim:
 //   - reversed-pair sentinel safety (dust(t2, t1) doesn't reset existing balances)
@@ -66,7 +66,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
         tampered.escalationHalt = 99e18;
 
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InvalidStateHash.selector);
+        vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, charlie, false, false, tampered, ctx.helper, _emptyTiming()
         );
@@ -83,7 +83,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
         tamperedHelper.creator = charlie;
 
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InvalidStateHash.selector);
+        vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.settle(ctx.reportId, ctx.game, tamperedHelper);
     }
 
@@ -107,7 +107,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
 
         // Try to settle using the stale (pre-dispute) game preimage.
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InvalidStateHash.selector);
+        vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.settle(ctx.reportId, staleGame, ctx.helper);
     }
 
@@ -169,7 +169,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
         });
 
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidTiming.selector);
+        vm.expectRevert(Errors.InvalidTiming.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, timing);
     }
 
@@ -192,7 +192,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
 
         // Immediate dispute reverts (blocks haven't advanced).
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.DisputeTooEarly.selector);
+        vm.expectRevert(Errors.DisputeTooEarly.selector);
         oracle.dispute(
             ctx.reportId,
             address(token1),
@@ -214,7 +214,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
 
         // Settle attempt before settlement window elapses reverts.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.SettleTooEarly.selector);
+        vm.expectRevert(Errors.SettleTooEarly.selector);
         oracle.settle(ctx.reportId, ctx.game, ctx.helper);
 
         // Roll past settlement window (10 blocks from last dispute).

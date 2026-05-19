@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 contract OpenSwapInternalBalancesTest is SlimTestBase {
     function setUp() public {
@@ -40,7 +40,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         uint256 nextId = swapContract.nextSwapId();
         vm.prank(other);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalAllowance.selector);
+        vm.expectRevert(Errors.InsufficientInternalAllowance.selector);
         SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
@@ -62,7 +62,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         uint256 nextId = swapContract.nextSwapId();
         vm.prank(other);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         SwapCompat.proposeRaw(swapContract, ethToSend, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,
@@ -141,7 +141,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
 
         uint256 extra = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.InvalidMsgValue.selector);
+        vm.expectRevert(Errors.InvalidMsgValue.selector);
         SwapCompat.proposeRaw(swapContract, ethSell + extra, 
             ethSell, address(0), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             uint48(1 hours), MATCHER_GAS_COMP, EXECUTOR_GAS_COMP,

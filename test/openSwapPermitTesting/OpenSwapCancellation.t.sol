@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 
 contract OpenSwapCancellationTest is SlimTestBase {
@@ -47,7 +49,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(randomUser);
-        vm.expectRevert(openSwapV2.NotSwapper.selector);
+        vm.expectRevert(Errors.NotSwapper.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -61,7 +63,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         // Post-match the storage hash is keccak256(Swap-only), not keccak256(Swap, Preimage).
         // Hash check fails before any state guard.
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -75,7 +77,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
         // After cancel the storage hash changes — same (s, m) input now mismatches.
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -83,7 +85,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(999, uint48(block.timestamp + 1 hours));
         vm.prank(swapper);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.cancelSwap(999, s, m);
     }
 
@@ -93,7 +95,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
             _buildSwapAndPreimage(swapId, expiration);
 
         vm.prank(matcher);
-        vm.expectRevert(openSwapV2.NotSwapper.selector);
+        vm.expectRevert(Errors.NotSwapper.selector);
         swapContract.cancelSwap(swapId, s, m);
     }
 
@@ -182,7 +184,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         openSwapV2.MatchedSwap memory s;
 
         vm.prank(randomUser);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, s);
     }
 
@@ -198,7 +200,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         s;
         openSwapV2.MatchedSwap memory dummy;
         vm.prank(randomUser);
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, dummy);
     }
 
@@ -212,7 +214,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         swapContract.bailOut(swapId, sPost);
 
         // Swap hash deleted on terminal transition; any subsequent bailOut fails the hash check.
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, sPost);
     }
 
@@ -221,7 +223,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
 
         // No time elapsed — bailOut should revert
-        vm.expectRevert(openSwapV2.CantBailOutYet.selector);
+        vm.expectRevert(Errors.CantBailOutYet.selector);
         swapContract.bailOut(swapId, sPost);
     }
 
@@ -233,7 +235,7 @@ contract OpenSwapCancellationTest is SlimTestBase {
         // Exactly at matchTime + MAX_GAME_TIME — check is `> maxGameTime`, so this should revert
         vm.warp(matchTime + MAX_GAME_TIME);
         vm.roll(block.number + MAX_GAME_TIME / 2);
-        vm.expectRevert(openSwapV2.CantBailOutYet.selector);
+        vm.expectRevert(Errors.CantBailOutYet.selector);
         swapContract.bailOut(swapId, sPost);
 
         // 1 second past boundary — should succeed

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Errors} from "../../src/libraries/Errors.sol";
+
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
 
@@ -80,7 +82,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
         // Without looseTiming the hash check fails:
         vm.prank(address(0x99));
-        vm.expectRevert(openSwapV2.WrongOracleHash.selector);
+        vm.expectRevert(Errors.WrongOracleHash.selector);
         swapContract.execute(swapId, sPost, og, ph, false);
 
         // With looseTiming=true, branch 1 patches settlementTimestamp = block.timestamp and matches
@@ -120,7 +122,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
         // Direct match fails — oracle has settleTs, executor passed settleTs+2.
         vm.prank(address(0x99));
-        vm.expectRevert(openSwapV2.WrongOracleHash.selector);
+        vm.expectRevert(Errors.WrongOracleHash.selector);
         swapContract.execute(swapId, sPost, ogSkewed, ph, false);
 
         // With looseTiming, branch 2 subtracts 2 → settleTs → matches
@@ -150,7 +152,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         // After bailOut, openSwap deleted the stored hash.
         // Executor tries execute against zero storage: hash mismatch.
         vm.prank(address(0x99));
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.execute(swapId, sPost, og, ph, false);
     }
 
@@ -172,7 +174,7 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
 
         // After execute, openSwap deleted the stored hash.
         // bailOut against zero storage: hash mismatch.
-        vm.expectRevert(openSwapV2.WrongHash.selector);
+        vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, sPost);
     }
 

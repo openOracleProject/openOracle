@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Coverage for oracle games where one of the report tokens is ETH (address(0)).
 // Tests cover:
@@ -198,7 +198,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
         CompatTypes.CreateReportParams memory p = _ethAsToken1Params();
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1 ether, 2000e18, bob, true, false, _emptyTiming());
     }
 
@@ -260,7 +260,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.warp(block.timestamp + 6);
 
         vm.prank(charlie);
-        vm.expectRevert(OpenOracleErrors.InsufficientInternalBalance.selector);
+        vm.expectRevert(Errors.InsufficientInternalBalance.selector);
         _dispute(ctx, ETH_SENTINEL, 1.1 ether, 2000e18, bob, true, false, 0);
     }
 
@@ -528,20 +528,20 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
     function testDeposit_ERC20_NonzeroMsgValue_Reverts() public {
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidMsgValue.selector);
+        vm.expectRevert(Errors.InvalidMsgValue.selector);
         oracle.deposit{value: 1 wei}(address(token1), 1e18, alice);
     }
 
     function testDeposit_ETH_MsgValueMismatch_Reverts() public {
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidMsgValue.selector);
+        vm.expectRevert(Errors.InvalidMsgValue.selector);
         // amount = 1 ether but msg.value = 0.5 ether.
         oracle.deposit{value: 0.5 ether}(ETH_SENTINEL, 1 ether, alice);
     }
 
     function testDeposit_ETH_MsgValueOverpay_Reverts() public {
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.InvalidMsgValue.selector);
+        vm.expectRevert(Errors.InvalidMsgValue.selector);
         // amount = 0.5 ether but msg.value = 1 ether.
         oracle.deposit{value: 1 ether}(ETH_SENTINEL, 0.5 ether, alice);
     }
@@ -551,7 +551,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         // settlerReward + amount1 = 0.001 + 1 = 1.001 ether expected.
         // Send less.
         vm.prank(alice);
-        vm.expectRevert(OpenOracleErrors.MsgValueTooLow.selector);
+        vm.expectRevert(Errors.MsgValueTooLow.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1 ether, 2000e18, alice, false, false, _emptyTiming());
     }
 
@@ -561,7 +561,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
         // Bob needs to send ~2.104 ether but sends 1 ether.
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.MsgValueTooLow.selector);
+        vm.expectRevert(Errors.MsgValueTooLow.selector);
         oracle.dispute{value: 1 ether}(
             ctx.reportId,
             address(0), // tokenToSwap = ETH (token1)
@@ -583,7 +583,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.warp(block.timestamp + 6);
 
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.NeitherTokenIsETH.selector);
+        vm.expectRevert(Errors.NeitherTokenIsETH.selector);
         oracle.dispute{value: 1 wei}(
             ctx.reportId,
             address(token1),

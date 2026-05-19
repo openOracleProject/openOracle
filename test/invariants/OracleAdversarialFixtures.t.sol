@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import {OpenOracle} from "../../src/OpenOracleSlim.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
 import {AdversarialCallback, RevertingToken, ReturnsFalseToken, NoReturnToken, ReentrantToken} from "./AdversarialMocks.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -142,7 +142,7 @@ contract OracleAdversarialFixturesTest is Test {
         vm.warp(block.timestamp + 120);
         // Outer gas tight enough that gasleft_at_callsite < callbackGasLimit * 64/63 ≈ 203174.
         // EVM forwards 63/64 * gasleft → parent retains 1/64 → triggers InvalidGasLimit.
-        vm.expectRevert(OpenOracleErrors.InvalidGasLimit.selector);
+        vm.expectRevert(Errors.InvalidGasLimit.selector);
         oracle.settle{gas: 220_000}(lastReportId, lastGame, lastHelper);
     }
 

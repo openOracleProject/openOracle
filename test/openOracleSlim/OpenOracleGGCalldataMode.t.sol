@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./BaseGGTest.sol";
 import {CompatTypes} from "./CompatTypes.sol";
-import {OpenOracleErrors} from "../../src/OpenOracleErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 
 // Calldata-mode is the only mode in OpenOracleSlim. These tests exercise:
 //   - End-to-end lifecycle with rolling stateHash
@@ -73,7 +73,7 @@ contract OpenOracleGGCalldataModeTest is BaseGGTest {
 
         vm.warp(block.timestamp + 6);
         vm.prank(bob);
-        vm.expectRevert(OpenOracleErrors.InvalidStateHash.selector);
+        vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.dispute(
             ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, tampered, ctx.helper, _emptyTiming()
         );
