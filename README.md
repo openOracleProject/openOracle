@@ -1,46 +1,52 @@
-# OpenOracle Gas Golfing
+# openOracle
 
-This repository is an experimental gas-golfing workspace for openOracle and openSwap.
+openOracle is a trust-minimized, permissionless mechanism for resolving token prices onchain.
 
-The point is to see how far the oracle game and swap flow can be compressed while preserving the important mechanics.
+An openOracle report is two limit orders: a buy order and a sell order at the same price. These orders remain active until either the timer runs out or one side is taken. To take one of the orders, the taker must replace both orders with larger orders at a new price, and the timer resets. When the timer runs out without another dispute, the final surviving price can be used by applications.
 
-This is not production-ready code. It is a research prototype for measuring tradeoffs, finding the practical gas floor, and stress-testing design ideas.
+## Deployments
 
-## Where We Are Today
+### Base
 
-The latest prototype `src/OpenOracleSlim.sol` uses a single state hash with state derived from calldata as well as forced sentinels and internal balances. Measured end-to-end on Base, with the reporter and disputer funding their token legs from pre-deposited internal balances (via `deposit` / `tryInternalBalance{1,2}`), and with no protocol fees:
+<table>
+<tr>
+<th>Contract</th>
+<th>Deployment Address</th>
+</tr>
+<tr>
+<td><a href="https://basescan.org/address/0xa731450131bE0120420e211a35704A19382489fb#code">OpenOracle</a></td>
+<td><code>0xa731450131bE0120420e211a35704A19382489fb</code></td>
+</tr>
+</table>
 
-| Path | Oracle Slim |
-| --- | ---: |
-| `report`  | 71.3k |
-| `dispute` | 57.4k |
-| `settle` | 44.1k |
-| **Lifecycle total** | **172.8k** |
+## Docs
 
-The swapping application `src/OpenSwapSlim.sol` uses a propose -> match -> execute flow, where the match creates an oracle report and execution uses the final oracle price. openSwap matching uses internal oracle balances for swap liquidity as well. Swappers can either use internal oracle game balances for the whole flow or transfer in on swap and receive on execution. 
+- [openOracle documentation](https://docs.openoracle.org)
 
-Tested with the external transfers for the swapper but internal for matcher (ETH in from swapper during propose, matcher puts up USDC, USDC out to swapper on execute, ETH to matcher internally) below. Execute handles the oracle settle.
+## Usage
 
-| Path | Swap Slim |
-| --- | ---: |
-| `propose`  | 78.9k |
-| `match` | 107.3k |
-| `execute` | 106.4k |
-| **Lifecycle total** | **292.6k** |
+### Install
+To install dependencies and compile contracts:
 
-Swapper sells USDC for ETH with the same mechanics is ~45k more expensive in total (~338k)
-
-Swapper using internal balance to fund the sell leg is ~272k life cycle for both ETH and USDC:
-
-| Path | Swap Fully Internal |
-| --- | ---: |
-| `propose`  | 79.8k |
-| `match` | 107.3k |
-| `execute` | 85.0k |
-| **Lifecycle total** | **272.1k** |
-
+```bash
+git clone 
+forge install
+forge build
 ```
 
-## Upstream Project
+### Foundry Tests
 
-OpenOracle docs: https://docs.openoracle.org
+```bash
+forge test
+```
+
+### Format
+
+```bash
+forge fmt
+```
+
+## Socials
+
+- [Farcaster](https://farcaster.xyz/openoracle)
+- [Discord](https://discord.gg/jQGeX6CAJB)
