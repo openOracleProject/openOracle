@@ -48,5 +48,5 @@ forge fmt
 
 ## Socials
 
-- [Farcaster](https://farcaster.xyz/openoracle)
+- [X](https://x.com/OpenOracleEth)
 - [Discord](https://discord.gg/jQGeX6CAJB)
