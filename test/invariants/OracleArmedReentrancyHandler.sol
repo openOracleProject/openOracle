@@ -311,6 +311,59 @@ contract OracleArmedReentrancyHandler is Test {
         _afterArmedCall();
     }
 
+    /// @notice Self-contained landing of a reentrant DISPUTE: create a FRESH report with
+    ///         disputeDelay == 0 (immediately disputable, hash fresh), then fire a kind-6 reentrant
+    ///         dispute against it — funded from the disputer's internal balance with armToken as the
+    ///         approved spender — during an armToken deposit in the SAME block. This makes a landing
+    ///         near-certain per call, so the afterInvariant "a reentrant dispute landed" gate is
+    ///         robust every run rather than dependent on the fuzzer hitting the window by chance.
+    function actLandReentrantDispute(uint8 reporterSeed, uint8 disputerSeed, bool swapArmSide) external {
+        address reporter = _pickActor(reporterSeed);
+        address disputer = _pickActor(disputerSeed);
+
+        OpenOracle.OracleGame memory g;
+        g.currentAmount1 = 1e18;
+        g.currentAmount2 = 1e18;
+        g.currentReporter = reporter;
+        g.token1 = address(armToken);
+        g.token2 = tokens[1]; // vanillaA
+        g.settlementTime = 300;
+        g.escalationHalt = type(uint128).max;
+        g.protocolFeeRecipient = PFR;
+        g.settlerReward = SETTLER_REWARD;
+        g.disputeDelay = 0; // disputable in-block
+        g.feePercentage = 3000;
+        g.multiplier = 110;
+        g.protocolFee = 1000;
+        g.flags = FLAG_TIME_TYPE;
+
+        uint256 ts = block.timestamp;
+        uint256 bn = block.number;
+        vm.deal(reporter, reporter.balance + SETTLER_REWARD);
+
+        vm.prank(reporter);
+        try oracle.report{value: SETTLER_REWARD}(g, false, false, _emptyTiming()) returns (uint256 reportId) {
+            totalReports += 1;
+            g.reportTimestamp = uint48(ts);
+            g.lastReportOppoTime = uint48(bn);
+            OpenOracle.PreimageHelper memory h = _helper(reportId, reporter, ts, bn);
+
+            // Arm a dispute against the just-created report (fresh hash, in-window, disputeDelay 0).
+            address swapTok = swapArmSide ? g.token1 : g.token2;
+            uint128 nA1 = uint128((uint256(g.currentAmount1) * g.multiplier) / 100);
+            bytes memory payload = abi.encodeCall(
+                oracle.dispute, (reportId, swapTok, nA1, uint128(1e18), disputer, true, true, g, h, _emptyTiming())
+            );
+            armToken.arm(address(oracle), payload, false);
+            lastArmKind = 6;
+
+            // Trigger: an armToken deposit; its transferFrom fires the armed reentrant dispute.
+            vm.prank(reporter);
+            try oracle.deposit(address(armToken), 1e18, reporter) {} catch {}
+            _afterArmedCall();
+        } catch {}
+    }
+
     function actWithdraw(uint8 actorSeed, uint8 tokSeed, uint8 armSeed) external {
         address user = _pickActor(actorSeed);
         address tok = _pickToken(tokSeed);

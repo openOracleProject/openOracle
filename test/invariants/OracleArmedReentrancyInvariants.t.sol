@@ -70,18 +70,21 @@ contract OracleArmedReentrancyInvariantsTest is StdInvariant, Test {
         // twice each to bias the campaign toward actually firing reentries.
         // No actWarp: settle/dispute advance time via their own auto-warps, keeping reports inside
         // the dispute window so reentrant kind-6 disputes can land (large random jumps expired them).
-        bytes4[] memory sels = new bytes4[](11);
+        bytes4[] memory sels = new bytes4[](13);
         sels[0] = OracleArmedReentrancyHandler.actArmedReport.selector;
         sels[1] = OracleArmedReentrancyHandler.actArmedReport.selector;
         sels[2] = OracleArmedReentrancyHandler.actArmedDeposit.selector;
         sels[3] = OracleArmedReentrancyHandler.actArmedDeposit.selector;
-        sels[4] = OracleArmedReentrancyHandler.actReport.selector;
-        sels[5] = OracleArmedReentrancyHandler.actDispute.selector;
-        sels[6] = OracleArmedReentrancyHandler.actSettle.selector;
-        sels[7] = OracleArmedReentrancyHandler.actDeposit.selector;
-        sels[8] = OracleArmedReentrancyHandler.actWithdraw.selector;
-        sels[9] = OracleArmedReentrancyHandler.actPushOrCredit.selector;
-        sels[10] = OracleArmedReentrancyHandler.actInternalTransfer.selector;
+        // Listed twice: reliably lands a reentrant dispute, so the afterInvariant landing gate holds.
+        sels[4] = OracleArmedReentrancyHandler.actLandReentrantDispute.selector;
+        sels[5] = OracleArmedReentrancyHandler.actLandReentrantDispute.selector;
+        sels[6] = OracleArmedReentrancyHandler.actReport.selector;
+        sels[7] = OracleArmedReentrancyHandler.actDispute.selector;
+        sels[8] = OracleArmedReentrancyHandler.actSettle.selector;
+        sels[9] = OracleArmedReentrancyHandler.actDeposit.selector;
+        sels[10] = OracleArmedReentrancyHandler.actWithdraw.selector;
+        sels[11] = OracleArmedReentrancyHandler.actPushOrCredit.selector;
+        sels[12] = OracleArmedReentrancyHandler.actInternalTransfer.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: sels}));
     }
 
@@ -105,10 +108,16 @@ contract OracleArmedReentrancyInvariantsTest is StdInvariant, Test {
         }
     }
 
-    /// @dev Non-vacuity: the campaign must have actually executed armed reentries, else "solvent"
-    ///      proves nothing about reentrancy. Checked once at the end of the run.
+    /// @dev Non-vacuity: the campaign must have actually executed armed reentries, AND at least one
+    ///      reentrant DISPUTE must have LANDED (not merely been attempted-and-reverted) so the
+    ///      cross-token dispute credit-arms were genuinely exercised under randomized reentrancy.
+    ///      Without the second assert, a reverting attempt or a kind-2 withdraw satisfies the first
+    ///      and the credit-arms could go untested while the campaign still passes. If this fails it
+    ///      is diagnostic — the in-window timing or internal-balance funding bias needs raising, not
+    ///      that the property is false.
     function afterInvariant() public view {
         assertGt(handler.reentriesFired(), 0, "no armed reentry ever fired - campaign vacuous");
+        assertGt(handler.reentrantDisputesLanded(), 0, "fuzz never landed a reentrant dispute");
     }
 
     /// @dev Wiring check: a single forced armed report must fire exactly one reentry, proving the
