@@ -107,6 +107,43 @@ contract OpenOracleArmedReentrancyTest is BaseGGTest {
         _assertArmTokenConserved(amount1, "report window");
     }
 
+    /// @dev Sibling to the settle case: a reentrant DISPUTE on the just-created report, fired while
+    ///      token1 is funded but token2 is not, must revert DisputeTooEarly — disputeDelay > 0 seals
+    ///      the half-funded report against an in-block swap against its own funding leg. Together
+    ///      with the settle case this pins the full property: the live-but-half-funded report is
+    ///      inert to BOTH settle and dispute, so the cross-token over-credit-then-backfill that this
+    ///      whole effort targets cannot be triggered in-block. The amount-growth check is satisfied
+    ///      (expectedAmount1 = oldAmount1 * multiplier / 100) so we reach the temporal guard, not an
+    ///      earlier InvalidAmount1.
+    function testReportWindow_ReentrantDisputeOnLiveReport_TooEarly() public {
+        CompatTypes.CreateReportParams memory p = _armParams();
+        uint128 amount1 = 5e18;
+        uint128 amount2 = 2000e18;
+
+        uint256 reportId = oracle.nextReportId();
+        (uint48 rts, uint48 oppo) = _timestamps(p.flags);
+        Slim.OracleGame memory g = _gameAfterReport(p, amount1, amount2, alice, rts, oppo);
+        Slim.PreimageHelper memory h =
+            Slim.PreimageHelper({reportId: reportId, creator: alice, blockTimestamp: block.timestamp, blockNumber: block.number});
+
+        uint128 expectedA1 = uint128((uint256(amount1) * p.multiplier) / 100);
+        bytes memory disputePayload = abi.encodeCall(
+            oracle.dispute,
+            (reportId, address(armToken), expectedA1, uint128(2100e18), alice, false, false, g, h, _emptyTiming())
+        );
+        armToken.arm(address(oracle), disputePayload, false);
+
+        vm.prank(alice);
+        ReportContext memory ctx = _report(p, amount1, amount2, alice, false, false);
+
+        assertTrue(armToken.attempted(), "reentry fired during token1 funding");
+        assertFalse(armToken.lastCallOk(), "reentrant dispute on half-funded report must fail");
+        assertEq(bytes4(armToken.lastReturnData()), Errors.DisputeTooEarly.selector, "sealed by disputeDelay");
+
+        assertEq(_stateHash(reportId), _hashOracle(ctx.game, ctx.helper), "committed hash reconstructs");
+        _assertArmTokenConserved(amount1, "report window / dispute");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 2. deposit() credit-before-transfer window
     // ─────────────────────────────────────────────────────────────────────────
@@ -180,5 +217,78 @@ contract OpenOracleArmedReentrancyTest is BaseGGTest {
         assertEq(oracle.tokenHolder(attacker, address(armToken)), uint256(amount) + 1, "attacker holds forwarded credit");
         assertEq(oracle.tokenHolder(address(armToken), address(armToken)), 1, "beneficiary slot left at sentinel");
         _assertArmTokenConserved(0, "deposit window / self-forward");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3. A reentrant DISPUTE that actually LANDS and runs the credit-arms
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// @dev The case the whole thread targets: a reentrant dispute that doesn't just bounce off a
+    ///      guard but SUCCEEDS mid-operation and executes the cross-token credit-arms. The report
+    ///      uses disputeDelay = 0 so it is disputable in-block (the deterministic report-window test
+    ///      proves disputeDelay > 0 seals the SAME report; here the target is a separate, already
+    ///      open report). The reentrant disputer funds from its internal balance with armToken as the
+    ///      approved spender, so the dispute lands during an unrelated armToken deposit. We then prove
+    ///      the previous reporter's credit-arm executed (2*oldAmount1 + fee) and the oracle stayed
+    ///      solvent — the property the fuzz solvency referee enforces, pinned deterministically here.
+    function testReentrantDispute_Lands_RunsCreditArms_AndStaysSolvent() public {
+        // Open report R: vanilla/vanilla, disputeDelay = 0, protocolFee = 0, reporter = alice.
+        CompatTypes.CreateReportParams memory p = _defaultParams();
+        p.disputeDelay = 0;
+        p.protocolFee = 0;
+        p.escalationHalt = type(uint128).max; // let the multiplier growth apply (default halt == oldA1)
+        uint128 oldA1 = 10e18;
+        uint128 oldA2 = 2000e18;
+
+        vm.prank(alice);
+        ReportContext memory ctx = _report(p, oldA1, oldA2, alice, false, false);
+
+        // bob will be the reentrant disputer, funding token1 from his internal balance via armToken.
+        vm.startPrank(bob);
+        oracle.deposit(address(token1), 50e18, bob);
+        oracle.approveInternal(address(armToken), address(token1), type(uint256).max);
+        oracle.approveInternal(address(armToken), address(token2), type(uint256).max);
+        vm.stopPrank();
+
+        // newAmount1 must equal oldAmount1 * multiplier / 100; newAmount2 == oldAmount2 → no token2 leg.
+        uint128 newA1 = uint128((uint256(oldA1) * p.multiplier) / 100); // 11e18
+        uint256 fee = (uint256(oldA1) * p.feePercentage) / 1e7; // oldA1 * 0.0003
+        bytes memory disputePayload = abi.encodeCall(
+            oracle.dispute,
+            (ctx.reportId, address(token1), newA1, oldA2, bob, true, true, ctx.game, ctx.helper, _emptyTiming())
+        );
+        armToken.arm(address(oracle), disputePayload, false);
+
+        uint256 aliceT1Before = oracle.tokenHolder(alice, address(token1));
+
+        // Trigger: alice deposits armToken (unrelated op); its transferFrom fires bob's dispute on R.
+        vm.prank(alice);
+        oracle.deposit(address(armToken), 1e18, charlie);
+
+        // The reentrant dispute LANDED (not merely attempted-and-reverted).
+        assertTrue(armToken.attempted(), "reentry fired");
+        assertTrue(armToken.lastCallOk(), "reentrant dispute landed");
+
+        // Credit-arm executed under reentrancy: previous reporter (alice) received 2*oldA1 + fee token1.
+        assertEq(
+            oracle.tokenHolder(alice, address(token1)) - aliceT1Before,
+            2 * uint256(oldA1) + fee,
+            "previous-reporter credit-arm ran during reentrancy"
+        );
+        // State advanced to bob as the new reporter (hash moved off the original preimage).
+        assertTrue(_stateHash(ctx.reportId) != _hashOracle(ctx.game, ctx.helper), "report state advanced via reentrancy");
+
+        // Solvency holds for token1: real backing >= sum of withdrawable internal balances.
+        _assertToken1Solvent();
+    }
+
+    function _assertToken1Solvent() internal view {
+        address[5] memory hs = [alice, bob, charlie, attacker, address(armToken)];
+        uint256 withdrawable;
+        for (uint256 i = 0; i < hs.length; i++) {
+            uint256 bal = oracle.tokenHolder(hs[i], address(token1));
+            if (bal > 0) withdrawable += bal - 1;
+        }
+        assertGe(token1.balanceOf(address(oracle)), withdrawable, "token1 insolvent after reentrant dispute");
     }
 }
