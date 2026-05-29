@@ -107,12 +107,18 @@ contract OracleEntitlementHandler is Test {
     }
 
     // ── report (ERC20 and/or ETH side; settlerReward always in ETH) ───────────
-    function actReport(uint8 actorSeed, uint8 pairSeed, uint128 a1Seed, uint128 a2Seed) external {
+    function actReport(uint8 actorSeed, uint8 pairSeed, uint128 a1Seed, uint128 a2Seed, uint96 extraSeed) external {
         address reporter = _pickActor(actorSeed);
         (address t1, address t2) = _pickPair(pairSeed);
 
         uint128 a1 = uint128(bound(uint256(a1Seed), 1, 1e20));
         uint128 a2 = uint128(bound(uint256(a2Seed), 1, 1e20));
+
+        // Overpayment is only reachable on an ETH-side game (the NeitherTokenIsETH guard caps
+        // msg.value at settlerReward otherwise). When reachable, the excess is credited to the
+        // designated reporter — pull that branch under the exact-equality referee.
+        bool ethSide = (t1 == ETH || t2 == ETH);
+        uint256 extra = ethSide ? bound(uint256(extraSeed), 0, 5 ether) : 0;
 
         OpenOracle.OracleGame memory g;
         g.currentAmount1 = a1;
@@ -130,15 +136,16 @@ contract OracleEntitlementHandler is Test {
         g.protocolFee = PROTO_FEE;
         g.flags = FLAG_TIME_TYPE;
 
-        // Exact msg.value: settlerReward + any ETH-side amounts. No excess → no excess credit.
-        uint256 ethValue = uint256(SETTLER_REWARD) + (t1 == ETH ? a1 : 0) + (t2 == ETH ? a2 : 0);
+        // settlerReward + ETH-side amounts (= contract's ethRequired) + fuzzer-chosen overpayment.
+        uint256 ethValue = uint256(SETTLER_REWARD) + (t1 == ETH ? a1 : 0) + (t2 == ETH ? a2 : 0) + extra;
         vm.deal(reporter, reporter.balance + ethValue);
         uint256 ts = block.timestamp;
         uint256 bn = block.number;
 
         vm.prank(reporter);
         try oracle.report{value: ethValue}(g, false, false, _emptyTiming()) returns (uint256 reportId) {
-            // No withdrawable credits at report: amounts + settlerReward are inflight.
+            // Amounts + settlerReward are inflight; only the excess becomes withdrawable, to the reporter.
+            if (extra > 0) entitled[reporter][ETH] += extra;
             g.reportTimestamp = uint48(ts);
             g.lastReportOppoTime = uint48(bn);
             reports.push(ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false}));
@@ -147,7 +154,7 @@ contract OracleEntitlementHandler is Test {
     }
 
     // ── dispute ────────────────────────────────────────────────────────────────
-    function actDispute(uint8 actorSeed, uint8 reportSeed, bool swapT1, uint128 newA2Seed) external {
+    function actDispute(uint8 actorSeed, uint8 reportSeed, bool swapT1, uint128 newA2Seed, uint96 extraSeed) external {
         if (reports.length == 0) return;
         uint256 idx = reportSeed % reports.length;
         ReportState storage r = reports[idx];
@@ -172,10 +179,14 @@ contract OracleEntitlementHandler is Test {
         uint48 ct = uint48(block.timestamp);
         bool isSelf = (disputer == prev);
 
-        // Exact ETH the contract will require for the funding legs that are ETH-sided. Sending
-        // exactly this leaves no excess, so no _credit(disputer, ETH, excess) to mirror.
+        // Exact ETH the contract requires for the ETH-sided funding legs, plus a fuzzer-chosen
+        // overpayment when ETH is in play. The excess is credited to the disputer — bring that
+        // branch under the exact-equality referee instead of only solvency. Overpayment is gated to
+        // ETH-side pairs: a non-ETH dispute with msg.value > 0 reverts NeitherTokenIsETH.
+        bool ethSide = (g.token1 == ETH || g.token2 == ETH);
+        uint256 extra = ethSide ? bound(uint256(extraSeed), 0, 5 ether) : 0;
         uint256 ethValue =
-            _disputeEthRequired(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA1, newA2, isSelf);
+            _disputeEthRequired(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA1, newA2, isSelf) + extra;
         if (ethValue > 0) vm.deal(disputer, disputer.balance + ethValue);
 
         vm.prank(disputer);
@@ -183,6 +194,7 @@ contract OracleEntitlementHandler is Test {
             r.id, tokenToSwap, newA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
         ) {
             _mirrorDispute(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA2, disputer, prev, isSelf);
+            if (extra > 0) entitled[disputer][ETH] += extra;
             g.currentAmount1 = newA1;
             g.currentAmount2 = newA2;
             g.currentReporter = disputer;

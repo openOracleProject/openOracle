@@ -43,6 +43,8 @@ contract OracleArmedReentrancyHandler is Test {
     uint256 public totalDisputes;
     uint256 public totalSettles;
     uint256 public reentriesFired; // outer ops during which the armed reentry actually executed
+    uint256 public reentrantDisputesLanded; // reentrant kind-6 disputes that SUCCEEDED (ran credit-arms)
+    uint8 internal lastArmKind;
 
     constructor(OpenOracle _oracle, ArmableReentrantToken _armToken) {
         oracle = _oracle;
@@ -75,11 +77,15 @@ contract OracleArmedReentrancyHandler is Test {
 
     // ── arming: build a fuzzer-chosen reentrant payload against current live state ──
     function _arm(uint8 armSeed) internal {
-        _armKind(armSeed % 6, armSeed, (armSeed & 0x40) != 0);
+        _armKind(armSeed % 8, armSeed, (armSeed & 0x40) != 0);
     }
 
     /// @param kind 0 = no reentry; 1 = settle a live report; 2 = withdraw; 3 = internalTransfer;
-    ///             4 = pushOrCredit; 5 = dust. The reentry's msg.sender is the armToken contract.
+    ///             4 = pushOrCredit; 5 = dust; 6 = DISPUTE a live report; 7 = a fresh REPORT.
+    ///             The reentry's msg.sender is the armToken contract; disputes/reports are funded via
+    ///             an actor's internal balance (tib=true) with armToken as the approved spender, so
+    ///             they can actually LAND and exercise the credit-arms — the cross-token
+    ///             over-credit-then-backfill path the menu previously never reached.
     function _armKind(uint8 kind, uint8 seed, bool before) internal {
         address actor = _pickActor(seed >> 1);
         address tok = _pickToken(seed >> 2);
@@ -96,11 +102,47 @@ contract OracleArmedReentrancyHandler is Test {
             payload = abi.encodeCall(oracle.pushOrCredit, (tok, actor, uint128(1e18)));
         } else if (kind == 5) {
             payload = abi.encodeCall(oracle.dust, (tokens[1], address(armToken)));
+        } else if (kind == 6 && reports.length > 0) {
+            ReportState storage r = reports[uint256(seed) % reports.length];
+            OpenOracle.OracleGame memory dg = r.game;
+            uint256 nA1 = (uint256(dg.currentAmount1) * dg.multiplier) / 100;
+            if (r.settled || nA1 > type(uint128).max || nA1 == dg.currentAmount1) {
+                armToken.disarm();
+                return;
+            }
+            address swapTok = (seed & 0x20) == 0 ? dg.token1 : dg.token2;
+            payload = abi.encodeCall(
+                oracle.dispute,
+                (r.id, swapTok, uint128(nA1), uint128(1e18), actor, true, true, dg, r.helper, _emptyTiming())
+            );
+        } else if (kind == 7) {
+            payload = abi.encodeCall(oracle.report, (_reentrantReportGame(actor), true, true, _emptyTiming()));
         } else {
             armToken.disarm();
+            lastArmKind = 0;
             return;
         }
+        lastArmKind = kind;
         armToken.arm(address(oracle), payload, before);
+    }
+
+    /// @dev A fresh report fully fundable from `reporter`'s internal balance (settlerReward 0 so the
+    ///      value-less reentrant call suffices; armToken-spender approval set up in the test).
+    function _reentrantReportGame(address reporter) internal view returns (OpenOracle.OracleGame memory g) {
+        g.currentAmount1 = 1e18;
+        g.currentAmount2 = 1e18;
+        g.currentReporter = reporter;
+        g.token1 = tokens[1]; // vanillaA
+        g.token2 = address(armToken);
+        g.settlementTime = 300;
+        g.escalationHalt = type(uint128).max;
+        g.protocolFeeRecipient = address(0);
+        g.settlerReward = 0;
+        g.disputeDelay = 5;
+        g.feePercentage = 0;
+        g.multiplier = 110;
+        g.protocolFee = 0;
+        g.flags = FLAG_TIME_TYPE;
     }
 
     function _nonArmToken(uint8 seed) internal view returns (address) {
@@ -108,8 +150,12 @@ contract OracleArmedReentrancyHandler is Test {
     }
 
     function _afterArmedCall() internal {
-        if (armToken.attempted()) reentriesFired += 1;
+        if (armToken.attempted()) {
+            reentriesFired += 1;
+            if (lastArmKind == 6 && armToken.lastCallOk()) reentrantDisputesLanded += 1;
+        }
         armToken.disarm();
+        lastArmKind = 0;
     }
 
     // ── actions ───────────────────────────────────────────────────────────────
@@ -117,7 +163,7 @@ contract OracleArmedReentrancyHandler is Test {
     function actReport(uint8 actorSeed, uint8 t1Seed, uint8 t2Seed, uint128 a1Seed, uint128 a2Seed, uint8 armSeed)
         external
     {
-        _runReport(_pickActor(actorSeed), _pickToken(t1Seed), _pickToken(t2Seed), a1Seed, a2Seed, armSeed % 6, armSeed);
+        _runReport(_pickActor(actorSeed), _pickToken(t1Seed), _pickToken(t2Seed), a1Seed, a2Seed, armSeed % 8, armSeed);
     }
 
     /// @notice Forces the armable token onto one side of the pair and a non-zero reentry kind, so the
@@ -128,7 +174,7 @@ contract OracleArmedReentrancyHandler is Test {
         bool armFirst = (sideSeed & 2) == 0;
         address t1 = armFirst ? address(armToken) : other;
         address t2 = armFirst ? other : address(armToken);
-        _runReport(_pickActor(actorSeed), t1, t2, a1Seed, a2Seed, (armSeed % 5) + 1, armSeed);
+        _runReport(_pickActor(actorSeed), t1, t2, a1Seed, a2Seed, (armSeed % 7) + 1, armSeed);
     }
 
     function _runReport(address reporter, address t1, address t2, uint128 a1Seed, uint128 a2Seed, uint8 kind, uint8 armSeed)
@@ -136,8 +182,10 @@ contract OracleArmedReentrancyHandler is Test {
     {
         if (t1 == t2) return;
 
-        uint128 a1 = uint128(bound(uint256(a1Seed), 1, 1e21));
-        uint128 a2 = uint128(bound(uint256(a2Seed), 1, 1e21));
+        // Bounded small so the reentrant disputer can always fund the grown amounts from its
+        // internal balance, letting kind-6 reentrant disputes actually land.
+        uint128 a1 = uint128(bound(uint256(a1Seed), 1, 1e18));
+        uint128 a2 = uint128(bound(uint256(a2Seed), 1, 1e18));
 
         OpenOracle.OracleGame memory g;
         g.currentAmount1 = a1;
@@ -149,7 +197,10 @@ contract OracleArmedReentrancyHandler is Test {
         g.escalationHalt = type(uint128).max;
         g.protocolFeeRecipient = PFR;
         g.settlerReward = SETTLER_REWARD;
-        g.disputeDelay = 5;
+        // Vary disputeDelay INCLUDING 0: with disputeDelay == 0 a reentrant dispute can land on a
+        // same-block live report (the in-block over-credit-then-backfill case the deterministic
+        // window test cannot reach, since disputeDelay > 0 there seals it).
+        g.disputeDelay = uint24(uint256(a2Seed >> 64) % 6);
         g.feePercentage = 3000;
         g.multiplier = 110;
         g.protocolFee = 1000;
@@ -237,7 +288,7 @@ contract OracleArmedReentrancyHandler is Test {
     }
 
     function actDeposit(uint8 actorSeed, uint8 benSeed, uint8 tokSeed, uint128 amtSeed, uint8 armSeed) external {
-        _runDeposit(_pickActor(actorSeed), _pickActor(benSeed), _pickToken(tokSeed), amtSeed, armSeed % 6, armSeed);
+        _runDeposit(_pickActor(actorSeed), _pickActor(benSeed), _pickToken(tokSeed), amtSeed, armSeed % 8, armSeed);
     }
 
     /// @notice Forces an armToken deposit and a non-zero reentry kind, fired (per armSeed bit) BEFORE
@@ -245,7 +296,7 @@ contract OracleArmedReentrancyHandler is Test {
     ///         a credited-beneficiary reentry is in play.
     function actArmedDeposit(uint8 actorSeed, uint8 benSeed, uint128 amtSeed, uint8 armSeed) external {
         address beneficiary = (benSeed & 1) == 0 ? address(armToken) : _pickActor(benSeed);
-        _runDeposit(_pickActor(actorSeed), beneficiary, address(armToken), amtSeed, (armSeed % 5) + 1, armSeed);
+        _runDeposit(_pickActor(actorSeed), beneficiary, address(armToken), amtSeed, (armSeed % 7) + 1, armSeed);
     }
 
     function _runDeposit(address user, address beneficiary, address tok, uint128 amtSeed, uint8 kind, uint8 armSeed)

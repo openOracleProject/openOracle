@@ -45,6 +45,18 @@ contract OracleArmedReentrancyInvariantsTest is StdInvariant, Test {
             vanillaA.approve(address(oracle), type(uint256).max);
             vm.prank(a);
             armToken.approve(address(oracle), type(uint256).max);
+
+            // Internal balances + armToken-as-spender approval, so a reentrant dispute/report (whose
+            // msg.sender is the armToken contract) can fund tib=true from this actor and actually
+            // LAND, exercising the dispute credit-arms under reentrancy.
+            vm.startPrank(a);
+            oracle.deposit(address(vanillaA), 50_000e18, a);
+            oracle.deposit(address(armToken), 1e25, a);
+            oracle.deposit{value: 100 ether}(address(0), 100 ether, a);
+            oracle.approveInternal(address(armToken), address(vanillaA), type(uint256).max);
+            oracle.approveInternal(address(armToken), address(armToken), type(uint256).max);
+            oracle.approveInternal(address(armToken), address(0), type(uint256).max);
+            vm.stopPrank();
         }
 
         // Holder set the solvency invariant sums over.
@@ -56,7 +68,9 @@ contract OracleArmedReentrancyInvariantsTest is StdInvariant, Test {
         targetContract(address(handler));
         // actArmedReport / actArmedDeposit force the armToken + a non-zero reentry kind; listed
         // twice each to bias the campaign toward actually firing reentries.
-        bytes4[] memory sels = new bytes4[](12);
+        // No actWarp: settle/dispute advance time via their own auto-warps, keeping reports inside
+        // the dispute window so reentrant kind-6 disputes can land (large random jumps expired them).
+        bytes4[] memory sels = new bytes4[](11);
         sels[0] = OracleArmedReentrancyHandler.actArmedReport.selector;
         sels[1] = OracleArmedReentrancyHandler.actArmedReport.selector;
         sels[2] = OracleArmedReentrancyHandler.actArmedDeposit.selector;
@@ -68,7 +82,6 @@ contract OracleArmedReentrancyInvariantsTest is StdInvariant, Test {
         sels[8] = OracleArmedReentrancyHandler.actWithdraw.selector;
         sels[9] = OracleArmedReentrancyHandler.actPushOrCredit.selector;
         sels[10] = OracleArmedReentrancyHandler.actInternalTransfer.selector;
-        sels[11] = OracleArmedReentrancyHandler.actWarp.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: sels}));
     }
 
