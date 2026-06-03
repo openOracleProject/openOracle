@@ -8,6 +8,30 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/**
+ * @title openAMM
+ * @notice Uses openOracle for swap execution price
+ * @dev A propAMM / openOracle hybrid. Instead of a constant-product curve, price discovery
+ *      is delegated to an openOracle game.
+ *
+ *      In openOracle, a price report is two limit orders, a buy and a sell, at the same price.
+ *      The orders are locked until either the timer runs out or one is taken.
+ *      To take one of the limit orders, you replace them with larger ones at a new price.
+ *      When the timer runs out without a dispute, the price is settled. Any disputes reset the timer.
+ *
+ *      The AMM is the proprietary side. The owner provides and controls the swap inventory
+ *      (held as internal balances inside openOracle) and sets per-quote fee / executionDelay /
+ *      tolerance. Swaps execute at the latest tracked oracle price against that inventory, but only
+ *      inside the live window: after executionDelay and before the game becomes settleable.
+ *
+ *      The external surface mimics UniswapV2Router02 (swapExactTokensForTokens /
+ *      swapTokensForExactTokens / getAmountsOut / getAmountsIn), so existing routers and searcher
+ *      bots can quote and trade against this venue with no integration changes, while WETH is
+ *      wrapped/unwrapped to bridge to the oracle's native-ETH side.
+ * @author OpenOracle Team
+ * @custom:version 0.1.0
+ * @custom:documentation https://docs.openoracle.org/
+ */
 contract openAMM is ReentrancyGuard {
     using SafeERC20 for IERC20;
     address public immutable owner;
