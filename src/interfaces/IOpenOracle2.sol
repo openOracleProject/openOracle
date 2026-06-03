@@ -107,6 +107,7 @@ interface IOpenOracle2 {
         external
         view
         returns (uint256);
+    function reportIdToReportNumber(uint256 reportId) external view returns (uint256);
 
     /* ─── Lifecycle: report → dispute → settle ───────────────── */
 
