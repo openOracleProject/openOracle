@@ -56,6 +56,7 @@ contract OpenOracle {
     mapping(uint256 => mapping(uint256 => DisputeRecord)) public disputeHistory; // reportId => numReports => dispute data
     mapping(uint256 => OracleGame) public finalizedGame; // reportId => optional storage
     mapping(address => mapping(address => mapping(address => uint256))) public internalAllowance; // owner => spender => token => amount
+    mapping(uint256 => uint256) public reportIdToReportNumber; // reportId => numReports
 
     struct DisputeRecord {
         uint128 amount1;
@@ -328,6 +329,7 @@ contract OpenOracle {
                 record.amount2 = newAmount2;
                 record.reportTimestamp = currentTime;
                 record.tokenToSwap = tokenToSwap;
+                reportIdToReportNumber[reportId] = nextIndex;
                 if (nextIndex < type(uint24).max) oracle.numReports = nextIndex + 1;
             }
 
