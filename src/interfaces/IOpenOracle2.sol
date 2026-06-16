@@ -78,7 +78,7 @@ interface IOpenOracle2 {
         external
         view
         returns (uint128 amount1, uint128 amount2, address tokenToSwap, uint48 reportTimestamp);
-    function finalizedGame(uint256 reportId)
+    function storedGame(uint256 reportId)
         external
         view
         returns (
@@ -103,6 +103,10 @@ interface IOpenOracle2 {
             uint24 protocolFee,
             uint8 flags
         );
+    function storedHelper(uint256 reportId)
+        external
+        view
+        returns (address creator, uint48 blockTimestamp, uint48 blockNumber);
     function internalAllowance(address owner, address spender, address token)
         external
         view
