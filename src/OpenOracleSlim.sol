@@ -54,7 +54,8 @@ contract OpenOracle {
     mapping(uint256 => uint256) public finalPrice;
     mapping(address => mapping(address => uint256)) public tokenHolder; // owner => token => amount
     mapping(uint256 => mapping(uint256 => DisputeRecord)) public disputeHistory; // reportId => numReports => dispute data
-    mapping(uint256 => OracleGame) public finalizedGame; // reportId => optional storage
+    mapping(uint256 => OracleGame) public storedGame; // reportId => optional storage
+    mapping(uint256 => StoredHelper) public storedHelper; // reportId => optional stored helper
     mapping(address => mapping(address => mapping(address => uint256))) public internalAllowance; // owner => spender => token => amount
 
     struct DisputeRecord {
@@ -95,6 +96,12 @@ contract OpenOracle {
         uint256 blockNumber;
     }
 
+    struct StoredHelper {
+        address creator;
+        uint48 blockTimestamp;
+        uint48 blockNumber;
+    }
+
     struct TimingBoundaries {
         uint256 blockNumber;
         uint256 blockNumberBound;
@@ -103,7 +110,6 @@ contract OpenOracle {
     }
 
     // Events
-
     bytes32 private constant REPORT_SUBMITTED_SIG =
             keccak256("ReportSubmitted(uint256,bytes)");
     bytes32 private constant REPORT_DISPUTED_SIG =
@@ -192,6 +198,8 @@ contract OpenOracle {
         // Overrides (slot N at N*0x20): 0x060 reportTimestamp · 0x0C0 lastReportOppoTime · 0x180 numReports (if trackDisputes)
         bytes32 stateHash;
         uint256 stagedMem;
+        OracleGame memory staged;
+
         assembly ("memory-safe") {
             let mem := mload(0x40)
             calldatacopy(mem, params, 0x280)
@@ -203,11 +211,20 @@ contract OpenOracle {
             if trackDisputes { mstore(add(mem, 0x180), 1) }
             mcopy(add(mem, 0x280), helper, 0x80)
             stateHash := keccak256(mem, 0x300)
+            staged := mem
             stagedMem := mem
             mstore(0x40, add(mem, 0x300))
         }
 
         oracleGame[reportId] = stateHash;
+        if (_hasFlag(params.flags, FLAG_STORE_ALL)) {
+            storedGame[reportId] = staged;
+            storedHelper[reportId] = StoredHelper({
+                creator: helper.creator,
+                blockTimestamp: uint48(helper.blockTimestamp),
+                blockNumber: uint48(helper.blockNumber)
+            });
+        }
 
         if (params.protocolFee > 0 && protocolFeeRecipient != address(0)) {
             _getDustAmounts(protocolFeeRecipient, token1, token2);
@@ -336,6 +353,8 @@ contract OpenOracle {
                 nextStateHash := keccak256(stagedMem, 0x300)
             }
             oracleGame[reportId] = nextStateHash;
+            if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) storedGame[reportId] = oracle;
+
         }
 
         _getDustAmounts(disputer, token1, token2);
@@ -465,7 +484,7 @@ contract OpenOracle {
         oracleGame[reportId] = nextStateHash;
 
         if (storePrice) finalPrice[reportId] = finalRatio;
-        if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) finalizedGame[reportId] = oracle;
+        if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) storedGame[reportId] = oracle;
 
         tokenHolder[currentReporter][token1] += currentAmount1;
         tokenHolder[currentReporter][token2] += currentAmount2;
