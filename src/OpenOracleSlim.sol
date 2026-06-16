@@ -353,7 +353,18 @@ contract OpenOracle {
                 nextStateHash := keccak256(stagedMem, 0x300)
             }
             oracleGame[reportId] = nextStateHash;
-            if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) storedGame[reportId] = oracle;
+
+            if (_hasFlag(oracle.flags, FLAG_STORE_ALL)) {
+                OracleGame storage stored = storedGame[reportId];
+                stored.currentAmount1 = newAmount1;
+                stored.currentAmount2 = newAmount2;
+                stored.currentReporter = disputer;
+                stored.reportTimestamp = currentTime;
+                stored.lastReportOppoTime = oppoTime;
+                if (_hasFlag(oracle.flags, FLAG_TRACK_DISPUTES)) {
+                    stored.numReports = oracle.numReports;
+                }
+            }
 
         }
 
