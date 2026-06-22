@@ -11,9 +11,35 @@ import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
+contract InvariantBlacklistableERC20 is MockERC20 {
+    mapping(address => bool) public blacklisted;
+
+    constructor(string memory name, string memory symbol) MockERC20(name, symbol) {}
+
+    function blacklist(address account) external {
+        blacklisted[account] = true;
+    }
+
+    function unblacklist(address account) external {
+        blacklisted[account] = false;
+    }
+
+    function transfer(address to, uint256 amount) public override returns (bool) {
+        require(!blacklisted[msg.sender], "Blacklisted sender");
+        require(!blacklisted[to], "Blacklisted recipient");
+        return super.transfer(to, amount);
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        require(!blacklisted[from], "Blacklisted sender");
+        require(!blacklisted[to], "Blacklisted recipient");
+        return super.transferFrom(from, to, amount);
+    }
+}
+
 contract LendingInvariantHandler is Test {
     openLend public immutable lending;
-    MockERC20 public immutable supplyToken;
+    InvariantBlacklistableERC20 public immutable supplyToken;
     MockERC20 public immutable borrowToken;
 
     address internal constant ETH = address(0);
@@ -29,7 +55,7 @@ contract LendingInvariantHandler is Test {
     uint24 internal constant LIQUIDATION_THRESHOLD = 8e6;
     uint16 internal constant STAKE = 100;
 
-    constructor(openLend _lending, MockERC20 _supplyToken, MockERC20 _borrowToken) {
+    constructor(openLend _lending, InvariantBlacklistableERC20 _supplyToken, MockERC20 _borrowToken) {
         lending = _lending;
         supplyToken = _supplyToken;
         borrowToken = _borrowToken;
@@ -293,6 +319,29 @@ contract LendingInvariantHandler is Test {
         try lending.claimCollateral(lendingId) {} catch {}
     }
 
+    function claimCollateralToTempHolding(uint256 loanSeed) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
+        if (loan.supplyToken != address(supplyToken)) return;
+
+        uint256 expiry = uint256(loan.start) + loan.term + loan.gracePeriod;
+        if (block.timestamp < expiry) vm.warp(expiry);
+
+        supplyToken.blacklist(loan.lender);
+        try lending.claimCollateral(lendingId) {} catch {}
+    }
+
+    function withdrawEscrowedSupply(uint256 actorSeed) external {
+        address[4] memory accounts = [borrower, lender1, lender2, topper];
+        address account = accounts[actorSeed % accounts.length];
+        supplyToken.unblacklist(account);
+
+        vm.prank(account);
+        try lending.getTempHolding(address(supplyToken)) {} catch {}
+    }
+
     function _standardOracleParams() internal pure returns (openLend.OracleParams memory) {
         return openLend.OracleParams({
             settlementTime: 300,
@@ -339,7 +388,7 @@ contract LendingInvariantHandler is Test {
 contract LendingInvariantsTest is StdInvariant, Test {
     openLend internal lending;
     OpenOracle internal oracle;
-    MockERC20 internal supplyToken;
+    InvariantBlacklistableERC20 internal supplyToken;
     MockERC20 internal borrowToken;
     LendingInvariantHandler internal handler;
 
@@ -352,7 +401,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        supplyToken = new MockERC20("Supply Token", "SUP");
+        supplyToken = new InvariantBlacklistableERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
         handler = new LendingInvariantHandler(lending, supplyToken, borrowToken);
@@ -422,7 +471,15 @@ contract LendingInvariantsTest is StdInvariant, Test {
         );
     }
 
-    /// @notice Contract supply balance must back all live loans plus any in-flight liquidator stakes.
+    function _supplyTempHoldingAcrossActors() internal view returns (uint256) {
+        return lending.tempHolding(handler.borrower(), address(supplyToken))
+            + lending.tempHolding(handler.lender1(), address(supplyToken))
+            + lending.tempHolding(handler.lender2(), address(supplyToken))
+            + lending.tempHolding(handler.topper(), address(supplyToken));
+    }
+
+    /// @notice Contract supply balance must back all live loans, any in-flight liquidator stakes,
+    ///         and any supply-token payouts escrowed in tempHolding after a failed recipient transfer.
     function invariant_openLoansBackedByContractSupply() public view {
         uint256 count = handler.loanCount();
         uint256 requiredErc20Supply;
@@ -444,6 +501,8 @@ contract LendingInvariantsTest is StdInvariant, Test {
                 }
             }
         }
+        requiredErc20Supply += _supplyTempHoldingAcrossActors();
+
         assertEq(
             supplyToken.balanceOf(address(lending)),
             requiredErc20Supply,
