@@ -49,6 +49,12 @@ interface IOpenOracle2 {
         uint256 blockNumber;
     }
 
+    struct StoredHelper {
+        address creator;
+        uint48 blockTimestamp;
+        uint48 blockNumber;
+    }
+
     struct TimingBoundaries {
         uint256 blockNumber;
         uint256 blockNumberBound;
@@ -78,35 +84,8 @@ interface IOpenOracle2 {
         external
         view
         returns (uint128 amount1, uint128 amount2, address tokenToSwap, uint48 reportTimestamp);
-    function storedGame(uint256 reportId)
-        external
-        view
-        returns (
-            uint128 currentAmount1,
-            uint128 currentAmount2,
-            address currentReporter,
-            uint48 reportTimestamp,
-            uint48 settlementTimestamp,
-            address token1,
-            uint48 lastReportOppoTime,
-            uint48 settlementTime,
-            uint128 escalationHalt,
-            address protocolFeeRecipient,
-            uint96 settlerReward,
-            address token2,
-            uint24 numReports,
-            uint24 disputeDelay,
-            uint24 feePercentage,
-            uint16 multiplier,
-            address callbackContract,
-            uint32 callbackGasLimit,
-            uint24 protocolFee,
-            uint8 flags
-        );
-    function storedHelper(uint256 reportId)
-        external
-        view
-        returns (address creator, uint48 blockTimestamp, uint48 blockNumber);
+    function storedGame(uint256 reportId) external view returns (OracleGame memory);
+    function storedHelper(uint256 reportId) external view returns (StoredHelper memory);
     function internalAllowance(address owner, address spender, address token)
         external
         view
