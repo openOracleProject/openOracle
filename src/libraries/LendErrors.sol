@@ -17,7 +17,6 @@ library LendErrors {
     error LendingIdActive();
     error NotActive();
     error NotBorrower();
-    error InvalidSender();
     error MsgSender();
     error InLiquidation();
     error NotInLiquidation();
@@ -41,12 +40,9 @@ library LendErrors {
     error PositionTooHealthy();
     error TooMuchOracleGameInitialLiquidity();
     error InitialReportNotLiquidationEligible();
-    error SettlerRewardTooLow();
     error FinalizerRewardMismatch();
     error NoNetBorrow();
     error ReportIdsDontMatch();
-    error WrongReportId();
-    error NoLendingIdForReportId();
     error ReportStillDisputable();
 
     error NoFeeReceiver();
