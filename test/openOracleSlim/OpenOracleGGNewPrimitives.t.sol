@@ -153,6 +153,29 @@ contract OpenOracleGGNewPrimitivesTest is BaseGGTest {
         assertEq(_heldTokens(bob, ETH_SENTINEL), 5 ether - 1 ether + 1, "bob debited");
     }
 
+    function testPushOrCredit_ETH_CustomGasLimitControlsFallback() public {
+        GasHungryReceiver lowGasReceiver = new GasHungryReceiver();
+        GasHungryReceiver highGasReceiver = new GasHungryReceiver();
+
+        vm.prank(bob);
+        oracle.deposit{value: 2 ether}(ETH_SENTINEL, 2 ether, bob);
+
+        vm.prank(bob);
+        oracle.pushOrCredit(ETH_SENTINEL, address(lowGasReceiver), 1 ether, 2_300);
+
+        assertEq(address(lowGasReceiver).balance, 0, "low gas push failed externally");
+        assertEq(lowGasReceiver.hits(), 0, "low gas receive did not finish");
+        assertEq(_heldTokens(address(lowGasReceiver), ETH_SENTINEL), 1 ether + 1, "low gas receiver credited");
+
+        vm.prank(bob);
+        oracle.pushOrCredit(ETH_SENTINEL, address(highGasReceiver), 1 ether, 100_000);
+
+        assertEq(address(highGasReceiver).balance, 1 ether, "high gas push succeeded externally");
+        assertEq(highGasReceiver.hits(), 1, "high gas receive finished");
+        assertEq(oracle.tokenHolder(address(highGasReceiver), ETH_SENTINEL), 0, "high gas receiver not credited");
+        assertEq(_heldTokens(bob, ETH_SENTINEL), 1, "bob sentinel remains");
+    }
+
     function testPushOrCredit_ERC20_PushFails_CreditsInternal() public {
         // Deploy a token whose transfer() reverts. Use it for an oracle.deposit so msg.sender (this)
         // has internal balance; then pushOrCredit to a recipient — the transfer should fail and
@@ -323,5 +346,13 @@ contract RejectingErc20 {
     // Always reverts — used to trigger pushOrCredit's fallback path.
     function transfer(address, uint256) external pure returns (bool) {
         revert("transfer rejected");
+    }
+}
+
+contract GasHungryReceiver {
+    uint256 public hits;
+
+    receive() external payable {
+        hits = 1;
     }
 }

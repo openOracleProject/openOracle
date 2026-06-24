@@ -252,4 +252,19 @@ contract OpenOracleGGStorageFlagsTest is BaseGGTest {
             "helper unchanged after settle"
         );
     }
+
+    function testStoreAll_TrackDisputesStoresUpdatedReportCount() public {
+        CompatTypes.CreateReportParams memory p = _defaultParams();
+        p.flags = FLAG_TIME_TYPE | FLAG_STORE_ALL | FLAG_TRACK_DISPUTES;
+
+        vm.prank(alice);
+        ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
+
+        vm.warp(block.timestamp + 6);
+        vm.prank(bob);
+        ctx = _dispute(ctx, address(token1), 1.1e18, 2100e18, false, false);
+
+        _assertStoredGameMatchesContext(ctx, "tracked dispute preimage reconstructs");
+        assertEq(_storedGameStruct(ctx.reportId).numReports, 2, "stored tracked report count");
+    }
 }
