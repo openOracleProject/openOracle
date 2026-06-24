@@ -627,13 +627,21 @@ contract OpenOracle {
         _credit(to, token, amount);
     }
 
+    function pushOrCredit(address token, address to, uint128 amount) external {
+        _pushOrCredit(token, to, amount, 50_000);
+    }
+
+    function pushOrCredit(address token, address to, uint128 amount, uint32 gasLimit) external {
+        _pushOrCredit(token, to, amount, gasLimit);
+    }
+
     /**
      * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
-     *         On push failure (ETH call revert / ERC20 non-standard return / ETH xfer OOG within 50k gas),
+     *         On push failure (ETH call revert / ERC20 non-standard return / ETH xfer OOG within `gasLimit`),
      *         falls back to crediting `to`'s internal balance instead.
      * @dev Caller's slot preserves the 1-unit sentinel.
      */
-    function pushOrCredit(address token, address to, uint128 amount) external {
+    function _pushOrCredit(address token, address to, uint128 amount, uint32 gasLimit) internal {
         if (to == address(0)) revert Errors.AddressCannotBeZero();
         if (amount == 0) return;
         uint256 bal = tokenHolder[msg.sender][token];
@@ -641,7 +649,7 @@ contract OpenOracle {
         tokenHolder[msg.sender][token] = bal - amount;
 
         if (token == ETH_SENTINEL) {
-            (bool ok,) = to.call{value: amount, gas: 50000}("");
+            (bool ok,) = to.call{value: amount, gas: gasLimit}("");
             if (!ok) _credit(to, token, amount);
         } else {
             (bool success, bytes memory returndata) =

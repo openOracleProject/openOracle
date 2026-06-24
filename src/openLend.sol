@@ -9,6 +9,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {oracleFeeReceiver} from "./oracleFeeReceiver2.sol";
+import {LendErrors} from "./libraries/LendErrors.sol";
 
 /**
  * @title openLend
@@ -18,9 +19,9 @@ import {oracleFeeReceiver} from "./oracleFeeReceiver2.sol";
  *           2. Any lender calls `lend` to accept the current rate on the curve, originating the loan.
  *           3. Borrower may `repayDebt` (partial or full), `topUpCollateral`, or `refinance` (re-opens curve for a new lender).
  *           4. Anyone may call `liquidate` once they deem the position sufficiently underwater, which spins up
- *              an openOracle price report. The oracle callback `onSettle` finalizes the liquidation. The lender
- *              picks `liquidatorFraction` at lend-time to set how much of any equity buffer routes to the
- *              liquidator vs themselves.
+ *              an openOracle price report. Once the report can no longer be disputed, `finalize` resolves the
+ *              liquidation. The lender picks `liquidatorFraction` at lend-time to set how much of any equity
+ *              buffer routes to the liquidator vs themselves.
  *           5. At maturity, lender calls `claimCollateral` if the loan was not repaid or refinanced.
  *
  *         Rate discovery: `calcRate` evaluates a piecewise exponential curve (`startingRate * growthRate^rounds`) keyed on
@@ -44,14 +45,12 @@ contract openLend is ReentrancyGuard {
     address internal constant ETH_SENTINEL = address(0);
     uint256 internal constant ACCRUAL_DENOM = 1e9 * 365 days;
 
-    error InvalidInput(string);
-
     uint256 public nextLendingId = 1;
     mapping(uint256 => LendingArrangement) public lendingArrangements;
     mapping(uint256 => mapping(address => Beneficiaries)) public lendingBeneficiaries;
-    /// @dev oracle reportId → lendingId. Set in liquidate, cleared in onSettle and recover.
+    /// @dev oracle reportId → lendingId. Set in liquidate, cleared in finalize.
     mapping(uint256 => uint256) public reportIdToLending;
-    /// @dev lendingId → active oracle reportId. Set in liquidate, cleared in onSettle and recover.
+    /// @dev lendingId → active oracle reportId. Set in liquidate, cleared in finalize.
     mapping(uint256 => uint256) public lendingToReportId;
     mapping(address => mapping(address => uint256)) public tempHolding;
     mapping(address => bool) private _oracleApproved;
@@ -65,7 +64,7 @@ contract openLend is ReentrancyGuard {
     receive() external payable {}
 
     modifier autoSettle(uint256 lendingId) {
-        _settleHelper(lendingId);
+        _finalizeHelper(lendingId);
         _;
     }
 
@@ -88,7 +87,7 @@ contract openLend is ReentrancyGuard {
         uint48 liquidationStart; // timestamp where the liquidation started
         uint48 gracePeriod; // extra time to repay debt / accept refinance offer if liquidation oracle game runs past maturity
         address supplyToken; // supply token
-        uint48 requestStart; // anchor for the rate curve. Set when a borrow request or non-liq refi opens; parked at 0 while a refi is open during a live liquidation, then set to the report's settleable-at time when an unsuccessful liquidation settles.
+        uint48 requestStart; // anchor for the rate curve. Set when a borrow request or non-liq refi opens; parked at 0 while a refi is open during a live liquidation, then set to the report's settleable-at time when an unsuccessful liquidation finalizes.
         uint24 liquidationThreshold; // 8e6 = 80%. when residual debt (incl. commitment floor) priced in supplyToken > liquidationThreshold * supplyAmount, liquidation is possible
         uint24 commitmentFraction; // 1e7 = 100% locked yield (full term), 0 = pure prorated; intermediates define a flex window before maturity
         address borrowToken; // borrow token
@@ -108,9 +107,8 @@ contract openLend is ReentrancyGuard {
     /// @dev    Rate at round k is `min(maxRate, startingRate * (growthRate/10000)^k)`.
     ///         Rates are 1e9-scaled APR; the type caps `maxRate` at ≈4.29e9 (~429% APR).
     ///         Curve is keyed on `requestStart`. `requestStart` is set when a borrow request opens or when a refi
-    ///         opens outside liquidation; a refi opened mid-liquidation leaves `requestStart` at zero until the
-    ///         liquidation settles unsuccessfully, at which point `onSettle` (or `recover`) sets it to the
-    ///         report's settleable-at time.
+    ///         opens outside liquidation; a refi opened mid-liquidation leaves `requestStart` at zero until an
+    ///         unsuccessful liquidation is finalized, at which point it is set to the report's settleable-at time.
     struct InterestRateParams {
         uint32 maxRate; // 1e8 = 10% APR. Hard ceiling on rate. Capped at uint32 max ≈ 4.29e9 (~429% APR).
         uint32 startingRate; // 1e8 = 10% APR. Rate at round 0 (`requestStart`).
@@ -136,7 +134,7 @@ contract openLend is ReentrancyGuard {
         uint8 initialLiquidity; // initial token1 in the oracle report = supplyAmount * initialLiquidity / 100. Bounded [5, 200].
         uint16 multiplier; // openOracle per-round dispute multiplier, e.g. 140 = 1.4x. Bounded [100, 1000].
         uint48 maxBaseFee; // maximum base fee, relative to initial liquidity, where a liquidation finalizes against the borrower
-        uint64 minSettlerReward; // minimum ETH settler reward a liquidator must attach to the oracle game
+        uint64 finalizerReward; // fixed ETH finalizer reward the liquidator attaches at liquidate, paid to whoever finalizes
     }
 
     /// @notice Snapshot of lender + liquidator at liquidate time, used for oracle game fee routing.
@@ -199,12 +197,20 @@ contract openLend is ReentrancyGuard {
         OracleParams oracleParams,
         InterestRateParams interestRateParams
     );
-    event RefiOpenedDuringLiquidation(uint256 indexed lendingId, uint128 extraDemanded, uint128 supplyPulled, uint48 newTerm, uint96 gasCompensation, OracleParams oracleParams, InterestRateParams interestRateParams);
+    event RefiOpenedDuringLiquidation(
+        uint256 indexed lendingId,
+        uint128 extraDemanded,
+        uint128 supplyPulled,
+        uint48 newTerm,
+        uint96 gasCompensation,
+        OracleParams oracleParams,
+        InterestRateParams interestRateParams
+    );
     event RefiCancelled(uint256 indexed lendingId);
     event LiqFinishedUnderwater(uint256 indexed lendingId);
     event LiqFinishedWithBuffer(uint256 indexed lendingId);
     event LiqUnsuccessful(uint256 indexed lendingId);
-    event Recovery(uint256 indexed lendingId);
+    event BountyPaid(uint256 indexed lendingId, address indexed finalizer, uint256 bounty);
     event OracleGameFeesGrabbed(
         uint256 indexed lendingId, address indexed feeRecipient, uint256 feesSupply, uint256 feesBorrow
     );
@@ -215,23 +221,25 @@ contract openLend is ReentrancyGuard {
     // -------------------------------------------------------------------------
 
     /**
-     * @notice Opens a new borrow request: locks `supplyAmount` of `supplyToken` and starts a Dutch-auction rate curve.
-     * @dev    Lenders accept by calling `lend`; the rate they pay is `calcRate` evaluated at `block.timestamp`.
-     *         Until accepted, the borrower may call `cancelBorrowRequest` to recover collateral.
+     * @notice Opens a new borrow request for `borrower`: locks `supplyAmount` of `supplyToken` and starts a Dutch-auction rate curve.
+     * @dev    Funds are pulled from `msg.sender`, while `borrower` is written as the loan borrower. Lenders accept
+     *         by calling `lend`; the rate they pay is `calcRate` evaluated at `block.timestamp`. Until accepted,
+     *         the borrower may call `cancelBorrowRequest` to recover collateral.
      * @param  term Loan duration in seconds, bounded [1800, 1 year]. Measured from the moment a lender calls `lend`.
      * @param  supplyToken Address of the ERC20 supplied as collateral. Must differ from `borrowToken`.
      * @param  borrowToken Address of the ERC20 the borrower wants to borrow.
      * @param  liquidationThreshold Fraction in 1e7 fixed-point (8e6 = 80%). Liquidation becomes possible when
-     *                              `borrowValue > liquidationThreshold * supplyAmount`. Bounded [7e6, 1e7].
+     *                              `borrowValue > liquidationThreshold * supplyAmount`. Bounded [3e6, 1e7].
      * @param  supplyAmount Collateral amount transferred from `msg.sender` into the contract on this call.
      * @param  amountDemanded Borrow amount requested. Pulled from the lender to the borrower at `lend` time.
      * @param  stake Liquidator stake fraction in 10000 fixed-point (100 = 1%). The liquidator wagers
      *               `stake * supplyAmount / 10000` of supplyToken on the liquidation succeeding.
      * @param  commitmentFraction 1e7 fixed-point. Close-out interest = `max(commitmentFraction × fullInterest / 1e7,
      *                            accruedInterest)`. Immutable for the loan's life.
-     * @param  gasCompensation ETH escrowed to pay the lender who calls `lend` on this curve. Must equal `msg.value`.
-     *                         Refunded to the borrower if the request is cancelled or the loan terminates with the
-     *                         curve still open.
+     * @param  gasCompensation ETH escrowed to pay the lender who accepts this curve. `msg.value` must equal this
+     *                         amount, plus `supplyAmount` when `supplyToken` is native ETH. Refunded to the borrower
+     *                         if the request is cancelled or the loan terminates with the curve still open.
+     * @param  borrower Address recorded as borrower. Collateral is still funded by `msg.sender`.
      * @param  oracleParams Oracle game configuration applied to any future liquidation of this loan.
      * @param  interestRateParams Curve parameters (start, growth, max) for rate discovery.
      * @return lendingId Unique identifier for the new lending arrangement, used by all subsequent calls.
@@ -246,6 +254,7 @@ contract openLend is ReentrancyGuard {
         uint16 stake,
         uint24 commitmentFraction,
         uint96 gasCompensation,
+        address borrower,
         OracleParams calldata oracleParams,
         InterestRateParams calldata interestRateParams
     ) external payable nonReentrant returns (uint256 lendingId) {
@@ -253,19 +262,25 @@ contract openLend is ReentrancyGuard {
 
         uint256 ethRequired = supplyToken == ETH_SENTINEL ? supplyAmount + gasCompensation : gasCompensation;
 
-        if (supplyToken == borrowToken) revert InvalidInput("supply == borrow");
-        if (liquidationThreshold > 1e7 || liquidationThreshold < 7e6) revert InvalidInput("LT out of bounds");
-        if (stake > 10000) revert InvalidInput("stake too high");
-        if (amountDemanded == 0) revert InvalidInput("cant borrow 0");
-        if (supplyAmount == 0) revert InvalidInput("cant supply 0");
-        if (term < 1800 || term > 60 * 60 * 24 * 365) revert InvalidInput("term out of bounds");
-        if (supplyAmount + uint256(supplyAmount) * stake / 10000 > type(uint128).max) {
-            revert InvalidInput("supply + stake too high");
+        if (borrower == address(0)) revert LendErrors.AddressCannotBeZero();
+        if (supplyToken == borrowToken) revert LendErrors.SupplyEqualsBorrow();
+        if (liquidationThreshold > 1e7 || liquidationThreshold < 3e6) {
+            revert LendErrors.LiquidationThresholdOutOfBounds();
         }
-        if (msg.value != ethRequired) revert InvalidInput("msg.value should be gasComp");
-        if (commitmentFraction > 1e7) revert InvalidInput("commitment fraction too high");
-        if (uint256(amountDemanded) * (uint256(1e9) * 365 days + uint256(term) * interestRateParams.maxRate) > type(uint128).max * uint256(1e9) * 365 days) {
-            revert InvalidInput("residual overflow");
+        if (stake > 10000) revert LendErrors.StakeTooHigh();
+        if (amountDemanded == 0) revert LendErrors.ZeroAmount();
+        if (supplyAmount == 0) revert LendErrors.ZeroAmount();
+        if (term < 1800 || term > 60 * 60 * 24 * 365) revert LendErrors.TermOutOfBounds();
+        if (supplyAmount + uint256(supplyAmount) * stake / 10000 > type(uint128).max) {
+            revert LendErrors.SupplyPlusStakeTooHigh();
+        }
+        if (msg.value != ethRequired) revert LendErrors.MsgValue();
+        if (commitmentFraction > 1e7) revert LendErrors.CommitmentFractionTooHigh();
+        if (
+            uint256(amountDemanded) * (uint256(1e9) * 365 days + uint256(term) * interestRateParams.maxRate)
+                > type(uint128).max * uint256(1e9) * 365 days
+        ) {
+            revert LendErrors.ResidualOverflow();
         }
 
         _validateOracleParams(oracleParams, supplyAmount);
@@ -281,7 +296,7 @@ contract openLend is ReentrancyGuard {
         lending.liquidationThreshold = liquidationThreshold;
         lending.principal = amountDemanded;
         lending.stake = stake;
-        lending.borrower = msg.sender;
+        lending.borrower = borrower;
         lending.oracleParams = oracleParams;
         lending.requestStart = uint48(currentTime);
         lending.interestRateParams = interestRateParams;
@@ -292,7 +307,7 @@ contract openLend is ReentrancyGuard {
         if (supplyToken != ETH_SENTINEL) _pullToken(supplyToken, msg.sender, address(this), supplyAmount);
 
         emit BorrowRequested(
-            msg.sender,
+            borrower,
             lendingId,
             supplyToken,
             borrowToken,
@@ -318,10 +333,12 @@ contract openLend is ReentrancyGuard {
     function cancelBorrowRequest(uint256 lendingId) external nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
-        if (lending.cancelled) revert InvalidInput("lendingId cancelled");
-        if (lending.finished) revert InvalidInput("finished");
-        if (lending.active) revert InvalidInput("lendingId active");
-        if (lending.borrower != msg.sender) revert InvalidInput("msg.sender");
+        address borrower = lending.borrower;
+
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (lending.finished) revert LendErrors.Finished();
+        if (lending.active) revert LendErrors.LendingIdActive();
+        if (borrower != msg.sender) revert LendErrors.MsgSender();
 
         address supplyToken = lending.supplyToken;
         uint128 supplyAmount = lending.supplyAmount;
@@ -330,14 +347,15 @@ contract openLend is ReentrancyGuard {
         _clearRefiCurve(lending);
 
         _sendGasComp(lending);
-        _transferTokens(supplyToken, address(this), msg.sender, supplyAmount);
+        _transferTokens(supplyToken, address(this), borrower, supplyAmount);
 
-        emit BorrowRequestCancelled(msg.sender, lendingId);
+        emit BorrowRequestCancelled(borrower, lendingId);
     }
 
     /**
-     * @notice Accepts the current rate on the borrow / refi curve. Single entrypoint for both origination and refinance.
-     * @dev    Carries the `autoSettle` modifier, so a settleable pending liquidation is resolved before the body
+     * @notice Accepts the current rate on the borrow / refi curve for `lender`.
+     * @dev    Funds are pulled from `msg.sender`, while `lender` is written as the loan lender and receives any
+     *         gas compensation. Carries the `autoSettle` modifier, so a settleable pending liquidation is resolved before the body
      *         runs; if the resolution is unsuccessful the loan exits liquidation and lend can proceed against
      *         the post-settle state, including any virtual `requestStart` set to the report's settleable-at
      *         time. On origination, the lender funds the borrower with `amountDemanded` of borrowToken and the
@@ -349,17 +367,25 @@ contract openLend is ReentrancyGuard {
      *         returns against `requestStart` at the current block. Reverts if the arrangement is cancelled,
      *         finished, still in liquidation after auto-settle, has no open curve, or (on the refi branch) is
      *         past maturity plus grace.
+     *
+     *         Guard semantics: `expectedMinSupply` is checked against the live collateral balance before this
+     *         accept call applies any staged refi collateral pull. It is not a post-refi collateral floor.
+     *         `paramHashExpected` is the guard that pins the staged refi terms, including `supplyPulled`.
      * @param  lendingId Unique identifier of the lending arrangement.
-     * @param  paramHashExpected Optional loose paramHash. Set to bytes32(0) to skip.
+     * @param  paramHashExpected Optional loose paramHash over loan configuration and staged refi terms. Set to
+     *         bytes32(0) to skip. Use a nonzero hash to pin `refiParams.supplyPulled`, `extraDemanded`, new term,
+     *         and related params.
      * @param  minLendAmount Refi-only floor on the new principal. Set to 0 on origination (ignored).
      * @param  maxLendAmount Refi-only ceiling on the new principal. Set to type(uint128).max on origination (ignored).
-     * @param  expectedMinSupply Reverts if `supplyAmount < expectedMinSupply`. Uses pre-accept supply. Post-accept supply
-     *         can change if borrower has supplyPulled > 0 in a refinance.
+     * @param  expectedMinSupply Reverts if pre-accept `supplyAmount < expectedMinSupply`. On refinance, post-accept
+     *         supply can be lower if the borrower staged `supplyPulled > 0`; use `paramHashExpected` to reject an
+     *         unexpected collateral pull.
      * @param  minRate Reverts if the computed rate is below this floor.
      * @param  liquidatorFraction Share of any post-settlement equity buffer routed to the liquidator, in 1e7
      *                            fixed-point (0 = lender keeps it all, 1e7 = liquidator keeps it all). Bounded
      *                            [0, 1e7]. Anyone may call `liquidate` regardless of this value; this knob
      *                            only sets the buffer split.
+     * @param  lender Address recorded as lender. Borrow funds are still funded by `msg.sender`.
      */
     function lend(
         uint256 lendingId,
@@ -368,7 +394,8 @@ contract openLend is ReentrancyGuard {
         uint128 maxLendAmount,
         uint128 expectedMinSupply,
         uint32 minRate,
-        uint24 liquidatorFraction
+        uint24 liquidatorFraction,
+        address lender
     ) external payable nonReentrant autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
@@ -389,20 +416,24 @@ contract openLend is ReentrancyGuard {
         bool isEth = borrowToken == ETH_SENTINEL;
         uint256 ethRequired;
 
-        if (lending.cancelled) revert InvalidInput("cancelled");
-        if (lending.finished) revert InvalidInput("finished");
-        if (lending.inLiquidation) revert InvalidInput("in liquidation");
-        if (!lending.curveOpen) revert InvalidInput("no curve");
-        if (lending.supplyAmount < expectedMinSupply) revert InvalidInput("min supply");
-        if (lending.active && currentTime >= uint256(lending.start) + prevTerm + lending.gracePeriod) revert InvalidInput("expired");
-        if (rate < minRate) revert InvalidInput("min rate");
-        if (liquidatorFraction > 1e7) revert InvalidInput("liquidator fraction too high");
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (lending.finished) revert LendErrors.Finished();
+        if (lending.inLiquidation) revert LendErrors.InLiquidation();
+        if (!lending.curveOpen) revert LendErrors.CurveIsNotOpen();
+        if (lending.supplyAmount < expectedMinSupply) revert LendErrors.MinSupply();
+        if (lending.active && currentTime >= uint256(lending.start) + prevTerm + lending.gracePeriod) {
+            revert LendErrors.Expired();
+        }
+        if (rate < minRate) revert LendErrors.MinRate();
+        if (liquidatorFraction > 1e7) revert LendErrors.LiquidatorFractionTooHigh();
+        if (lender == address(0)) revert LendErrors.AddressCannotBeZero();
+        if (!isEth && msg.value > 0) revert LendErrors.MsgValue();
 
         if (paramHashExpected != bytes32(0)) {
             _checkParamsLoose(lending, paramHashExpected);
         }
 
-        lending.lender = msg.sender;
+        lending.lender = lender;
         lending.rate = uint32(rate);
         lending.start = uint48(currentTime);
         lending.curveOpen = false;
@@ -413,16 +444,14 @@ contract openLend is ReentrancyGuard {
             // origination
             uint256 principal = lending.principal;
             ethRequired = isEth ? principal : 0;
-            if (msg.value != ethRequired) revert InvalidInput("msg.value");
+            if (msg.value != ethRequired) revert LendErrors.MsgValue();
 
             lending.active = true;
             lending.gasCompensation = 0;
-            lending.commitmentInterest = uint128(
-                principal * prevTerm * commitmentFraction * rate
-                    / (1e7 * 1e9 * 365 days)
-            );
+            lending.commitmentInterest =
+                uint128(principal * prevTerm * commitmentFraction * rate / (1e7 * 1e9 * 365 days));
 
-            _payEth(msg.sender, gasCompensation);
+            _payEth(lender, gasCompensation);
             if (isEth) {
                 _payEth(borrower, principal);
             } else {
@@ -430,7 +459,14 @@ contract openLend is ReentrancyGuard {
             }
 
             emit LoanOriginated(
-                lendingId, msg.sender, principal, rate, uint48(currentTime), prevTerm, uint96(gasCompensation), liquidatorFraction
+                lendingId,
+                lender,
+                principal,
+                rate,
+                uint48(currentTime),
+                prevTerm,
+                uint96(gasCompensation),
+                liquidatorFraction
             );
         } else {
             // refi
@@ -443,30 +479,30 @@ contract openLend is ReentrancyGuard {
             uint256 netTerminalDebtPrev = _owedPrev;
             uint256 newBorrowAmount = netTerminalDebtPrev + extraDemanded;
             ethRequired = isEth ? newBorrowAmount : 0;
-            if (msg.value != ethRequired) revert InvalidInput("msg.value");
+            if (msg.value < ethRequired) revert LendErrors.MsgValue();
 
             if (newBorrowAmount < minLendAmount || newBorrowAmount > maxLendAmount) {
-                revert InvalidInput("lend amount out of bounds");
+                revert LendErrors.LendAmountOutOfBounds();
             }
 
             if (stagedSettlementTime != 0) {
                 OracleParams memory stagedOracleParams = lending.refiParams.oracleParams;
                 uint256 newSupplyAmount = uint256(lending.supplyAmount) - supplyPulled;
-                uint256 newEscHalt =
-                    newSupplyAmount * stagedOracleParams.escalationFactor / 100;
-                if (newEscHalt > type(uint128).max) revert InvalidInput("new esc halt too high");
+                uint256 newEscHalt = newSupplyAmount * stagedOracleParams.escalationFactor / 100;
+                if (newEscHalt > type(uint128).max) revert LendErrors.EscalationHaltTooHigh();
                 lending.oracleParams = stagedOracleParams;
             }
 
-            if (newBorrowAmount * (uint256(1e9) * 365 days + uint256(newTerm) * rate) > type(uint128).max * uint256(1e9) * 365 days) {
-                revert InvalidInput("residual overflow");
+            if (
+                newBorrowAmount * (uint256(1e9) * 365 days + uint256(newTerm) * rate)
+                    > type(uint128).max * uint256(1e9) * 365 days
+            ) {
+                revert LendErrors.ResidualOverflow();
             }
 
             lending.principal = uint128(newBorrowAmount);
-            lending.commitmentInterest = uint128(
-                newBorrowAmount * newTerm * commitmentFraction * rate
-                    / (1e7 * 1e9 * 365 days)
-            );
+            lending.commitmentInterest =
+                uint128(newBorrowAmount * newTerm * commitmentFraction * rate / (1e7 * 1e9 * 365 days));
             lending.gracePeriod = 0;
             lending.liquidator = address(0);
             lending.liquidationStart = 0;
@@ -479,7 +515,7 @@ contract openLend is ReentrancyGuard {
             lending.gasCompensation = 0;
             _clearRefiCurve(lending);
 
-            _payEth(msg.sender, gasCompensation);
+            _payEth(lender, gasCompensation);
 
             if (!isEth) {
                 _pullToken(borrowToken, msg.sender, address(this), newBorrowAmount);
@@ -489,10 +525,11 @@ contract openLend is ReentrancyGuard {
 
             if (extraDemanded > 0) _transferTokens(borrowToken, address(this), borrower, extraDemanded);
             if (supplyPulled > 0) _transferTokens(supplyToken, address(this), borrower, supplyPulled);
+            if (msg.value > ethRequired) _payEth(lender, msg.value - ethRequired);
 
             emit LoanRefinanced(
                 lendingId,
-                msg.sender,
+                lender,
                 prevLender,
                 newBorrowAmount,
                 netTerminalDebtPrev,
@@ -511,7 +548,9 @@ contract openLend is ReentrancyGuard {
      * @notice Borrower-only repayment.
      * @dev    Partial repayments are streamed to the lender, satisfying interest first then reducing principal.
      *         If the payment covers the residual debt, the loan closes and the borrower gets all the collateral
-     *         back. Reverts during a live liquidation, after maturity plus grace, or once finished or cancelled.
+     *         back. When borrowToken is native ETH and `amount` exceeds residual debt, the excess ETH is refunded
+     *         to `msg.sender` (the payer). Reverts during a live liquidation, after maturity plus grace, or once
+     *         finished or cancelled.
      * @param  lendingId Unique identifier of the lending arrangement.
      * @param  amount BorrowToken amount to apply against debt. May exceed `netTerminalDebt` (excess is not pulled).
      * @param  expectedParamHash Optional loose paramHash. Set to bytes32(0) to skip.
@@ -525,13 +564,15 @@ contract openLend is ReentrancyGuard {
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
     ) external payable nonReentrant autoSettle(lendingId) {
-        if (msg.sender != lendingArrangements[lendingId].borrower) revert InvalidInput("not borrower");
+        if (msg.sender != lendingArrangements[lendingId].borrower) revert LendErrors.NotBorrower();
         _repayDebt(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
 
     /**
      * @notice Permissionless variant of `repayDebt`: anyone can repay any loan's debt.
-     * @dev    Same gating and parameters as `repayDebt`. The third party puts up the borrowToken.
+     * @dev    Same gating and parameters as `repayDebt`. The third party puts up the borrowToken. If borrowToken
+     *         is native ETH and `amount` exceeds residual debt on full repayment, the excess ETH is refunded to
+     *         `msg.sender`; collateral still returns to the recorded borrower.
      * @param  lendingId Unique identifier of the lending arrangement.
      * @param  amount BorrowToken amount to apply against debt.
      * @param  expectedParamHash Optional loose paramHash. Set to bytes32(0) to skip.
@@ -565,7 +606,7 @@ contract openLend is ReentrancyGuard {
         uint128 expectedMinSupply,
         uint128 expectedMaxPrincipal
     ) external payable nonReentrant autoSettle(lendingId) {
-        if (msg.sender != lendingArrangements[lendingId].borrower) revert InvalidInput("not borrower");
+        if (msg.sender != lendingArrangements[lendingId].borrower) revert LendErrors.NotBorrower();
         _topUpCollateral(lendingId, amount, expectedParamHash, expectedMinSupply, expectedMaxPrincipal);
     }
 
@@ -601,12 +642,12 @@ contract openLend is ReentrancyGuard {
 
         uint256 currentTime = block.timestamp;
 
-        if (lending.inLiquidation) revert InvalidInput("in liquidation");
-        if (lending.finished) revert InvalidInput("arrangement finished");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.cancelled) revert InvalidInput("cancelled");
+        if (lending.inLiquidation) revert LendErrors.InLiquidation();
+        if (lending.finished) revert LendErrors.Finished();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.cancelled) revert LendErrors.Cancelled();
         if (currentTime < uint256(lending.start) + lending.term + lending.gracePeriod) {
-            revert InvalidInput("not expired");
+            revert LendErrors.NotExpired();
         }
 
         uint128 supplyAmount = lending.supplyAmount;
@@ -628,8 +669,8 @@ contract openLend is ReentrancyGuard {
      * @dev    Stages the refi parameters and marks the curve open; the actual roll happens when a lender
      *         calls `lend`. Outside liquidation, `requestStart` is set to `block.timestamp` so the curve
      *         starts ticking immediately. During liquidation the curve is parked: `requestStart` is left at
-     *         zero and only gets populated later, when an unsuccessful liquidation settles and `onSettle`
-     *         (or `recover`) writes the report's settleable-at time. New oracle params (when supplied) are
+     *         zero and only gets populated later, when an unsuccessful liquidation is finalized and writes the
+     *         report's settleable-at time. New oracle params (when supplied) are
      *         validated now and become the loan's oracle config at lend time. Allowed during a live
      *         liquidation; the maturity-plus-grace expiry check is skipped in that case. Only the borrower
      *         can call, only on an active loan with a closed curve. Emits `RefiOpenedDuringLiquidation` when
@@ -641,7 +682,8 @@ contract openLend is ReentrancyGuard {
      *                 bounded [1800, 1 year]; same range as origination.
      * @param  gasCompensation ETH escrowed to pay the lender who accepts the refi. Must equal `msg.value`. Refunded
      *                         to the borrower if the refi is cancelled or the loan terminates with the curve open.
-     * @param  interestRateParams New curve parameters governing the refi auction.
+     * @param  interestRateParams New curve parameters governing the refi auction. Pass `maxRate = 0` to keep the
+     *                            existing interest-rate config.
      * @param  oracleParams Optional new oracle params for the post-refi loan. Pass `settlementTime = 0` to keep
      *                      the existing config; otherwise validated and applied at lend acceptance.
      * @param  expectedParamHash Optional loose paramHash. Set to bytes32(0) to skip.
@@ -670,23 +712,27 @@ contract openLend is ReentrancyGuard {
         uint48 currentTerm = lending.term;
         uint48 finalTerm = newTerm == 0 ? currentTerm : newTerm;
 
-        if (msg.sender != lending.borrower) revert InvalidInput("not borrower");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.finished) revert InvalidInput("finished");
-        if (lending.cancelled) revert InvalidInput("cancelled");
-        if (lending.curveOpen) revert InvalidInput("curve is open");
+        if (msg.sender != lending.borrower) revert LendErrors.NotBorrower();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.finished) revert LendErrors.Finished();
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (lending.curveOpen) revert LendErrors.CurveIsOpen();
 
-        if (supplyPulled >= supplyAmount) revert InvalidInput("supplyPulled too high");
+        if (supplyPulled >= supplyAmount) revert LendErrors.SupplyPulledTooHigh();
         if (oracleParams.settlementTime != 0) {
             _validateOracleParams(oracleParams, supplyAmount - supplyPulled);
         }
-        _validateInterestRateParams(interestRateParams);
+        if (interestRateParams.maxRate != 0) {
+            _validateInterestRateParams(interestRateParams);
+        }
 
-        if (lending.principal > expectedMaxPrincipal) revert InvalidInput("principal too high");
-        if (supplyAmount < expectedMinSupply) revert InvalidInput("supply too low");
-        if (newTerm != 0 && (newTerm < 1800 || newTerm > 60 * 60 * 24 * 365)) revert InvalidInput("term out of bounds");
-        if (!inLiquidation && currentTime >= uint256(lending.start) + currentTerm + lending.gracePeriod) revert InvalidInput("expired");
-        if (msg.value != gasCompensation) revert InvalidInput("msg.value should be gasComp");
+        if (lending.principal > expectedMaxPrincipal) revert LendErrors.PrincipalTooHigh();
+        if (supplyAmount < expectedMinSupply) revert LendErrors.SupplyTooLow();
+        if (newTerm != 0 && (newTerm < 1800 || newTerm > 60 * 60 * 24 * 365)) revert LendErrors.TermOutOfBounds();
+        if (!inLiquidation && currentTime >= uint256(lending.start) + currentTerm + lending.gracePeriod) {
+            revert LendErrors.Expired();
+        }
+        if (msg.value != gasCompensation) revert LendErrors.MsgValue();
         if (expectedParamHash != bytes32(0)) {
             _checkParamsLoose(lending, expectedParamHash);
         }
@@ -698,7 +744,7 @@ contract openLend is ReentrancyGuard {
         if (!inLiquidation) {
             lending.requestStart = uint48(currentTime);
         }
-        lending.interestRateParams = interestRateParams;
+        if (interestRateParams.maxRate != 0) lending.interestRateParams = interestRateParams;
         lending.gasCompensation = gasCompensation;
 
         if (oracleParams.settlementTime != 0) {
@@ -709,9 +755,13 @@ contract openLend is ReentrancyGuard {
         }
 
         if (inLiquidation) {
-            emit RefiOpenedDuringLiquidation(lendingId, extraDemanded, supplyPulled, finalTerm, gasCompensation, eventOP, interestRateParams);
+            emit RefiOpenedDuringLiquidation(
+                lendingId, extraDemanded, supplyPulled, finalTerm, gasCompensation, eventOP, lending.interestRateParams
+            );
         } else {
-            emit RefiOpened(lendingId, extraDemanded, supplyPulled, finalTerm, gasCompensation, eventOP, interestRateParams);
+            emit RefiOpened(
+                lendingId, extraDemanded, supplyPulled, finalTerm, gasCompensation, eventOP, lending.interestRateParams
+            );
         }
     }
 
@@ -724,11 +774,11 @@ contract openLend is ReentrancyGuard {
     function cancelRefinance(uint256 lendingId) external nonReentrant autoSettle(lendingId) {
         LendingArrangement storage lending = lendingArrangements[lendingId];
 
-        if (msg.sender != lending.borrower) revert InvalidInput("not borrower");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.finished) revert InvalidInput("finished");
-        if (lending.cancelled) revert InvalidInput("cancelled");
-        if (!lending.curveOpen) revert InvalidInput("curve is not open");
+        if (msg.sender != lending.borrower) revert LendErrors.NotBorrower();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.finished) revert LendErrors.Finished();
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (!lending.curveOpen) revert LendErrors.CurveIsNotOpen();
 
         _clearRefiCurve(lending);
 
@@ -742,11 +792,13 @@ contract openLend is ReentrancyGuard {
      *         `stake * supplyAmount / 10000` of supplyToken that the oracle will resolve to an underwater price.
      * @dev    Permissionless: anyone may call. The liquidator transfers initial liquidity for both sides of
      *         the oracle report (supplyToken as token1, borrowToken as token2 sized by `priceRatio`) plus the
-     *         stake, and pays `settlerReward` wei as the openOracle settler reward (msg.value must equal it).
+     *         stake, pays `settlerReward` wei as the openOracle settler reward, and escrows the configured
+     *         `finalizerReward` for whoever finalizes the liquidation.
      *         While the report is open the loan is in liquidation: the borrower cannot repay or top up.
-     *         Resolution happens in `onSettle`: if the oracle resolves underwater the liquidator recovers the
-     *         stake and the equity buffer is split per `liquidatorFraction` between liquidator and lender;
-     *         the lender receives the rest of the collateral. Otherwise the stake is forfeit. If resolution
+     *         Resolution happens through `finalize` once the report can no longer be disputed: if the oracle
+     *         resolves underwater the liquidator recovers the stake and the equity buffer is split per
+     *         `liquidatorFraction` between liquidator and lender; the lender receives the rest of the
+     *         collateral. Otherwise the stake is forfeit. If resolution
      *         lands more than 30 minutes before maturity, the full stake is added to supplyAmount (claimable by
      *         the lender on default, or by the borrower on repay/refi). If it lands within the last 30 minutes of the term or after maturity, a grace
      *         period is granted to give the borrower time to react and the stake is split: half to the lender
@@ -759,8 +811,10 @@ contract openLend is ReentrancyGuard {
      * @param  paramHashExpected Loose paramHash. Optional — pass `bytes32(0)` to skip the check; any non-zero
      *                           value is enforced via `_checkParamsLoose`.
      * @param  worstRatio Reverts if `1e18 * netBorrow / supplyAmount < worstRatio`.
-     * @param  settlerReward Wei the liquidator stakes as the openOracle settler reward. Must equal `msg.value`.
-     *                      Unbounded; caller picks based on how much they want to pay third-party settlers.
+     * @param  settlerReward Wei the liquidator stakes as the openOracle settler reward. Unbounded; caller picks
+     *                        based on how much they want to pay third-party oracle settlers.
+     * @param  liquidator Address recorded as the liquidator and recipient of liquidator-side payouts.
+     * @param  expectedFinalizerReward Expected configured finalizer reward; reverts if the loan's oracle params differ.
      */
     function liquidate(
         uint256 lendingId,
@@ -769,6 +823,8 @@ contract openLend is ReentrancyGuard {
         bytes32 paramHashExpected,
         uint256 worstRatio,
         uint96 settlerReward,
+        address liquidator,
+        uint64 expectedFinalizerReward,
         IOpenOracle2.TimingBoundaries calldata timing
     ) external payable nonReentrant {
         LendingArrangement storage lending = lendingArrangements[lendingId];
@@ -776,19 +832,21 @@ contract openLend is ReentrancyGuard {
 
         uint256 currentTime = block.timestamp;
 
-        if (lending.inLiquidation) revert InvalidInput("in liquidation");
-        if (lending.finished) revert InvalidInput("arrangement finished");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.cancelled) revert InvalidInput("cancelled");
-        if (currentTime >= uint256(lending.start) + lending.term) revert InvalidInput("arrangement expired");
-        if (lending.gracePeriod != 0) revert InvalidInput("in grace period");
+        if (lending.inLiquidation) revert LendErrors.InLiquidation();
+        if (lending.finished) revert LendErrors.Finished();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (currentTime >= uint256(lending.start) + lending.term) revert LendErrors.Expired();
+        if (lending.gracePeriod != 0) revert LendErrors.InGracePeriod();
         if (paramHashExpected != bytes32(0)) _checkParamsLoose(lending, paramHashExpected);
+        if (liquidator == address(0)) revert LendErrors.AddressCannotBeZero();
 
         _touchAmort(lending);
 
         uint128 supplyAmount = lending.supplyAmount;
         address borrowToken = lending.borrowToken;
         address supplyToken = lending.supplyToken;
+        uint64 finalizerReward = lending.oracleParams.finalizerReward;
         address feeRecipient;
         uint256 tokenStake = uint256(supplyAmount) * lending.stake / 10000;
         uint256 initialLiquidity = uint256(supplyAmount) * oracleParams.initialLiquidity / 100;
@@ -797,8 +855,9 @@ contract openLend is ReentrancyGuard {
         uint256 borrowValue = _residualDebt(lending);
         uint256 liqThresh = uint256(supplyAmount) * lending.liquidationThreshold / 1e7;
         uint256 initialBorrowValueInSupplyTerms = Math.mulDiv(borrowValue, initialLiquidity, oracleAmount2);
-        uint256 ethRequired = settlerReward;
+        uint256 ethRequired = uint256(settlerReward) + finalizerReward;
         uint256 oracleMsgValue = settlerReward;
+        address lender = lending.lender;
         bool isEth1;
         bool isEth2;
 
@@ -814,20 +873,20 @@ contract openLend is ReentrancyGuard {
             isEth2 = true;
         }
 
-        if (msg.value < ethRequired) revert InvalidInput("msg.value");
+        if (msg.value < ethRequired) revert LendErrors.MsgValue();
 
-        if (borrowValue == 0) revert InvalidInput("no net borrow");
+        if (borrowValue == 0) revert LendErrors.NoNetBorrow();
         uint256 ratio = Math.mulDiv(1e18, borrowValue, supplyAmount);
 
-        if (settlerReward < oracleParams.minSettlerReward) revert InvalidInput("settlerReward too low");
-        if (oracleAmount2 > type(uint128).max) revert InvalidInput("amount2 too large");
-        if (escHalt > type(uint128).max) revert InvalidInput("escHalt too large");
-        if (tokenStake + supplyAmount > type(uint128).max) revert InvalidInput("tokenStake + supplyAmount too large");
-        if (ratio < worstRatio) revert InvalidInput("position too healthy");
-        if (initialLiquidity > maxInitialLiquidity) revert InvalidInput("too much oracle game initial liquidity");
+        if (expectedFinalizerReward != finalizerReward) revert LendErrors.FinalizerRewardMismatch();
+        if (oracleAmount2 > type(uint128).max) revert LendErrors.Amount2TooLarge();
+        if (escHalt > type(uint128).max) revert LendErrors.EscalationHaltTooHigh();
+        if (tokenStake + supplyAmount > type(uint128).max) revert LendErrors.TokenStakePlusSupplyAmountTooLarge();
+        if (ratio < worstRatio) revert LendErrors.PositionTooHealthy();
+        if (initialLiquidity > maxInitialLiquidity) revert LendErrors.TooMuchOracleGameInitialLiquidity();
 
         if (initialBorrowValueInSupplyTerms <= liqThresh) {
-            revert InvalidInput("initial report not liquidation-eligible");
+            revert LendErrors.InitialReportNotLiquidationEligible();
         }
 
         lending.requestStart = 0;
@@ -836,7 +895,7 @@ contract openLend is ReentrancyGuard {
 
         lending.inLiquidation = true;
         lending.liquidationStart = uint48(currentTime);
-        lending.liquidator = msg.sender;
+        lending.liquidator = liquidator;
 
         reportIdToLending[reportId] = lendingId;
         lendingToReportId[lendingId] = reportId;
@@ -846,8 +905,8 @@ contract openLend is ReentrancyGuard {
         }
 
         if (feeRecipient != address(0)) {
-            lendingBeneficiaries[lendingId][feeRecipient].lender = lending.lender;
-            lendingBeneficiaries[lendingId][feeRecipient].liquidator = msg.sender;
+            lendingBeneficiaries[lendingId][feeRecipient].lender = lender;
+            lendingBeneficiaries[lendingId][feeRecipient].liquidator = liquidator;
         }
 
         if (!isEth1) {
@@ -857,88 +916,34 @@ contract openLend is ReentrancyGuard {
         if (!isEth2) {
             _pullToken(borrowToken, msg.sender, address(this), oracleAmount2);
             _ensureOracleApproval(borrowToken);
-        } 
+        }
 
         uint256 reportIdGen = _oracleGame(
-            oracleParams, timing, supplyToken, borrowToken, uint128(initialLiquidity), uint128(escHalt), feeRecipient, settlerReward, uint128(oracleAmount2), oracleMsgValue
+            oracleParams,
+            timing,
+            supplyToken,
+            borrowToken,
+            uint128(initialLiquidity),
+            uint128(escHalt),
+            feeRecipient,
+            settlerReward,
+            uint128(oracleAmount2),
+            oracleMsgValue,
+            liquidator
         );
 
-        if (reportIdGen != reportId) revert InvalidInput("reportIds don't match");
+        if (reportIdGen != reportId) revert LendErrors.ReportIdsDontMatch();
 
         if (msg.value > ethRequired) {
-            _payEth(msg.sender, msg.value - ethRequired);
+            _payEth(liquidator, msg.value - ethRequired);
         }
 
         emit LoanLiquidationUnderway(lendingId, reportId, feeRecipient);
     }
 
     /**
-     * @notice openOracle settlement callback. Finalizes a pending liquidation based on the resolved price.
-     * @dev    Only callable by the configured `oracle` contract. Branches on whether the resolved price puts the
-     *         loan underwater (`borrowValueInSupplyTerms > liqThresh`):
-     *           - Underwater: marks the loan finished. If equity is fully consumed, lender gets all collateral
-     *             and liquidator gets just the stake. If a buffer remains, the buffer is split per
-     *             `liquidatorFraction` (1e7-fixed: 0 = lender keeps it all, 1e7 = liquidator keeps it all):
-     *             lender gets `borrowValueInSupplyTerms + lenderPiece`, liquidator gets `liquidatorPiece +
-     *             stake`. (Any prior partial repayments are already in the lender's wallet from streaming,
-     *             not paid out here.)
-     *           - Not underwater: liquidator's stake is forfeit. If the curve is open, `requestStart` is reset
-     *             to the moment the report became settleable to keep the rate auction honest. If resolution
-     *             lands within the last 30 minutes of the term or after maturity, a grace period is granted
-     *             to the borrower and the stake is split — half routed to the lender as compensation for the
-     *             deferred payoff, the rest added to `supplyAmount`. Otherwise the full stake goes to
-     *             `supplyAmount`.
-     *         Distributes any oracle game protocol fees via `_grabOracleGameFees`.
-     * @param  id The openOracle reportId that just settled (used to look up the lendingId).
-     */
-    function openOracleCallback(uint256 id, uint256, uint256, uint256, address, address)
-        external
-        payable
-    {
-        if (msg.sender != address(oracle)) revert InvalidInput("invalid sender");
-        uint256 lendingId = reportIdToLending[id];
-        if (lendingId == 0) revert InvalidInput("no lendingId for reportId");
-
-        LendingArrangement storage lending = lendingArrangements[lendingId];
-        if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
-        if (lending.finished) revert InvalidInput("finished");
-        if (lendingToReportId[lendingId] != id) revert InvalidInput("wrong reportId");
-
-        _touchAmort(lending);
-
-        _executeLiquidation(lending, id, lendingId);
-    }
-
-    /**
-     * @notice Permissionless resolver for a liquidation whose oracle settlement callback reverted.
-     * @dev    Executes liquidation based on final oracle price. Interest is touched at
-     *         recovery execution time, matching normal `onSettle` semantics where debt is
-     *         updated when openLend finalizes the liquidation, not when the oracle report
-     *         first became settleable.
-     * @param  reportId The openOracle reportId whose settlement callback failed. Indexers can find this in the
-     *                  `LoanLiquidationUnderway(lendingId, reportId, feeRecipient)` event emitted at `liquidate` time.
-     */
-    function recover(uint256 reportId) external nonReentrant {
-        uint256 lendingId = reportIdToLending[reportId];
-        LendingArrangement storage lending = lendingArrangements[lendingId];
-        IOpenOracle2.OracleGame memory o = oracle.storedGame(reportId);
-
-        if (lendingId == 0) revert InvalidInput("no lendingId for reportId");
-        if (lending.finished) revert InvalidInput("finished");
-        if (!lending.inLiquidation) revert InvalidInput("not in liquidation");
-        if (o.settlementTimestamp == 0) revert InvalidInput("no oracle settlement");
-        if (lendingToReportId[lendingId] != reportId) revert InvalidInput("wrong reportId");
-
-        _touchAmort(lending);
-
-        _executeLiquidation(lending, reportId, lendingId);
-
-        emit Recovery(lendingId);
-    }
-
-    /**
      * @notice Distributes any protocol fees that have accrued in a feeRecipient clone but haven't been swept.
-     *         Permissionless backstop in case `onSettle`'s sweep missed something.
+     *         Permissionless backstop in case finalization's sweep missed something.
      * @dev    Splits the swept fees 50% to the borrower, 25% to the lender, 25% to the liquidator. Reverts if
      *         the feeRecipient's `gameId()` does not match `lendingId`.
      * @param  lendingId Unique identifier of the lending arrangement.
@@ -948,25 +953,11 @@ contract openLend is ReentrancyGuard {
         LendingArrangement storage lending = lendingArrangements[lendingId];
         address feeRecipient = _predictFeeReceiver(reportId);
 
-        if (feeRecipient.code.length == 0) revert InvalidInput("no fee receiver");
+        if (feeRecipient.code.length == 0) revert LendErrors.NoFeeReceiver();
         if (oracleFeeReceiver(feeRecipient).gameId() != lendingId) {
-            revert InvalidInput("feeRecipient not for lendingId");
+            revert LendErrors.FeeRecipientNotForLendingId();
         }
         _grabOracleGameFees(lending, feeRecipient, lendingId);
-    }
-
-    /**
-     * @notice Permissionless settler for the oracle report tied to a loan. No-op if no report is pending,
-     *         the report isn't yet eligible to settle, or the report has already been settled. On success,
-     *         forwards the oracle's settler reward to msg.sender.
-     * @dev    Useful when the post-settle state would cause an autoSettle entrypoint's body to revert and
-     *         unwind the settle along with it (an underwater resolution finishes the loan, which then makes
-     *         `repayDebt` and friends revert on the finished check). This entrypoint has no loan-mutating body
-     *         after `_settleHelper`.
-     * @param  lendingId Unique identifier of the lending arrangement.
-     */
-    function settleLiquidation(uint256 lendingId) external nonReentrant {
-        _settleHelper(lendingId);
     }
 
     /**
@@ -1011,15 +1002,15 @@ contract openLend is ReentrancyGuard {
         bool isEth = borrowToken == ETH_SENTINEL;
         uint256 ethRequired = isEth ? amount : 0;
 
-        if (msg.value != ethRequired) revert InvalidInput("msg.value");
-        if (lending.inLiquidation) revert InvalidInput("in liquidation");
-        if (lending.finished) revert InvalidInput("arrangement finished");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.cancelled) revert InvalidInput("cancelled");
-        if (currentTime >= uint256(lending.start) + term + lending.gracePeriod) revert InvalidInput("expired");
-        if (lending.principal > expectedMaxPrincipal) revert InvalidInput("principal too high");
-        if (supplied < expectedMinSupply) revert InvalidInput("supply too low");
-        if (amount == 0) revert InvalidInput("cannot repay zero");
+        if (msg.value != ethRequired) revert LendErrors.MsgValue();
+        if (lending.inLiquidation) revert LendErrors.InLiquidation();
+        if (lending.finished) revert LendErrors.Finished();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.cancelled) revert LendErrors.Cancelled();
+        if (currentTime >= uint256(lending.start) + term + lending.gracePeriod) revert LendErrors.Expired();
+        if (lending.principal > expectedMaxPrincipal) revert LendErrors.PrincipalTooHigh();
+        if (supplied < expectedMinSupply) revert LendErrors.SupplyTooLow();
+        if (amount == 0) revert LendErrors.ZeroAmount();
         if (expectedParamHash != bytes32(0)) {
             _checkParamsLoose(lending, expectedParamHash);
         }
@@ -1040,7 +1031,6 @@ contract openLend is ReentrancyGuard {
             }
             emit DebtRepaid(lendingId, msg.sender, owed, true);
         } else {
-
             _applyAmortPartial(lending, amount);
 
             if (!isEth) _pullToken(borrowToken, msg.sender, address(this), amount);
@@ -1067,19 +1057,19 @@ contract openLend is ReentrancyGuard {
         bool isEth = supplyToken == ETH_SENTINEL;
         uint256 ethRequired = isEth ? amount : 0;
 
-        if (msg.value != ethRequired) revert InvalidInput("msg.value");
-        if (amount == 0) revert InvalidInput("zero amount");
-        if (lending.inLiquidation) revert InvalidInput("in liquidation");
-        if (lending.finished) revert InvalidInput("arrangement finished");
-        if (!lending.active) revert InvalidInput("not active");
-        if (lending.cancelled) revert InvalidInput("cancelled");
+        if (msg.value != ethRequired) revert LendErrors.MsgValue();
+        if (amount == 0) revert LendErrors.ZeroAmount();
+        if (lending.inLiquidation) revert LendErrors.InLiquidation();
+        if (lending.finished) revert LendErrors.Finished();
+        if (!lending.active) revert LendErrors.NotActive();
+        if (lending.cancelled) revert LendErrors.Cancelled();
         if (newSupplyAmount + newSupplyAmount * lending.stake / 10000 > type(uint128).max) {
-            revert InvalidInput("supply amount + stake");
+            revert LendErrors.SupplyPlusStakeTooHigh();
         }
-        if (escHalt > type(uint128).max) revert InvalidInput("escalation halt too high");
-        if (currentTime >= uint256(lending.start) + lending.term + lending.gracePeriod) revert InvalidInput("expired");
-        if (lending.principal > expectedMaxPrincipal) revert InvalidInput("principal too high");
-        if (prevSupplyAmount < expectedMinSupply) revert InvalidInput("supply too low");
+        if (escHalt > type(uint128).max) revert LendErrors.EscalationHaltTooHigh();
+        if (currentTime >= uint256(lending.start) + lending.term + lending.gracePeriod) revert LendErrors.Expired();
+        if (lending.principal > expectedMaxPrincipal) revert LendErrors.PrincipalTooHigh();
+        if (prevSupplyAmount < expectedMinSupply) revert LendErrors.SupplyTooLow();
         if (expectedParamHash != bytes32(0)) {
             _checkParamsLoose(lending, expectedParamHash);
         }
@@ -1102,7 +1092,7 @@ contract openLend is ReentrancyGuard {
         copy.principal = 0;
         copy.lastTouch = 0;
 
-        if (paramHashExpected != keccak256(abi.encode(copy))) revert InvalidInput("params");
+        if (paramHashExpected != keccak256(abi.encode(copy))) revert LendErrors.Params();
     }
 
     /// @dev Grants the oracle infinite allowance on the given token the first time it's needed.
@@ -1135,12 +1125,13 @@ contract openLend is ReentrancyGuard {
         address feeRecipient,
         uint96 settlerReward,
         uint128 amount2,
-        uint256 oracleMsgValue
+        uint256 oracleMsgValue,
+        address liquidator
     ) internal returns (uint256 reportId) {
         IOpenOracle2.OracleGame memory params = IOpenOracle2.OracleGame({
             currentAmount1: initialLiquidity,
             currentAmount2: amount2,
-            currentReporter: msg.sender,
+            currentReporter: liquidator,
             reportTimestamp: 0,
             settlementTimestamp: 0,
             token1: supplyToken,
@@ -1154,8 +1145,8 @@ contract openLend is ReentrancyGuard {
             disputeDelay: oracleParams.disputeDelay,
             feePercentage: 0,
             multiplier: oracleParams.multiplier,
-            callbackContract: address(this),
-            callbackGasLimit: 4000000,
+            callbackContract: address(0),
+            callbackGasLimit: 0,
             protocolFee: oracleParams.oracleGameFee,
             flags: 5
         });
@@ -1238,8 +1229,7 @@ contract openLend is ReentrancyGuard {
         uint48 maxBaseFee = lending.oracleParams.maxBaseFee;
         uint128 initialLiquidity = lending.oracleParams.initialLiquidity;
         uint256 originalAmount1 = uint256(supplyAmount) * initialLiquidity / 100;
-        bool baseFeeOk = maxBaseFee == 0
-            || block.basefee <= Math.mulDiv(maxBaseFee, oracleAmount1, originalAmount1); // optionally shift variance from borrower to lender, reflected in interest rate
+        bool baseFeeOk = maxBaseFee == 0 || block.basefee <= Math.mulDiv(maxBaseFee, oracleAmount1, originalAmount1); // optionally shift variance from borrower to lender, reflected in interest rate
 
         lending.inLiquidation = false;
         reportIdToLending[id] = 0;
@@ -1268,7 +1258,6 @@ contract openLend is ReentrancyGuard {
                 emit LiqFinishedWithBuffer(lendingId);
             }
         } else {
-
             uint256 settleableAt = o.reportTimestamp + lending.oracleParams.settlementTime;
             uint256 liquidationStart = lending.liquidationStart;
 
@@ -1312,7 +1301,6 @@ contract openLend is ReentrancyGuard {
         if (amount == 0) return; // Gas optimization: skip zero transfers
 
         if (from == address(this)) {
-
             if (token == ETH_SENTINEL) {
                 _payEth(to, amount);
             } else {
@@ -1347,33 +1335,44 @@ contract openLend is ReentrancyGuard {
         }
     }
 
-    /// @dev Settles the oracle report tied to this loan if one is pending and eligible, then forwards the
-    ///      settler reward to msg.sender.
-    function _settleHelper(uint256 lendingId) internal {
+    /**
+     * @notice Finalizes a liquidation once its oracle report can no longer be disputed, paying the
+     *         escrowed `finalizerReward` to the caller.
+     * @dev    Reads the final price from the oracle's stored game and executes the liquidation. Does not
+     *         settle the oracle game; its funds and settler reward are released separately by
+     *         `oracle.settle`. Reverts if the loan is not in liquidation or the report is still within
+     *         its dispute window. The `autoSettle` modifier reaches the same logic but returns instead
+     *         of reverting when those conditions are not met.
+     * @param  lendingId Unique identifier of the lending arrangement.
+     */
+    function finalize(uint256 lendingId) external nonReentrant {
+        _finalize(lendingId, true);
+    } // direct: revert if not ready
+
+    function _finalizeHelper(uint256 lendingId) internal {
+        _finalize(lendingId, false);
+    } // modifier: no-op if not ready
+
+    function _finalize(uint256 lendingId, bool strict) internal {
         LendingArrangement storage lending = lendingArrangements[lendingId];
-        if (!lending.inLiquidation) return;
+        if (!lending.inLiquidation) {
+            if (strict) revert LendErrors.NotInLiquidation();
+            return;
+        }
 
         uint256 reportId = lendingToReportId[lendingId];
-        uint256 currentTime = block.timestamp;
-        if (reportId == 0) return;
-
         IOpenOracle2.OracleGame memory o = oracle.storedGame(reportId);
-        IOpenOracle2.StoredHelper memory sh = oracle.storedHelper(reportId);
-        
-        IOpenOracle2.PreimageHelper memory ph;
-        ph.reportId = reportId;
-        ph.creator = sh.creator;
-        ph.blockTimestamp = sh.blockTimestamp;
-        ph.blockNumber = sh.blockNumber;
+        if (block.timestamp < uint256(o.reportTimestamp) + o.settlementTime) {
+            if (strict) revert LendErrors.ReportStillDisputable();
+            return;
+        }
 
-        if (o.reportTimestamp == 0) return;
-        if (o.settlementTimestamp != 0) return;
-        if (currentTime < uint256(o.reportTimestamp) + lending.oracleParams.settlementTime) return;
+        uint64 bounty = lending.oracleParams.finalizerReward;
 
-        try oracle.settle(reportId, o, ph) {
-            uint256 settlerReward = oracle.storedGame(reportId).settlerReward;
-            oracle.pushOrCredit(address(0), msg.sender, uint128(settlerReward));
-        } catch {}
+        _touchAmort(lending);
+        _executeLiquidation(lending, reportId, lendingId);
+        if (bounty > 0) _payEth(msg.sender, bounty);
+        emit BountyPaid(lendingId, msg.sender, bounty);
     }
 
     /// @dev Validates `InterestRateParams`.
@@ -1381,7 +1380,7 @@ contract openLend is ReentrancyGuard {
         if (
             ir.maxRate == 0 || ir.startingRate == 0 || ir.growthRate == 0 || ir.maxRounds == 0 || ir.roundLength == 0
                 || ir.maxRate < ir.startingRate || ir.growthRate <= 10000 || ir.maxRounds > 100
-        ) revert InvalidInput("interestRateParams");
+        ) revert LendErrors.InterestRateParams();
     }
 
     /// @dev Validates `OracleParams`.
@@ -1394,10 +1393,10 @@ contract openLend is ReentrancyGuard {
 
         if (
             settlementTime < 120 || settlementTime > 60 * 60 * 4 || escalationFactor < 10 || escalationFactor > 5000
-                || initialLiquidity < 5 || initialLiquidity > 200 || escalationFactor < initialLiquidity 
+                || initialLiquidity < 5 || initialLiquidity > 200 || escalationFactor < initialLiquidity
                 || escHalt > type(uint128).max || op.oracleGameFee > 1e6 || multiplier < 100 || multiplier > 1000
                 || op.disputeDelay >= settlementTime
-        ) revert InvalidInput("oracleParams");
+        ) revert LendErrors.OracleParams();
     }
 
     /// @dev Evaluates the rising rate curve at the current block.
@@ -1441,7 +1440,7 @@ contract openLend is ReentrancyGuard {
             uint256 interestRaw = uint256(l.principal) * (nowCapped - lt) * l.rate + l.interestRemainder;
             l.interestAccrued += uint128(interestRaw / ACCRUAL_DENOM);
             l.interestRemainder = uint56(interestRaw % ACCRUAL_DENOM);
-            l.lastTouch = uint48(nowCapped);    
+            l.lastTouch = uint48(nowCapped);
         }
     }
 
@@ -1467,9 +1466,7 @@ contract openLend is ReentrancyGuard {
     ///      interest or the commitment floor.
     function _interestClaim(LendingArrangement storage l) internal view returns (uint256) {
         uint256 commitmentInterest = l.commitmentInterest;
-        return l.interestAccrued > commitmentInterest
-            ? uint256(l.interestAccrued)
-            : commitmentInterest;
+        return l.interestAccrued > commitmentInterest ? uint256(l.interestAccrued) : commitmentInterest;
     }
 
     /// @dev Closes any open refi curve and clears the pending refi params.
@@ -1493,83 +1490,5 @@ contract openLend is ReentrancyGuard {
     /// @dev Recomputes the deterministic clone address of the fee receiver for a given liquidation report.
     function _predictFeeReceiver(uint256 reportId) internal view returns (address) {
         return Clones.predictDeterministicAddress(feeReceiverImpl, bytes32(reportId), address(this));
-    }
-
-    // -------------------------------------------------------------------------
-    //                              View functions
-    // -------------------------------------------------------------------------
-
-    /// @notice Returns the full `LendingArrangement` (including nested params) for a given lendingId.
-    function getLending(uint256 lendingId) external view returns (LendingArrangement memory) {
-        return lendingArrangements[lendingId];
-    }
-
-    /// @notice Returns just the pending `RefiParams` for a given lendingId.
-    function getRefiParams(uint256 lendingId) external view returns (RefiParams memory) {
-        return lendingArrangements[lendingId].refiParams;
-    }
-
-    /// @notice Returns just the `OracleParams` for a given lendingId.
-    function getOracleParams(uint256 lendingId) external view returns (OracleParams memory) {
-        return lendingArrangements[lendingId].oracleParams;
-    }
-
-    /// @notice Returns just the `InterestRateParams` for a given lendingId.
-    function getRateParams(uint256 lendingId) external view returns (InterestRateParams memory) {
-        return lendingArrangements[lendingId].interestRateParams;
-    }
-
-    /// @notice Returns the snapshotted lender + liquidator addresses for an oracle-game fee recipient.
-    function getBeneficiaries(uint256 lendingId, address feeRecipient) external view returns (Beneficiaries memory) {
-        return lendingBeneficiaries[lendingId][feeRecipient];
-    }
-
-    /**
-     * @notice Returns the loose paramHash for an arrangement. Pass to entrypoints that accept `paramHashExpected`.
-     * @dev    Principal is zeroed in the preimage; pair with `expectedMaxPrincipal` to pin. Projects the
-     *         failed-liquidation auto-settle state when the loan is in liquidation and past its dispute window.
-     */
-    function getParamHash(uint256 lendingId) external view returns (bytes32) {
-        LendingArrangement memory copy = lendingArrangements[lendingId];
-
-        uint256 currentTime = block.timestamp;
-
-        if (copy.inLiquidation) {
-            uint256 reportId = lendingToReportId[lendingId];
-            if (reportId != 0) {
-                IOpenOracle2.OracleGame memory rs = oracle.storedGame(reportId);
-                if (rs.settlementTimestamp == 0) {
-                    uint256 settleableAt = uint256(rs.reportTimestamp) + copy.oracleParams.settlementTime;
-                    if (currentTime >= settleableAt) {
-                        // Mirrors onSettle's failed-liq branch on the memory copy.
-                        uint256 tokenStake = uint256(copy.supplyAmount) * copy.stake / 10000;
-
-                        if (copy.curveOpen) {
-                            copy.requestStart = uint48(settleableAt);
-                        }
-
-                        if (settleableAt > uint256(copy.start) + copy.term - 1800) {
-                            copy.gracePeriod = uint48(1800 + (settleableAt - copy.liquidationStart) * 2);
-                            uint256 lenderStakePiece = tokenStake / 2;
-                            copy.supplyAmount += uint128(tokenStake - lenderStakePiece);
-                        } else {
-                            copy.supplyAmount += uint128(tokenStake);
-                        }
-
-                        copy.inLiquidation = false;
-                        copy.liquidationStart = 0;
-                        copy.liquidator = address(0);
-                    }
-                }
-            }
-        }
-
-        copy.supplyAmount = 0;
-        copy.principal = 0;
-        copy.interestAccrued = 0;
-        copy.interestRemainder = 0;
-        copy.interestPaid = 0;
-        copy.lastTouch = 0;
-        return keccak256(abi.encode(copy));
     }
 }
