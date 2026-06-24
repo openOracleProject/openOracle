@@ -293,20 +293,34 @@ contract OracleLocalityHandler is Test {
         } catch {}
     }
 
-    function actPushOrCredit(uint8 actorSeed, uint8 toSeed, uint8 tokSeed, uint128 amtSeed) external {
+    function actPushOrCredit(
+        uint8 actorSeed,
+        uint8 toSeed,
+        uint8 tokSeed,
+        uint128 amtSeed,
+        uint32 gasSeed,
+        bool customGas
+    ) external {
         address caller = _pickActor(actorSeed);
         address to = _pickActor(toSeed);
         address tok = _pickToken(tokSeed);
         uint128 amt = uint128(bound(uint256(amtSeed), 0, 1e21));
+        uint32 gasLimit = uint32(bound(uint256(gasSeed), 0, 200_000));
 
         _begin();
         _party(caller);
         _party(to);
 
         vm.prank(caller);
-        try oracle.pushOrCredit(tok, to, amt) {
-            _check("pushOrCredit");
-        } catch {}
+        if (customGas) {
+            try oracle.pushOrCredit(tok, to, amt, gasLimit) {
+                _check("pushOrCredit");
+            } catch {}
+        } else {
+            try oracle.pushOrCredit(tok, to, amt) {
+                _check("pushOrCredit");
+            } catch {}
+        }
     }
 
     function actDust(uint8 actorSeed, uint8 t1Seed, uint8 t2Seed) external {

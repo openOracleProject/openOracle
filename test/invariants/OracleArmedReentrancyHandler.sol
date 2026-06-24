@@ -45,6 +45,9 @@ contract OracleArmedReentrancyHandler is Test {
     uint256 public reentriesFired; // outer ops during which the armed reentry actually executed
     uint256 public reentrantDisputesLanded; // reentrant kind-6 disputes that SUCCEEDED (ran credit-arms)
     uint8 internal lastArmKind;
+    bytes4 internal constant PUSH_OR_CREDIT_SELECTOR = bytes4(keccak256("pushOrCredit(address,address,uint128)"));
+    bytes4 internal constant PUSH_OR_CREDIT_GAS_SELECTOR =
+        bytes4(keccak256("pushOrCredit(address,address,uint128,uint32)"));
 
     constructor(OpenOracle _oracle, ArmableReentrantToken _armToken) {
         oracle = _oracle;
@@ -99,7 +102,13 @@ contract OracleArmedReentrancyHandler is Test {
         } else if (kind == 3) {
             payload = abi.encodeCall(oracle.internalTransferFrom, (address(armToken), actor, tok, uint128(1e18)));
         } else if (kind == 4) {
-            payload = abi.encodeCall(oracle.pushOrCredit, (tok, actor, uint128(1e18)));
+            if ((seed & 0x80) == 0) {
+                payload = abi.encodeWithSelector(PUSH_OR_CREDIT_SELECTOR, tok, actor, uint128(1e18));
+            } else {
+                payload = abi.encodeWithSelector(
+                    PUSH_OR_CREDIT_GAS_SELECTOR, tok, actor, uint128(1e18), uint32(uint256(seed) % 200_001)
+                );
+            }
         } else if (kind == 5) {
             payload = abi.encodeCall(oracle.dust, (tokens[1], address(armToken)));
         } else if (kind == 6 && reports.length > 0) {
@@ -373,14 +382,27 @@ contract OracleArmedReentrancyHandler is Test {
         _afterArmedCall();
     }
 
-    function actPushOrCredit(uint8 actorSeed, uint8 toSeed, uint8 tokSeed, uint128 amtSeed, uint8 armSeed) external {
+    function actPushOrCredit(
+        uint8 actorSeed,
+        uint8 toSeed,
+        uint8 tokSeed,
+        uint128 amtSeed,
+        uint8 armSeed,
+        uint32 gasSeed,
+        bool customGas
+    ) external {
         address caller = _pickActor(actorSeed);
         address to = _pickActor(toSeed);
         address tok = _pickToken(tokSeed);
         uint128 amt = uint128(bound(uint256(amtSeed), 0, 1e21));
+        uint32 gasLimit = uint32(bound(uint256(gasSeed), 0, 200_000));
         _arm(armSeed);
         vm.prank(caller);
-        try oracle.pushOrCredit(tok, to, amt) {} catch {}
+        if (customGas) {
+            try oracle.pushOrCredit(tok, to, amt, gasLimit) {} catch {}
+        } else {
+            try oracle.pushOrCredit(tok, to, amt) {} catch {}
+        }
         _afterArmedCall();
     }
 

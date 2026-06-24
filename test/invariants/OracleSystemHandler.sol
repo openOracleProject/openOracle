@@ -355,19 +355,35 @@ contract OracleSystemHandler is Test {
         } catch {}
     }
 
-    function actPushOrCredit(uint8 actorSeed, uint8 tokSeed, uint8 toSeed, uint128 amtSeed) external {
+    function actPushOrCredit(
+        uint8 actorSeed,
+        uint8 tokSeed,
+        uint8 toSeed,
+        uint128 amtSeed,
+        uint32 gasSeed,
+        bool customGas
+    ) external {
         address caller = _pickActor(actorSeed);
         address to = _pickActor(toSeed);
         if (to == address(0)) return;
         address tok = _pickToken(tokSeed);
         uint128 amt = uint128(bound(uint256(amtSeed), 0, 1e21));
+        uint32 gasLimit = uint32(bound(uint256(gasSeed), 0, 200_000));
 
         vm.prank(caller);
-        try oracle.pushOrCredit(tok, to, amt) {
-            totalPushOrCredits += 1;
-            _markTouched(caller);
-            _markTouched(to);
-        } catch {}
+        if (customGas) {
+            try oracle.pushOrCredit(tok, to, amt, gasLimit) {
+                totalPushOrCredits += 1;
+                _markTouched(caller);
+                _markTouched(to);
+            } catch {}
+        } else {
+            try oracle.pushOrCredit(tok, to, amt) {
+                totalPushOrCredits += 1;
+                _markTouched(caller);
+                _markTouched(to);
+            } catch {}
+        }
     }
 
     function actDust(uint8 actorSeed, uint8 t1Seed, uint8 t2Seed) external {
