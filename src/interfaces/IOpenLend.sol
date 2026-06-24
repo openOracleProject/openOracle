@@ -171,7 +171,6 @@ interface IOpenLend {
         external
         view
         returns (address lender, address liquidator);
-    function reportIdToLending(uint256 reportId) external view returns (uint256);
     function lendingToReportId(uint256 lendingId) external view returns (uint256);
     function tempHolding(address user, address token) external view returns (uint256);
 
