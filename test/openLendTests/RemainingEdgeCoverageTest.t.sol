@@ -178,6 +178,113 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
     // ---------------- grab oracle game fees ----------------
 
+    function testGrabOracleGameFeesAny_RevertsWhenNoFeeReceiverWasDeployed() public {
+        openLend.OracleParams memory noFeeOracleParams = _standardOracleParams();
+        noFeeOracleParams.oracleGameFee = 0;
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(supplyToken),
+            address(borrowToken),
+            8e6,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            0,
+            borrower,
+            noFeeOracleParams,
+            _standardInterestRateParams()
+        );
+
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+
+        vm.warp(block.timestamp + 10 days);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            _priceRatioFor(8 ether),
+            type(uint128).max,
+            paramHash,
+            0,
+            1e15,
+            liquidator,
+            0,
+            _emptyTiming()
+        );
+
+        uint256 reportId = _latestReportId();
+        assertEq(_predictFeeReceiver(reportId).code.length, 0, "zero-fee liquidation deploys no fee receiver");
+
+        vm.expectRevert(LendErrors.NoFeeReceiver.selector);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
+    }
+
+    function testGrabOracleGameFeesAny_PermissionlessMidLiquidationSweepKeepsLoanInLiquidation() public {
+        uint256 lendingId = _setupActiveLoan(5e6);
+
+        vm.warp(block.timestamp + 10 days);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        vm.prank(liquidator);
+        lending.liquidate{value: 1e15}(
+            lendingId,
+            _priceRatioFor(8 ether),
+            type(uint128).max,
+            paramHash,
+            0,
+            1e15,
+            liquidator,
+            0,
+            _emptyTiming()
+        );
+
+        uint256 reportId = _latestReportId();
+        address feeRecipient = _predictFeeReceiver(reportId);
+        bytes32 stateHash = bytes32(0);
+
+        vm.warp(block.timestamp + 120);
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 8 ether, stateHash);
+
+        uint256 feeAccrued = IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken));
+        assertGt(feeAccrued, 0, "supply-side fee should accrue");
+
+        uint256 borrowerBefore = IOpenOracle2(address(oracle)).tokenHolder(borrower, address(supplyToken));
+        uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(supplyToken));
+        uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(supplyToken));
+
+        vm.prank(settler);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
+
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "fee grab does not finalize liquidation");
+        assertEq(lending.lendingToReportId(lendingId), reportId, "active report remains linked");
+
+        uint256 feeDust = IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken));
+        uint256 swept = feeAccrued - feeDust;
+        assertLe(feeDust, 1, "fee receiver should retain at most dust");
+
+        uint256 borrowerPiece = swept / 2;
+        uint256 lenderPiece = borrowerPiece / 2;
+        uint256 liquidatorPiece = swept - borrowerPiece - lenderPiece;
+        assertEq(
+            IOpenOracle2(address(oracle)).tokenHolder(borrower, address(supplyToken)) - borrowerBefore,
+            borrowerPiece + (borrowerBefore == 0 ? 1 : 0),
+            "borrower internal fee piece"
+        );
+        assertEq(
+            IOpenOracle2(address(oracle)).tokenHolder(lender, address(supplyToken)) - lenderBefore,
+            lenderPiece + (lenderBefore == 0 ? 1 : 0),
+            "lender internal fee piece"
+        );
+        assertEq(
+            IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(supplyToken)) - liquidatorBefore,
+            liquidatorPiece + (liquidatorBefore == 0 ? 1 : 0),
+            "liquidator internal fee piece"
+        );
+    }
+
     function testGrabOracleGameFeesAny_SweepsBorrowFeesAndSecondSweepIsNoOp() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 

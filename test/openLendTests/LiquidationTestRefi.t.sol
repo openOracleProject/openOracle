@@ -115,6 +115,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         emit LiqFinishedUnderwater(lendingId);
         vm.prank(settler);
         _settleOracle(reportId);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");

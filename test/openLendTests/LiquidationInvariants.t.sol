@@ -34,6 +34,7 @@ contract LiquidationInvariantHandler is Test {
     uint256[] internal lendingIds;
     mapping(uint256 => uint256) public openReportId; // lendingId -> reportId or 0 if no in-flight
     uint256[] internal seenReportIds;
+    mapping(uint256 => bool) public reportFeesSwept;
 
     uint48 internal constant LOAN_TERM = 30 days;
     uint24 internal constant LIQUIDATION_THRESHOLD = 8e6;
@@ -99,6 +100,14 @@ contract LiquidationInvariantHandler is Test {
 
     function getReportId(uint256 idx) external view returns (uint256) {
         return seenReportIds[idx];
+    }
+
+    function reportIsOpen(uint256 reportId) external view returns (bool) {
+        if (reportId == 0) return false;
+        for (uint256 i = 0; i < lendingIds.length; i++) {
+            if (openReportId[lendingIds[i]] == reportId) return true;
+        }
+        return false;
     }
 
     function createLoan(uint96 supplySeed, uint96 borrowSeed, uint64 maxBaseFeeSeed) external {
@@ -289,7 +298,9 @@ contract LiquidationInvariantHandler is Test {
             false,
             game,
             helper, _emptyTiming()
-        ) {} catch {}
+        ) {
+            reportFeesSwept[reportId] = false;
+        } catch {}
         vm.stopPrank();
     }
 
@@ -350,7 +361,9 @@ contract LiquidationInvariantHandler is Test {
         if (reportId == 0 && seenReportIds.length > 0) reportId = seenReportIds[loanSeed % seenReportIds.length];
         if (reportId == 0) return;
 
-        try lending.grabOracleGameFeesAny(lendingId, reportId) {} catch {}
+        try lending.grabOracleGameFeesAny(lendingId, reportId) {
+            reportFeesSwept[reportId] = true;
+        } catch {}
     }
 
     function repayOrTopUp(uint256 loanSeed, uint96 amountSeed) external {
@@ -491,12 +504,13 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         }
     }
 
-    /// @notice Once openLend has cleared a report mapping, its fee receiver should not retain sweepable fees.
-    function invariant_clearedReportsHaveNoSweepableFeeReceiverBalance() public view {
+    /// @notice Once an explicit fee sweep succeeds, its fee receiver should not retain sweepable fees.
+    function invariant_sweptReportsHaveNoSweepableFeeReceiverBalance() public view {
         uint256 count = handler.reportCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 reportId = handler.getReportId(i);
-            if (lending.reportIdToLending(reportId) != 0) continue;
+            if (handler.reportIsOpen(reportId)) continue;
+            if (!handler.reportFeesSwept(reportId)) continue;
 
             address predicted = Clones.predictDeterministicAddress(
                 lending.feeReceiverImpl(), bytes32(reportId), address(lending)

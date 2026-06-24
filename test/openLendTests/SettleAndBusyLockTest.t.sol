@@ -241,7 +241,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
         assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "caller receives finalizer reward");
     }
@@ -570,7 +570,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "finalize cleared inLiquidation");
         assertTrue(loan.finished, "finalize finished underwater loan");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
 
         (,,,, uint48 settlementTimestamp,,) = _reportStatus(reportId);
@@ -624,7 +624,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         assertFalse(loan.inLiquidation, "finalize clears after prior oracle settle");
         assertTrue(loan.finished, "underwater outcome still executes");
         assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "finalizer reward paid after prior oracle settle");
-        assertEq(lending.reportIdToLending(reportId), 0, "report mapping cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "report mapping cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "loan mapping cleared");
     }
 
@@ -761,7 +761,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished underwater");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
     }
 
@@ -967,7 +967,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "outer settlement completed for every reentry payload");
         assertFalse(loan.inLiquidation, "outer settlement cleared liquidation");
-        assertEq(lending.reportIdToLending(reportId), 0, "report mapping cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "report mapping cleared");
     }
 
     function testFinalize_ReentryFromFailedLiq_LendCannotStealRefiCurve() public {
@@ -1124,7 +1124,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanBAfter = lendView.getLending(lendingIdB);
         assertTrue(loanBAfter.inLiquidation, "B remains in liquidation");
         assertFalse(loanBAfter.finished, "B not finalized");
-        assertEq(lending.reportIdToLending(reportIdB), lendingIdB, "B reportId mapping unchanged");
+        assertEq(_lendingIdForReportId(reportIdB), lendingIdB, "B reportId mapping unchanged");
         assertEq(lending.lendingToReportId(lendingIdB), reportIdB, "B reverse mapping unchanged");
     }
 
@@ -1167,7 +1167,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 8 ether);
 
-        assertEq(lending.reportIdToLending(reportId), lendingId, "reportIdToLending populated");
+        assertEq(_lendingIdForReportId(reportId), lendingId, "reportIdToLending populated");
         assertEq(lending.lendingToReportId(lendingId), reportId, "lendingToReportId populated");
     }
 
@@ -1182,7 +1182,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
     }
 
@@ -1197,7 +1197,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(randomCaller);
         lending.finalize(lendingId);
 
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared by finalize");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared by finalize");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared by finalize");
     }
 
@@ -1212,7 +1212,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(randomCaller);
         lending.finalize(lendingId);
 
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
 
         (,,,, uint48 settlementTimestamp,,) = _reportStatus(reportId);

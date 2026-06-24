@@ -470,7 +470,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         assertEq(lender.balance, lenderBefore + SUPPLY_AMOUNT, "finalize pays lender native collateral");
     }
 
-    function testNativeSupply_FinalizeSweepsEthProtocolFees() public {
+    function testNativeSupply_ExplicitFeeGrabSweepsEthProtocolFees() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
         vm.prank(lender);
         lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
@@ -488,6 +488,7 @@ contract NativeEthTest is OpenLendingBaseTest {
 
         vm.prank(settler);
         lending.finalize(lendingId);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         _assertOracleFeeSplit(ETH, fee, borrowerBefore, lenderBefore, liquidatorBefore);
         assertFalse(lendView.getLending(lendingId).inLiquidation, "finalize clears native liquidation");

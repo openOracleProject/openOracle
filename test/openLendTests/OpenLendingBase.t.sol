@@ -213,6 +213,14 @@ abstract contract OpenLendingBaseTest is Test {
         return oracle.nextReportId() - 1;
     }
 
+    function _lendingIdForReportId(uint256 reportId) internal view returns (uint256) {
+        uint256 nextId = lending.nextLendingId();
+        for (uint256 lendingId = 1; lendingId < nextId; lendingId++) {
+            if (lending.lendingToReportId(lendingId) == reportId) return lendingId;
+        }
+        return 0;
+    }
+
     function _emptyTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory timing) {}
 
     function _helperFor(uint256 reportId) internal view returns (IOpenOracle2.PreimageHelper memory ph) {
@@ -224,7 +232,7 @@ abstract contract OpenLendingBaseTest is Test {
     }
 
     function _settleOracle(uint256 reportId) internal {
-        uint256 lendingId = lending.reportIdToLending(reportId);
+        uint256 lendingId = _lendingIdForReportId(reportId);
         if (lendingId != 0 && lendView.getLending(lendingId).inLiquidation) {
             lending.finalize(lendingId);
         }

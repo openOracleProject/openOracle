@@ -82,7 +82,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
 
         assertEq(oracle.nextReportId(), reportId + 1, "report consumed expected id");
         assertEq(lending.lendingToReportId(lendingId), reportId, "loan mapped to report");
-        assertEq(lending.reportIdToLending(reportId), lendingId, "report mapped to loan");
+        assertEq(_lendingIdForReportId(reportId), lendingId, "report mapped to loan");
         assertTrue(feeRecipient.code.length > 0, "fee receiver deployed");
 
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
@@ -147,7 +147,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(oracle.nextReportId(), reportId, "report id rolled back");
         assertFalse(lendView.getLending(lendingId).inLiquidation, "loan not left in liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId rolled back");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending rolled back");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending rolled back");
         assertEq(feeRecipient.code.length, 0, "fee receiver deployment rolled back");
         assertEq(supplyToken.balanceOf(liquidator), liquidatorSupplyBefore, "liquidator supply restored");
         assertEq(borrowToken.balanceOf(liquidator), liquidatorBorrowBefore, "liquidator borrow restored");
@@ -189,7 +189,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(oracle.nextReportId(), reportId, "report id rolled back");
         assertFalse(lendView.getLending(lendingId).inLiquidation, "loan not left in liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId rolled back");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending rolled back");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending rolled back");
         assertEq(feeRecipient.code.length, 0, "fee receiver deployment rolled back");
         assertEq(supplyToken.balanceOf(liquidator), liquidatorSupplyBefore, "liquidator supply restored");
         assertEq(borrowToken.balanceOf(liquidator), liquidatorBorrowBefore, "liquidator borrow restored");
@@ -367,7 +367,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertFalse(loan.inLiquidation, "liquidation cleared");
         assertFalse(loan.finished, "one-to-one final price is failed liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + SUPPLY_AMOUNT / 100, "stake added to collateral");
     }
 
@@ -386,7 +386,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertFalse(loan.inLiquidation, "finalize clears liquidation");
         assertFalse(loan.finished, "one-to-one final price is failed liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(_lendingIdForReportId(reportId), 0, "reportIdToLending cleared");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + SUPPLY_AMOUNT / 100, "stake added to collateral");
 
         IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);

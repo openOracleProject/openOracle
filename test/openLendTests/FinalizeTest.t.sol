@@ -102,7 +102,7 @@ contract FinalizeTest is OpenLendingBaseTest {
 
         // Loan is in liquidation, mapping populated.
         assertTrue(lendView.getLending(lendingId).inLiquidation, "should be in liquidation");
-        assertEq(lending.reportIdToLending(reportId), lendingId, "mapping populated by liquidate");
+        assertEq(_lendingIdForReportId(reportId), lendingId, "mapping populated by liquidate");
 
         _advancePastOracleSettlement();
 
@@ -110,7 +110,7 @@ contract FinalizeTest is OpenLendingBaseTest {
         (,,,, uint48 settlementTimestamp,,) = _reportStatus(reportId);
         assertEq(settlementTimestamp, 0, "oracle accounting not settled yet");
         assertTrue(lendView.getLending(lendingId).inLiquidation, "openLend stuck in liquidation");
-        assertEq(lending.reportIdToLending(reportId), lendingId, "mapping not cleared before finalize");
+        assertEq(_lendingIdForReportId(reportId), lendingId, "mapping not cleared before finalize");
 
         // Anyone can call finalize.
         uint256 liquidatorSupplyBefore = supplyToken.balanceOf(liquidator);
@@ -125,7 +125,7 @@ contract FinalizeTest is OpenLendingBaseTest {
         assertFalse(loanAfter.inLiquidation, "inLiquidation cleared");
         assertEq(loanAfter.liquidator, address(0), "liquidator cleared");
         assertEq(loanAfter.liquidationStart, 0, "liquidationStart cleared");
-        assertEq(lending.reportIdToLending(reportId), 0, "mapping cleared by finalize");
+        assertEq(_lendingIdForReportId(reportId), 0, "mapping cleared by finalize");
 
         // Finalize follows the failed-liq branch: no-grace stake is added to supplyAmount.
         assertEq(
@@ -211,7 +211,7 @@ contract FinalizeTest is OpenLendingBaseTest {
     // Fee sweep
     // -------------------------------------------------------------------------
 
-    function testFinalize_AccruedFeesAreSwept() public {
+    function testGrabOracleGameFeesAny_AfterFinalizeSweepsAccruedFees() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
@@ -233,6 +233,8 @@ contract FinalizeTest is OpenLendingBaseTest {
 
         vm.prank(randomCaller);
         lending.finalize(lendingId);
+
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         // Single token1 dispute (oldAmount1 = 10 ether, protocolFee = 100_000 / 1e7 = 1%) → 0.1 ether fee in supply.
         // Split 50/25/25 (borrower / lender / liquidator) via integer division: 0.05 / 0.025 / 0.025.
@@ -263,7 +265,7 @@ contract FinalizeTest is OpenLendingBaseTest {
     // -------------------------------------------------------------------------
 
     function testFinalize_RevertsWhenReportIdMapsToNoLending() public {
-        // No liquidate has ever been called, so reportIdToLending[42] = 0.
+        // No liquidate has ever been called for this lendingId.
         vm.prank(randomCaller);
         vm.expectRevert(LendErrors.NotInLiquidation.selector);
         lending.finalize(42);
@@ -297,8 +299,8 @@ contract FinalizeTest is OpenLendingBaseTest {
         lending.finalize(lendingId);
     }
 
-    /// @dev If finalize ran successfully, reportIdToLending was cleared inside it. A later finalize with that
-    ///      stale lendingId must revert — even though the oracle still reports the old report as settled.
+    /// @dev If finalize ran successfully, the loan is no longer in liquidation. A later finalize with that
+    ///      stale lendingId must revert even though the old oracle report still exists.
     function testFinalize_RevertsForStaleReportIdAfterSuccessfulPriorCycle() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
@@ -313,8 +315,8 @@ contract FinalizeTest is OpenLendingBaseTest {
 
         _settleNormally(firstReportId);
 
-        // finalize succeeded -> mapping cleared.
-        assertEq(lending.reportIdToLending(firstReportId), 0, "mapping cleared by successful finalize");
+        // finalize succeeded -> the report is no longer linked to an active loan.
+        assertEq(_lendingIdForReportId(firstReportId), 0, "mapping cleared by successful finalize");
         assertFalse(lendView.getLending(lendingId).inLiquidation, "loan back to active");
 
         // Try finalize again on the now-active loan -> reverts.
@@ -326,8 +328,8 @@ contract FinalizeTest is OpenLendingBaseTest {
         // first. The "not in liquidation" gate is structurally redundant but cheap.
     }
 
-    /// @dev Independent assertion of the same invariant: a normal successful finalize clears reportIdToLending.
-    function testNormalSettlement_ClearsReportIdToLending() public {
+    /// @dev Independent assertion of the same invariant: a normal successful finalize clears the active report link.
+    function testNormalSettlement_ClearsActiveReportLink() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
 
@@ -338,11 +340,11 @@ contract FinalizeTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
         _disputeAndSwap(reportId, address(supplyToken), 20 ether, 10 ether, disputer, 6 ether, stateHash);
 
-        assertEq(lending.reportIdToLending(reportId), lendingId, "mapping populated during liq");
+        assertEq(_lendingIdForReportId(reportId), lendingId, "mapping populated during liq");
 
         _settleNormally(reportId);
 
-        assertEq(lending.reportIdToLending(reportId), 0, "mapping cleared by underwater finalize");
+        assertEq(_lendingIdForReportId(reportId), 0, "mapping cleared by underwater finalize");
         assertTrue(lendView.getLending(lendingId).finished, "loan finished underwater");
     }
 
@@ -369,11 +371,12 @@ contract FinalizeTest is OpenLendingBaseTest {
 
         vm.prank(randomCaller);
         lending.finalize(lendingId);
+        lending.grabOracleGameFeesAny(lendingId, firstReportId);
 
         openLend.LendingArrangement memory loanAfterFinalize = lendView.getLending(lendingId);
         assertTrue(loanAfterFinalize.finished, "loan finishes underwater via finalize");
         assertFalse(loanAfterFinalize.inLiquidation, "inLiquidation cleared");
-        assertEq(lending.reportIdToLending(firstReportId), 0, "report mapping cleared");
+        assertEq(_lendingIdForReportId(firstReportId), 0, "report mapping cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "reverse mapping cleared");
 
         // Underwater no-equity branch: lender gets collateral externally; fee share is oracle-internal.
@@ -445,8 +448,8 @@ contract FinalizeTest is OpenLendingBaseTest {
         assertTrue(finalizedLoan.finished, "finalized loan finished");
         assertFalse(normalLoan.inLiquidation, "normal inLiquidation cleared");
         assertFalse(finalizedLoan.inLiquidation, "finalize inLiquidation cleared");
-        assertEq(lending.reportIdToLending(normalReportId), 0, "normal report mapping cleared");
-        assertEq(lending.reportIdToLending(finalizeReportId), 0, "finalize report mapping cleared");
+        assertEq(_lendingIdForReportId(normalReportId), 0, "normal report mapping cleared");
+        assertEq(_lendingIdForReportId(finalizeReportId), 0, "finalize report mapping cleared");
     }
 
     // -------------------------------------------------------------------------

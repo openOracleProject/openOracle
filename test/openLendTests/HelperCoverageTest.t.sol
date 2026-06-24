@@ -592,14 +592,15 @@ contract HelperCoverageTest is Test {
         uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
         vm.prank(settler);
         _settleOracle(reportId);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         // Loan finished, inLiquidation cleared
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished underwater despite blacklisted lender");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
 
-        // Lender's payouts (underwater = full supplyAmount, plus their 25% share of dispute fee) went to tempHolding.
-        // Dispute fee = 1% × 10 ether = 0.1 ether; lender share = 0.025 ether. Expected = supplyAmount + 0.025e.
+        // Lender's underwater payout goes to tempHolding. Their dispute-fee share is oracle-internal after the explicit grab.
+        // Dispute fee = 1% × 10 ether = 0.1 ether; lender share = 0.025 ether.
         uint256 lenderFeePiece = (10 ether * 100_000 / 1e7) / 2 / 2; // 0.025 ether
         uint256 expectedEscrow = uint256(SUPPLY_AMOUNT);
         assertEq(bSupply.balanceOf(lender), lenderSupplyBefore, "lender wallet untouched");
@@ -679,6 +680,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         // Loan finished underwater
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -766,6 +768,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
+        lending.grabOracleGameFeesAny(lendingId, reportId);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished even when both parties blacklisted");
@@ -911,6 +914,14 @@ contract HelperCoverageTest is Test {
 
     function _emptyTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory timing) {}
 
+    function _lendingIdForReportId(uint256 reportId) internal view returns (uint256) {
+        uint256 nextId = lending.nextLendingId();
+        for (uint256 lendingId = 1; lendingId < nextId; lendingId++) {
+            if (lending.lendingToReportId(lendingId) == reportId) return lendingId;
+        }
+        return 0;
+    }
+
     function _helperFor(uint256 reportId) internal view returns (IOpenOracle2.PreimageHelper memory ph) {
         IOpenOracle2.StoredHelper memory sh = IOpenOracle2(address(oracle)).storedHelper(reportId);
         ph.reportId = reportId;
@@ -920,7 +931,7 @@ contract HelperCoverageTest is Test {
     }
 
     function _settleOracle(uint256 reportId) internal {
-        uint256 lendingId = lending.reportIdToLending(reportId);
+        uint256 lendingId = _lendingIdForReportId(reportId);
         if (lendingId != 0 && lendView.getLending(lendingId).inLiquidation) {
             lending.finalize(lendingId);
         }
