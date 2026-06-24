@@ -48,8 +48,6 @@ contract openLend is ReentrancyGuard {
     uint256 public nextLendingId = 1;
     mapping(uint256 => LendingArrangement) public lendingArrangements;
     mapping(uint256 => mapping(address => Beneficiaries)) public lendingBeneficiaries;
-    /// @dev oracle reportId → lendingId. Set in liquidate, cleared in finalize.
-    mapping(uint256 => uint256) public reportIdToLending;
     /// @dev lendingId → active oracle reportId. Set in liquidate, cleared in finalize.
     mapping(uint256 => uint256) public lendingToReportId;
     mapping(address => mapping(address => uint256)) public tempHolding;
@@ -897,7 +895,6 @@ contract openLend is ReentrancyGuard {
         lending.liquidationStart = uint48(currentTime);
         lending.liquidator = liquidator;
 
-        reportIdToLending[reportId] = lendingId;
         lendingToReportId[lendingId] = reportId;
 
         if (oracleParams.oracleGameFee > 0) {
@@ -943,7 +940,7 @@ contract openLend is ReentrancyGuard {
 
     /**
      * @notice Distributes any protocol fees that have accrued in a feeRecipient clone but haven't been swept.
-     *         Permissionless backstop in case finalization's sweep missed something.
+     *         Permissionless fee-sweep path; liquidation finalization does not collect oracle-game fees.
      * @dev    Splits the swept fees 50% to the borrower, 25% to the lender, 25% to the liquidator. Reverts if
      *         the feeRecipient's `gameId()` does not match `lendingId`.
      * @param  lendingId Unique identifier of the lending arrangement.
@@ -1216,8 +1213,6 @@ contract openLend is ReentrancyGuard {
         address lender = lending.lender;
         address supplyToken = lending.supplyToken;
         uint256 borrowValue = _residualDebt(lending);
-        address feeRecipient = _predictFeeReceiver(id);
-        uint24 oracleGameFee = lending.oracleParams.oracleGameFee;
 
         IOpenOracle2.OracleGame memory o = oracle.storedGame(id);
         uint256 oracleAmount1 = o.currentAmount1;
@@ -1232,7 +1227,6 @@ contract openLend is ReentrancyGuard {
         bool baseFeeOk = maxBaseFee == 0 || block.basefee <= Math.mulDiv(maxBaseFee, oracleAmount1, originalAmount1); // optionally shift variance from borrower to lender, reflected in interest rate
 
         lending.inLiquidation = false;
-        reportIdToLending[id] = 0;
         lendingToReportId[lendingId] = 0;
         if (liqThresh < borrowValueInSupplyTerms && baseFeeOk) {
             address liquidator = lending.liquidator;
@@ -1280,10 +1274,6 @@ contract openLend is ReentrancyGuard {
             }
 
             emit LiqUnsuccessful(lendingId);
-        }
-
-        if (oracleGameFee > 0) {
-            _grabOracleGameFees(lending, feeRecipient, lendingId);
         }
     }
 
