@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 
 /// @notice Liquidation paths interacting with refinance flows.
@@ -64,7 +65,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
     function _setupActiveLoanAllowAnyLiq() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender1);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender1);
     }
 
     /// @dev Originate, then refi to lender2 with liquidatorFraction on the refi acceptance.
@@ -75,12 +76,12 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
     }
 
     function _liquidate(address who, uint256 lendingId, uint256 oracleAmount2Target) internal {
-        bytes32 paramHash = lending.getParamHash(lendingId);
-        uint128 supplyAmount = lending.getLending(lendingId).supplyAmount;
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        uint128 supplyAmount = lendView.getLending(lendingId).supplyAmount;
         vm.prank(who);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -88,8 +89,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, who, 0, _emptyTiming()
         );
     }
 
@@ -116,7 +116,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");
 
         // Underwater no-equity branch: lender2 gets supplyAmount externally; fee share is oracle-internal.
@@ -153,7 +153,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "Loan should remain live");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
         assertEq(loan.lender, lender2, "post-refi lender should still be lender2");
@@ -169,18 +169,18 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 8 ether);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
+        vm.expectRevert(LendErrors.InLiquidation.selector);
         lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
+        vm.expectRevert(LendErrors.InLiquidation.selector);
         lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
     }
 
     // ---------------- refi-during-liquidation ----------------
 
     /// @dev V3 explicitly allows refinance() while inLiquidation. The curve opens but no lender can accept until
-    ///      onSettle clears inLiquidation. After a failed liq, requestStart resets so the curve starts fresh.
+    ///      finalize clears inLiquidation. After a failed liq, requestStart resets so the curve starts fresh.
     function testRefiDuringLiq_OpensCurveButLendBlocksUntilSettle() public {
         uint256 lendingId = _setupActiveLoanAllowAnyLiq();
         vm.warp(block.timestamp + 10 days);
@@ -191,14 +191,14 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory midLoan = lendView.getLending(lendingId);
         assertTrue(midLoan.curveOpen, "refi curve should open mid-liquidation");
         assertTrue(midLoan.inLiquidation, "loan still inLiquidation");
 
         // A lender attempting to fill the refi curve is blocked by the inLiquidation gate in lend()
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.InLiquidation.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         // Resolve liquidation as failed
         uint256 reportId = oracle.nextReportId() - 1;
@@ -214,16 +214,16 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterLiq = lendView.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "refi curve persists across failed liq");
         assertEq(afterLiq.requestStart, settleableAt, "requestStart pinned to settleableAt on failed liq");
 
         // Now lender2 can accept the refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        assertEq(lending.getLending(lendingId).lender, lender2, "lender2 should be the new lender");
+        assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 should be the new lender");
     }
 
     /// @dev Post-maturity refi-during-liquidation: liq starts pre-maturity, time crosses maturity while liq is in
@@ -238,20 +238,20 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 6 ether);
 
         // Crawl past nominal maturity while still inLiquidation
-        openLend.LendingArrangement memory beforeRefi = lending.getLending(lendingId);
+        openLend.LendingArrangement memory beforeRefi = lendView.getLending(lendingId);
         vm.warp(uint256(beforeRefi.start) + beforeRefi.term + 50); // past maturity by 50s
         assertGt(block.timestamp, uint256(beforeRefi.start) + beforeRefi.term, "past maturity");
-        assertTrue(lending.getLending(lendingId).inLiquidation, "still in liquidation");
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "still in liquidation");
 
         // Borrower opens refi while past maturity AND inLiquidation — V3 explicitly allows this
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
-        assertTrue(lending.getLending(lendingId).curveOpen, "refi curve should open past maturity during liq");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "refi curve should open past maturity during liq");
 
         // lend() blocked by inLiquidation
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.InLiquidation.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -262,7 +262,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterLiq = lendView.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "refi curve survives failed liq");
         assertEq(afterLiq.gracePeriod, expectedGrace, "exact gracePeriod from post-maturity failed liq");
@@ -273,9 +273,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Lender2 accepts the refi within grace
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory finalLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory finalLoan = lendView.getLending(lendingId);
         assertEq(finalLoan.lender, lender2, "lender2 should be new lender");
         assertFalse(finalLoan.curveOpen, "curve closed after lend");
     }
@@ -290,7 +290,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
-        uint48 requestStartBefore = lending.getLending(lendingId).requestStart;
+        uint48 requestStartBefore = lendView.getLending(lendingId).requestStart;
 
         // Tick curve a bit to confirm reset on settle
         vm.warp(block.timestamp + 1 hours);
@@ -299,8 +299,8 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // lend() blocked while inLiquidation
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.InLiquidation.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -312,7 +312,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterLiq = lendView.getLending(lendingId);
         assertFalse(afterLiq.inLiquidation, "liq cleared");
         assertTrue(afterLiq.curveOpen, "curve survives failed liq");
         assertLt(requestStartBefore, settleableAt, "pre-liq refi clock was older than failed-liq reanchor");
@@ -320,8 +320,8 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         // Lender2 can still accept the (re-anchored) refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getLending(lendingId).lender, lender2, "lender2 accepted post-settle refi");
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 accepted post-settle refi");
     }
 
     /// @dev Open refi → start liq → successful liq closes loan AND clears the orphaned curve via _clearRefiCurve.
@@ -332,7 +332,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
-        assertTrue(lending.getLending(lendingId).curveOpen, "curve open before liq");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "curve open before liq");
 
         _liquidate(liquidator, lendingId, 6 ether);
 
@@ -345,11 +345,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished by underwater liq");
         assertFalse(loan.curveOpen, "_clearRefiCurve should clear orphaned curve on terminal liq");
 
-        openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
+        openLend.RefiParams memory rp = lendView.getRefiParams(lendingId);
         assertEq(rp.extraDemanded, 0, "refi extraDemanded cleared");
         assertEq(rp.supplyPulled, 0, "refi supplyPulled cleared");
         assertEq(rp.newTerm, 0, "refi newTerm cleared");
@@ -370,11 +370,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         // Borrower opens refi mid-liq, then cancels it
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
-        assertTrue(lending.getLending(lendingId).curveOpen, "curve open after refinance");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "curve open after refinance");
 
         vm.prank(borrower);
         lending.cancelRefinance(lendingId);
-        assertFalse(lending.getLending(lendingId).curveOpen, "curve closed after cancelRefinance");
+        assertFalse(lendView.getLending(lendingId).curveOpen, "curve closed after cancelRefinance");
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -382,7 +382,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterLiq = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterLiq = lendView.getLending(lendingId);
         assertFalse(afterLiq.curveOpen, "curve still closed after failed liq with cancel-during-liq");
         assertEq(afterLiq.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "exact gracePeriod from near-maturity failed liq");
 
@@ -391,7 +391,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.warp(uint256(afterLiq.start) + afterLiq.term + (afterLiq.gracePeriod / 2));
         vm.prank(borrower);
         lending.repayDebt(lendingId, totalOwed + 1 ether, bytes32(0), 0, type(uint128).max);
-        assertTrue(lending.getLending(lendingId).finished, "repay during grace should finish loan");
+        assertTrue(lendView.getLending(lendingId).finished, "repay during grace should finish loan");
     }
 
     // ---------------- partial repay then refi (with extraDemanded) ----------------
@@ -412,7 +412,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         lending.refinance(lendingId, extra, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Compute expected new principal from the actual post-repay amort state
-        openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+        openLend.LendingArrangement memory pre = lendView.getLending(lendingId);
         uint256 interestClaim = pre.interestAccrued > pre.commitmentInterest
             ? uint256(pre.interestAccrued)
             : uint256(pre.commitmentInterest);
@@ -424,9 +424,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.principal, expectedNewBorrow,
             "newBorrowAmount = principal + max(accrued, commitInt) - interestPaid + extra");
 
@@ -464,14 +464,14 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");
-        // _clearRefiCurve in onSettle's finished branch clears curveOpen too
+        // _clearRefiCurve in finalize's finished branch clears curveOpen too
         assertFalse(loan.curveOpen, "successful liq should clear orphan refi curve");
 
         // Even if curveOpen had stayed true, `finished` blocks lend(); double-check
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "finished"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Finished.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
     }
 }

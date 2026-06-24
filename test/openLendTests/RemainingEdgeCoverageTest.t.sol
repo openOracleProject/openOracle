@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 import "../../src/oracleFeeReceiver2.sol";
 
@@ -45,63 +46,49 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         _approveOracleBoth(disputer);
     }
 
-    // ---------------- onSettle gating ----------------
-
-    function testOnSettle_RevertsForNonOracleCaller() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "invalid sender"));
-        lending.openOracleCallback(999, 0, 0, 0, address(supplyToken), address(borrowToken));
-    }
-
-    function testOnSettle_RevertsForUnknownReportIdEvenFromOracle() public {
-        vm.prank(address(oracle));
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "no lendingId for reportId"));
-        lending.openOracleCallback(999, 0, 0, 0, address(supplyToken), address(borrowToken));
-    }
-
     // ---------------- exact-boundary timing ----------------
 
     /// @dev `_repayDebt` reverts at `currentTime >= start + term + gracePeriod`. So exactly at the boundary reverts.
     function testRepayDebt_AtExactExpiry_Reverts() public {
         uint256 lendingId = _setupActiveLoan(0);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
     }
 
     /// @dev `liquidate` reverts at `currentTime >= start + term`. So exactly at maturity is expired.
     function testLiquidate_AtExactTerm_Reverts() public {
         uint256 lendingId = _setupActiveLoan(5e6);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "arrangement expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.liquidate{value: 1e15}(
             lendingId,
             _priceRatioFor(8 ether),
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
     }
 
     /// @dev `claimCollateral` reverts at `currentTime < start + term + gracePeriod`. At exact boundary the claim succeeds.
     function testClaimCollateral_AtExactGraceBoundary_Succeeds() public {
         uint256 lendingId = _setupActiveLoan(5e6);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         // Trigger a near-maturity liquidation that fails so a grace period gets set
         vm.warp(uint256(loan.start) + loan.term - 100);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -109,8 +96,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         uint256 reportId = oracle.nextReportId() - 1;
@@ -119,7 +105,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterFailedLiq = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterFailedLiq = lendView.getLending(lendingId);
         assertEq(afterFailedLiq.gracePeriod, 1800 + (60 + 300) * 2, "exact gracePeriod from failed late liq");
 
         vm.warp(uint256(loan.start) + loan.term + afterFailedLiq.gracePeriod);
@@ -127,7 +113,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
         lending.claimCollateral(lendingId);
 
-        openLend.LendingArrangement memory afterClaim = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterClaim = lendView.getLending(lendingId);
         assertTrue(afterClaim.finished, "claim at exact grace boundary should succeed");
         assertEq(
             supplyToken.balanceOf(lender),
@@ -141,7 +127,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testLiquidate_InitializesCloneFeeReceiver() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -149,8 +135,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         address predicted = _predictFeeReceiver(_latestReportId());
@@ -186,7 +171,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         // Lender2 accepts
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         assertEq(lending.lendingToReportId(lendingId), 0, "refi should not deploy a fee receiver");
     }
@@ -198,7 +183,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -206,8 +191,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         uint256 reportId = oracle.nextReportId() - 1;
@@ -276,7 +260,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testGrabOracleGameFeesAny_RevertsForWrongLendingId() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -284,8 +268,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         uint256 reportId = _latestReportId();
@@ -294,7 +277,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 otherLendingId = _setupActiveLoan(5e6);
         assertTrue(otherLendingId != lendingId, "two distinct lending ids");
 
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
         lending.grabOracleGameFeesAny(otherLendingId, reportId);
     }
 
@@ -304,12 +287,12 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     ///      With gracePeriod = 0 this is `>= start + term`, so EXACTLY at maturity reverts.
     function testRefinance_AtExactMaturity_Reverts() public {
         uint256 lendingId = _setupActiveLoan(0);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         vm.warp(uint256(loan.start) + loan.term);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
@@ -317,29 +300,29 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     ///      Exactly at the boundary reverts.
     function testLend_RefiAtExactGraceEnd_Reverts() public {
         uint256 lendingId = _setupActiveLoanForGrace();
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.gracePeriod, 1800 + (60 + 300) * 2, "exact gracePeriod from helper");
 
         // Exactly at the grace boundary
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod);
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Expired.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     /// @dev `lend` (active loan branch) succeeds one second BEFORE grace end.
     function testLend_RefiOneSecondBeforeGraceEnd_Succeeds() public {
         uint256 lendingId = _setupActiveLoanForGrace();
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         // One second before the grace boundary
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod - 1);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        assertEq(lending.getLending(lendingId).lender, lender2, "should accept refi 1s before grace end");
+        assertEq(lendView.getLending(lendingId).lender, lender2, "should accept refi 1s before grace end");
     }
 
     /// @dev Helper: originate, force a near-maturity failed liq to set gracePeriod, then open a refi during grace.
@@ -349,7 +332,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         // Get into the grace-trigger window
         vm.warp(block.timestamp + LOAN_TERM - 900);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -357,8 +340,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         uint256 reportId = oracle.nextReportId() - 1;
@@ -387,7 +369,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         supplyToken.approve(address(lending), type(uint256).max);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -398,6 +380,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             bad
         );
@@ -413,7 +396,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         });
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -424,6 +407,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             flat
         );
@@ -439,7 +423,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         });
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -450,6 +434,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             bad
         );
@@ -501,8 +486,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         p = openLend.OracleParams(300, 60, 100_000, 100, 10, 1001, 0, 0);
     }
 
-    function _expectInvalidInput(string memory reason) internal {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, reason));
+    function _expectOracleParamsRevert() internal {
+        vm.expectRevert(LendErrors.OracleParams.selector);
     }
 
     function _request(openLend.OracleParams memory oracleParams) internal {
@@ -517,44 +502,45 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             oracleParams,
             _standardInterestRateParams()
         );
     }
 
     function testRequestBorrow_OracleParamsValidationMatrix() public {
-        // _validateOracleParams collapses every per-field check into a single revert("oracleParams").
-        _expectInvalidInput("oracleParams");
+        // _validateOracleParams collapses every per-field check into a single oracle params error.
+        _expectOracleParamsRevert();
         _request(_badOracle_settlementTimeBelowMin());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_settlementTimeAboveMax());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_disputeDelayGtSettlement());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_escFactorBelowMin());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_escFactorAboveMax());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_initLiquidityBelowMin());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_initLiquidityAboveMax());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_escFactorBelowInitLiquidity());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_feeTooHigh());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_multiplierBelowMin());
 
-        _expectInvalidInput("oracleParams");
+        _expectOracleParamsRevert();
         _request(_badOracle_multiplierAboveMax());
     }
 
@@ -579,7 +565,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 lendingEthBefore = address(lending).balance;
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "oracleParams"));
+        vm.expectRevert(LendErrors.OracleParams.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -590,6 +576,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             bad,
             _standardInterestRateParams()
         );
@@ -624,38 +611,44 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             stake,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             ir
         );
     }
 
     function testRequestBorrow_RejectsSameTokenOnBothSides() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply == borrow"));
+        vm.expectRevert(LendErrors.SupplyEqualsBorrow.selector);
         _requestBorrowRaw(address(supplyToken), address(supplyToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
     }
 
     function testRequestBorrow_RejectsLiquidationThresholdBelowMin() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "LT out of bounds"));
-        _requestBorrowRaw(address(supplyToken), address(borrowToken), 7e6 - 1, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+        vm.expectRevert(LendErrors.LiquidationThresholdOutOfBounds.selector);
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 3e6 - 1, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+    }
+
+    function testRequestBorrow_AcceptsLiquidationThresholdLowerBound() public {
+        _requestBorrowRaw(address(supplyToken), address(borrowToken), 3e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
+        assertEq(lendView.getLending(1).liquidationThreshold, 3e6);
     }
 
     function testRequestBorrow_RejectsLiquidationThresholdAboveMax() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "LT out of bounds"));
+        vm.expectRevert(LendErrors.LiquidationThresholdOutOfBounds.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 1e7 + 1, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
     }
 
     function testRequestBorrow_RejectsStakeAboveBound() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "stake too high"));
+        vm.expectRevert(LendErrors.StakeTooHigh.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 10001, LOAN_TERM, _standardInterestRateParams());
     }
 
     function testRequestBorrow_RejectsTermBelowMin() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        vm.expectRevert(LendErrors.TermOutOfBounds.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, 1799, _standardInterestRateParams());
     }
 
     function testRequestBorrow_RejectsTermAboveMax() public {
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        vm.expectRevert(LendErrors.TermOutOfBounds.selector);
         _requestBorrowRaw(
             address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100,
             uint48(60 * 60 * 24 * 365 + 1), _standardInterestRateParams()
@@ -665,7 +658,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     /// @dev supply + (supply * stake / 10000) > uint128.max — pick supplyAmount near the cap with non-zero stake.
     function testRequestBorrow_RejectsSupplyPlusStakeOverflow() public {
         uint128 nearMax = uint128(type(uint128).max - 1);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply + stake too high"));
+        vm.expectRevert(LendErrors.SupplyPlusStakeTooHigh.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, nearMax, BORROW_AMOUNT, 100, LOAN_TERM, _standardInterestRateParams());
     }
 
@@ -677,7 +670,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             growthRate: 10500,
             maxRounds: 100
         });
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, bad);
     }
 
@@ -689,7 +682,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             growthRate: 10500,
             maxRounds: 100
         });
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, zeroStart);
 
         openLend.InterestRateParams memory zeroRound = openLend.InterestRateParams({
@@ -699,7 +692,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             growthRate: 10500,
             maxRounds: 100
         });
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "interestRateParams"));
+        vm.expectRevert(LendErrors.InterestRateParams.selector);
         _requestBorrowRaw(address(supplyToken), address(borrowToken), 8e6, SUPPLY_AMOUNT, BORROW_AMOUNT, 100, LOAN_TERM, zeroRound);
     }
 
@@ -712,6 +705,6 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, lender);
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "forge-std/Test.sol";
 import "./OpenLendingBase.t.sol";
 
@@ -79,7 +80,7 @@ contract CancellationTest is OpenLendingBaseTest {
         );
 
         // Verify cancelled state and curveOpen cleared (defense-in-depth)
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.cancelled, "Loan should be marked as cancelled");
         assertFalse(loan.curveOpen, "Curve should be closed after cancellation");
     }
@@ -89,7 +90,7 @@ contract CancellationTest is OpenLendingBaseTest {
 
         // Borrower tries to cancel after origination — should fail because loan is active
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "lendingId active"));
+        vm.expectRevert(LendErrors.LendingIdActive.selector);
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -100,7 +101,7 @@ contract CancellationTest is OpenLendingBaseTest {
         lending.cancelBorrowRequest(lendingId);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "lendingId cancelled"));
+        vm.expectRevert(LendErrors.Cancelled.selector);
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -108,11 +109,11 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(randomUser);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "msg.sender"));
+        vm.expectRevert(LendErrors.MsgSender.selector);
         lending.cancelBorrowRequest(lendingId);
 
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "msg.sender"));
+        vm.expectRevert(LendErrors.MsgSender.selector);
         lending.cancelBorrowRequest(lendingId);
     }
 
@@ -124,8 +125,8 @@ contract CancellationTest is OpenLendingBaseTest {
         lending.cancelBorrowRequest(lendingId);
 
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "cancelled"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Cancelled.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
     }
 
     // =========================================================================
@@ -151,7 +152,7 @@ contract CancellationTest is OpenLendingBaseTest {
         );
 
         // Curve is now open
-        openLend.LendingArrangement memory before = lending.getLending(lendingId);
+        openLend.LendingArrangement memory before = lendView.getLending(lendingId);
         assertTrue(before.curveOpen, "curve should be open after refinance()");
 
         // Cancel the refi
@@ -161,9 +162,9 @@ contract CancellationTest is OpenLendingBaseTest {
         lending.cancelRefinance(lendingId);
 
         // Curve closed and refi params cleared
-        openLend.LendingArrangement memory after_ = lending.getLending(lendingId);
+        openLend.LendingArrangement memory after_ = lendView.getLending(lendingId);
         assertFalse(after_.curveOpen, "curve should be closed");
-        openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
+        openLend.RefiParams memory rp = lendView.getRefiParams(lendingId);
         assertEq(rp.extraDemanded, 0, "extraDemanded cleared");
         assertEq(rp.supplyPulled, 0, "supplyPulled cleared");
         assertEq(rp.newTerm, 0, "newTerm cleared");
@@ -181,11 +182,11 @@ contract CancellationTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(randomUser);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not borrower"));
+        vm.expectRevert(LendErrors.NotBorrower.selector);
         lending.cancelRefinance(lendingId);
 
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not borrower"));
+        vm.expectRevert(LendErrors.NotBorrower.selector);
         lending.cancelRefinance(lendingId);
     }
 
@@ -194,7 +195,7 @@ contract CancellationTest is OpenLendingBaseTest {
 
         // No refinance has been opened
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "curve is not open"));
+        vm.expectRevert(LendErrors.CurveIsNotOpen.selector);
         lending.cancelRefinance(lendingId);
     }
 
@@ -203,7 +204,7 @@ contract CancellationTest is OpenLendingBaseTest {
         uint256 lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not active"));
+        vm.expectRevert(LendErrors.NotActive.selector);
         lending.cancelRefinance(lendingId);
     }
 
@@ -217,7 +218,7 @@ contract CancellationTest is OpenLendingBaseTest {
         lending.cancelRefinance(lendingId);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "curve is not open"));
+        vm.expectRevert(LendErrors.CurveIsNotOpen.selector);
         lending.cancelRefinance(lendingId);
     }
 
@@ -235,7 +236,7 @@ contract CancellationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.curveOpen, "curve should be reopened");
     }
 }

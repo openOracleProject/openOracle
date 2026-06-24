@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "forge-std/Test.sol";
 import "./OpenLendingBase.t.sol";
 
@@ -115,7 +116,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         );
 
         // 3. Verify loan state
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.term, LOAN_TERM, "Term should match");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT, "Supply amount should match");
         assertEq(loan.principal, BORROW_AMOUNT, "Borrow amount should match");
@@ -140,7 +141,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after full repayment");
 
         assertEq(
@@ -167,21 +168,21 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
 
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
 
         vm.warp(block.timestamp + LOAN_TERM + 1);
 
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
         vm.expectEmit(true, false, false, true, address(lending));
         emit CollateralClaimedByLender(lendingId, SUPPLY_AMOUNT);
         lending.claimCollateral(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished after claim");
 
         assertEq(
@@ -208,7 +209,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // assertEq(loan.repaidDebt, partialRepayment, "Repaid debt should match partial payment");  // [amort: removed/no-op]
 
         vm.warp(block.timestamp + LOAN_TERM);
@@ -249,7 +250,7 @@ contract HappyPathTest is OpenLendingBaseTest {
 
     function testCannotBorrow0() public {
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "cant borrow 0"));
+        vm.expectRevert(LendErrors.ZeroAmount.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -260,6 +261,7 @@ contract HappyPathTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -267,7 +269,7 @@ contract HappyPathTest is OpenLendingBaseTest {
 
     function testCannotSupply0() public {
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "cant supply 0"));
+        vm.expectRevert(LendErrors.ZeroAmount.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -278,6 +280,7 @@ contract HappyPathTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -288,7 +291,7 @@ contract HappyPathTest is OpenLendingBaseTest {
     /// @dev Third-party full repayment via repayAnyDebt: payer funds the debt, BORROWER gets the collateral back.
     function testRepayAnyDebt_ThirdPartyFullRepay_CollateralToBorrower() public {
         uint256 lendingId = _originateLoan(borrower, lender, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
 
         // Third-party payer (not borrower, not lender)
@@ -307,7 +310,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         lending.repayAnyDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
         // Loan finished
-        assertTrue(lending.getLending(lendingId).finished, "loan should be finished");
+        assertTrue(lendView.getLending(lendingId).finished, "loan should be finished");
 
         // Payer paid the debt
         assertEq(borrowToken.balanceOf(payer), payerBorrowBefore - totalOwed, "payer paid debt");
@@ -341,7 +344,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         lending.repayAnyDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
 
         // Loan still live
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "partial repay should not finish loan");
         assertTrue(loan.active, "loan still active");
         // assertEq(loan.repaidDebt, partialAmt, "repaidDebt incremented exactly");  // [amort: removed/no-op]
@@ -356,24 +359,24 @@ contract HappyPathTest is OpenLendingBaseTest {
 
         // Loose-hash + bounds gates still apply: partial w/ wrong hash reverts
         vm.prank(payer);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
+        vm.expectRevert(LendErrors.Params.selector);
         lending.repayAnyDebt(lendingId, 1 ether, bytes32(uint256(1)), 0, type(uint128).max);
 
         // expectedMaxPrincipal gate: cap well below current principal → reverts
         vm.prank(payer);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.repayAnyDebt(lendingId, 1 ether, bytes32(0), 0, 1 ether);
     }
 
     function testLend_OriginationAcceptsCorrectParamHash() public {
         uint256 lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
-        bytes32 hash = lending.getParamHash(lendingId);
+        bytes32 hash = lendView.getParamHash(lendingId);
 
         vm.prank(lender);
-        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0, lender);
 
-        assertTrue(lending.getLending(lendingId).active, "origination should succeed with correct hash");
+        assertTrue(lendView.getLending(lendingId).active, "origination should succeed with correct hash");
     }
 
     function testLend_OriginationRejectsWrongParamHash() public {
@@ -381,8 +384,8 @@ contract HappyPathTest is OpenLendingBaseTest {
 
         bytes32 wrong = bytes32(uint256(0xdead));
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
-        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Params.selector);
+        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0, lender);
     }
 
     /// @dev Replaces the V2 "view the offer" test. V3 has no offer slot — the curve is the offer.
@@ -390,7 +393,7 @@ contract HappyPathTest is OpenLendingBaseTest {
     function testLendingViewFunction() public {
         uint256 lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.borrower, borrower, "borrower set");
         assertEq(loan.lender, address(0), "no lender pre-acceptance");
         assertEq(loan.principal, BORROW_AMOUNT, "amountDemanded set");

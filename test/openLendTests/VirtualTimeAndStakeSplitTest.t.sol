@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 
 contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
@@ -47,11 +48,11 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, lender);
     }
 
     function _liquidateAt(address by, uint256 lendingId, uint256 priceRatio18) internal returns (uint256 reportId) {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(by);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
@@ -59,8 +60,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, by, 0, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }
@@ -91,7 +91,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
             lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.curveOpen, "curve open after refi during liq");
         assertEq(loan.requestStart, 0, "requestStart parked at 0 while in liq");
         assertTrue(loan.inLiquidation, "still in liq");
@@ -120,7 +120,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared");
         assertEq(loan.requestStart, settleableAt, "requestStart pinned to settleableAt");
         assertLt(loan.requestStart, uint48(block.timestamp), "requestStart strictly earlier than current block");
@@ -148,9 +148,9 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 300 + 5);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared by auto-settle");
         assertFalse(loan.finished, "loan not finished -- failed liq, refi accepted");
         assertEq(loan.lender, lender2, "lender2 accepted refi");
@@ -181,9 +181,9 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 5 * 300 + 5);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // 1e8 * (10500/10000)^5, with floor at each round:
         //   1.05e8 -> 110_250_000 -> 115_762_500 -> 121_550_625 -> 127_628_156
         assertEq(loan.rate, 127_628_156, "rate after 5 virtual rounds");
@@ -210,13 +210,13 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 5);
 
         // Hash must reflect the post-failed-liq projection so that lend()'s _checkParamsLoose validates.
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         assertTrue(paramHash != bytes32(0), "projected hash non-zero");
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2);
 
-        assertEq(lending.getLending(lendingId).lender, lender2, "lender2 accepted refi using projected hash");
+        assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 accepted refi using projected hash");
     }
 
     // -------------------------------------------------------------------------
@@ -238,16 +238,16 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         uint48 settleableAt = _settleableAtFor(reportId);
         vm.warp(uint256(settleableAt) + 5);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
         uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
         uint256 lenderStakePiece = tokenStake / 2;
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.lender, lender2, "lender2 accepted refi using projected hash");
 
         // After auto-settle's failed-liq-with-grace branch: supplyAmount only includes the borrower-side stake
@@ -286,7 +286,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared");
         assertEq(loan.gracePeriod, 0, "no grace far from maturity");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + tokenStake, "supplyAmount += full tokenStake");
@@ -314,7 +314,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared");
         assertGt(loan.gracePeriod, 0, "grace fired");
         assertEq(
@@ -330,10 +330,10 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // 9. recover near-grace follows normal failed-liq stake split
+    // 9. finalize near-grace follows normal failed-liq stake split
     // -------------------------------------------------------------------------
 
-    function testRecover_NearGrace_SplitsStakeLikeFailedLiq() public {
+    function testFinalize_NearGrace_SplitsStakeLikeFailedLiq() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900); // near maturity
 
@@ -343,43 +343,34 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         uint48 settleableAt = _settleableAtFor(reportId);
         vm.warp(uint256(settleableAt) + 5);
 
-        // Force callback failure so recover() is the resolution path.
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
-
-        // Snapshot AFTER oracle.settle (which already returned initialLiquidity to currentReporter = liquidator).
         uint256 liquidatorSupplyBefore = supplyToken.balanceOf(liquidator);
         uint256 lenderSupplyBefore = supplyToken.balanceOf(lender);
         uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
 
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertFalse(loan.inLiquidation, "liq cleared by recover");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "liq cleared by finalize");
         assertEq(
             supplyToken.balanceOf(liquidator),
             liquidatorSupplyBefore,
-            "recover does not return failed-liq stake to liquidator"
+            "finalize does not return failed-liq stake to liquidator"
         );
         assertEq(
             supplyToken.balanceOf(lender),
             lenderSupplyBefore + tokenStake / 2,
-            "lender receives half stake on near-grace failed-liq recover"
+            "lender receives half stake on near-grace failed-liq finalize"
         );
         // Grace formula uses settleableAt - liquidationStart = ORACLE_SETTLEMENT_TIME (no dispute).
         assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "grace from settleable-time formula");
     }
 
     // -------------------------------------------------------------------------
-    // 9b. recover() with an open refi curve sets virtual requestStart
+    // 9b. finalize() with an open refi curve sets virtual requestStart
     // -------------------------------------------------------------------------
 
-    function testRecover_OpenRefiCurve_SetsVirtualRequestStart() public {
+    function testFinalize_OpenRefiCurve_SetsVirtualRequestStart() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + 1 days);
 
@@ -391,28 +382,22 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         lending.refinance(
             lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max
         );
-        openLend.LendingArrangement memory mid = lending.getLending(lendingId);
+        openLend.LendingArrangement memory mid = lendView.getLending(lendingId);
         assertTrue(mid.curveOpen, "curve open after mid-liq refi");
         assertEq(mid.requestStart, 0, "requestStart parked at 0");
 
         uint48 settleableAt = _settleableAtFor(reportId);
 
-        // Warp well past settleableAt and force a reverting callback so recover() is the resolution path.
+        // Warp well past settleableAt and finalize the failed liquidation.
         vm.warp(uint256(settleableAt) + 1 hours);
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
 
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertFalse(loan.inLiquidation, "liq cleared by recover");
-        assertTrue(loan.curveOpen, "refi curve survives recover");
-        assertEq(loan.requestStart, settleableAt, "requestStart pinned to settleableAt, not recover-time");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "liq cleared by finalize");
+        assertTrue(loan.curveOpen, "refi curve survives finalize");
+        assertEq(loan.requestStart, settleableAt, "requestStart pinned to settleableAt, not finalize-time");
         assertLt(loan.requestStart, uint48(block.timestamp), "requestStart strictly earlier than current block");
     }
 
@@ -436,8 +421,8 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         vm.warp(uint256(settleableAt) + 5);
 
         // Snapshot pre-call state so we can verify nothing persisted.
-        bool inLiqBefore = lending.getLending(lendingId).inLiquidation;
-        bool finishedBefore = lending.getLending(lendingId).finished;
+        bool inLiqBefore = lendView.getLending(lendingId).inLiquidation;
+        bool finishedBefore = lendView.getLending(lendingId).finished;
         uint256 reportMappingBefore = lending.lendingToReportId(lendingId);
         (,,,, uint48 settleTsBefore,,) = _reportStatus(reportId);
         assertTrue(inLiqBefore, "in liq pre-call");
@@ -445,11 +430,11 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
 
         // lend() auto-settles -> underwater -> loan finished -> body reverts on `finished` check -> whole tx unwinds.
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "finished"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Finished.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         // EVM rollback should leave both openLend and the oracle in their pre-call state.
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertEq(loanAfter.inLiquidation, inLiqBefore, "still in liq (rolled back)");
         assertEq(loanAfter.finished, finishedBefore, "not finished (rolled back)");
         assertEq(lending.lendingToReportId(lendingId), reportMappingBefore, "mapping intact (rolled back)");

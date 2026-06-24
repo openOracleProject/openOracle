@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./OpenLendingBase.t.sol";
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 
 /// @notice Refinance edge-cases beyond what HappyPathRefinancingTest covers.
 contract RefinancingTest is OpenLendingBaseTest {
@@ -54,7 +55,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "curve is open"));
+        vm.expectRevert(LendErrors.CurveIsOpen.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
@@ -62,7 +63,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supplyPulled too high"));
+        vm.expectRevert(LendErrors.SupplyPulledTooHigh.selector);
         lending.refinance(
             lendingId,
             0,
@@ -81,11 +82,11 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         // Past maturity, no in-flight liquidation — refi should be rejected as expired
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         vm.warp(uint256(loan.start) + loan.term + 1);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
@@ -93,7 +94,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not borrower"));
+        vm.expectRevert(LendErrors.NotBorrower.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
@@ -101,11 +102,11 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        vm.expectRevert(LendErrors.TermOutOfBounds.selector);
         lending.refinance(lendingId, 0, 0, 100 /* < 1800 floor */, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "term out of bounds"));
+        vm.expectRevert(LendErrors.TermOutOfBounds.selector);
         lending.refinance(lendingId, 0, 0, uint48(60 * 60 * 24 * 365 + 1), 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
     }
 
@@ -113,12 +114,12 @@ contract RefinancingTest is OpenLendingBaseTest {
     function testRefi_AcceptsCorrectLooseParamHash() public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
-        bytes32 hash = lending.getParamHash(lendingId);
+        bytes32 hash = lendView.getParamHash(lendingId);
 
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), hash, 0, type(uint128).max);
 
-        assertTrue(lending.getLending(lendingId).curveOpen, "refi should open with correct hash");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "refi should open with correct hash");
     }
 
     function testRefi_RejectsWrongParamHash() public {
@@ -127,7 +128,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         bytes32 wrongHash = bytes32(uint256(1));
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
+        vm.expectRevert(LendErrors.Params.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), wrongHash, 0, type(uint128).max);
     }
 
@@ -135,7 +136,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, uint128(BORROW_AMOUNT - 1));
     }
 
@@ -143,7 +144,7 @@ contract RefinancingTest is OpenLendingBaseTest {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply too low"));
+        vm.expectRevert(LendErrors.SupplyTooLow.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), SUPPLY_AMOUNT + 1, type(uint128).max);
     }
 
@@ -156,15 +157,15 @@ contract RefinancingTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Borrower fully repays mid-curve — that finishes the loan and should clear curveOpen
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
         vm.prank(borrower);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
         // No lender can accept the refi anymore
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "finished"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Finished.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     /// @dev Two lenders race to fill a refi — only the first wins; second reverts on `!curveOpen`.
@@ -176,12 +177,12 @@ contract RefinancingTest is OpenLendingBaseTest {
 
         // First lender takes the curve
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         // Second lender attempts — curve is now closed
         vm.prank(lender1);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "no curve"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.CurveIsNotOpen.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender1);
     }
 
     /// @dev `minRate` floor: lender protects against curve reset between quote and tx.
@@ -193,8 +194,8 @@ contract RefinancingTest is OpenLendingBaseTest {
 
         // No time has passed → curve is at startingRate (1e8). Asking for 2e8 fails.
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "min rate"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 2e8, 0);
+        vm.expectRevert(LendErrors.MinRate.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 2e8, 0, lender2);
     }
 
     function testRefi_LendRejectsBelowMinLendAmount() public {
@@ -205,8 +206,8 @@ contract RefinancingTest is OpenLendingBaseTest {
 
         // Set a floor higher than the actual newBorrowAmount so the refi-branch bound check fires
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "lend amount out of bounds"));
-        lending.lend(lendingId, bytes32(0), type(uint128).max, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.LendAmountOutOfBounds.selector);
+        lending.lend(lendingId, bytes32(0), type(uint128).max, type(uint128).max, 0, 0, 0, lender2);
     }
 
     function testRefi_LendRejectsAboveMaxLendAmount() public {
@@ -216,8 +217,8 @@ contract RefinancingTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "lend amount out of bounds"));
-        lending.lend(lendingId, bytes32(0), 0, 1, 0, 0, 0);
+        vm.expectRevert(LendErrors.LendAmountOutOfBounds.selector);
+        lending.lend(lendingId, bytes32(0), 0, 1, 0, 0, 0, lender2);
     }
 
     // ---------------- partialAmt repay does NOT void refi in V3 ----------------
@@ -236,10 +237,10 @@ contract RefinancingTest is OpenLendingBaseTest {
         lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
 
         // Curve still open
-        assertTrue(lending.getLending(lendingId).curveOpen, "partialAmt repay should not close the refi curve");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "partialAmt repay should not close the refi curve");
 
         // Compute expected new principal directly from the post-repay amort state
-        openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+        openLend.LendingArrangement memory pre = lendView.getLending(lendingId);
         uint256 interestClaim = pre.interestAccrued > pre.commitmentInterest
             ? uint256(pre.interestAccrued)
             : uint256(pre.commitmentInterest);
@@ -248,9 +249,9 @@ contract RefinancingTest is OpenLendingBaseTest {
 
         // Lender2 accepts at the current curve
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.principal, expectedNewBorrow,
             "new principal = principal + max(accrued, commitInt) - interestPaid (extra=0)");
     }
@@ -263,12 +264,12 @@ contract RefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        bytes32 hash = lending.getParamHash(lendingId);
+        bytes32 hash = lendView.getParamHash(lendingId);
 
         vm.prank(lender2);
-        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0, lender2);
 
-        assertEq(lending.getLending(lendingId).lender, lender2, "lender2 accepted with correct hash");
+        assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 accepted with correct hash");
     }
 
     function testLendRefi_RejectsWrongParamHash() public {
@@ -280,8 +281,8 @@ contract RefinancingTest is OpenLendingBaseTest {
         bytes32 wrong = bytes32(uint256(0xbeef));
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
-        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.Params.selector);
+        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     // ---------------- stale loose hash + directional bounds ----------------
@@ -297,9 +298,9 @@ contract RefinancingTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Snapshot loose hash + state
-        bytes32 staleHash = lending.getParamHash(lendingId);
-        uint128 supplySnapshot = lending.getLending(lendingId).supplyAmount;
-        // uint128 repaidSnapshot = lending.getLending(lendingId).repaidDebt;  // [amort: removed/no-op]
+        bytes32 staleHash = lendView.getParamHash(lendingId);
+        uint128 supplySnapshot = lendView.getLending(lendingId).supplyAmount;
+        // uint128 repaidSnapshot = lendView.getLending(lendingId).repaidDebt;  // [amort: removed/no-op]
 
         // Benign third-party top-up
         _approveLendingSupply(address(this));
@@ -319,9 +320,9 @@ contract RefinancingTest is OpenLendingBaseTest {
         // Lender2 uses the stale hash + directional bounds set to snapshotted values — both still satisfied.
         // V3's `lend` only takes expectedMinSupply (no expectedRepaidDebtMin), so we just check supply here.
         vm.prank(lender2);
-        lending.lend(lendingId, staleHash, 0, type(uint128).max, supplySnapshot, 0, 0);
+        lending.lend(lendingId, staleHash, 0, type(uint128).max, supplySnapshot, 0, 0, lender2);
 
-        assertEq(lending.getLending(lendingId).lender, lender2, "stale loose hash + satisfied bounds should succeed");
+        assertEq(lendView.getLending(lendingId).lender, lender2, "stale loose hash + satisfied bounds should succeed");
 
         // (Demonstrates that `repaidDebt` did go up before refi acceptance; it's reset to 0 after acceptance.)
         // repaidSnapshot;  // [amort: repaidSnapshot removed]
@@ -335,24 +336,24 @@ contract RefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
 
         // Lender2 sets expectedMinSupply ABOVE actual — bounds catch this
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "min supply"));
-        lending.lend(lendingId, staleHash, 0, type(uint128).max, SUPPLY_AMOUNT + 1, 0, 0);
+        vm.expectRevert(LendErrors.MinSupply.selector);
+        lending.lend(lendingId, staleHash, 0, type(uint128).max, SUPPLY_AMOUNT + 1, 0, 0, lender2);
     }
 
     /// @dev Same shape as above, exercising refinance()'s expectedMaxPrincipal bound.
     function testStaleLooseHash_RefinanceExpectedMaxPrincipalTooLowReverts() public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
 
         // principal == BORROW_AMOUNT; cap at BORROW_AMOUNT - 1 → reverts. Loose hash is correct, so this
         // isolates the bound.
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), staleHash, 0, uint128(BORROW_AMOUNT - 1));
     }
 
@@ -365,12 +366,12 @@ contract RefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         // Move time so we're well past origination
         vm.warp(block.timestamp + 5 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -378,11 +379,10 @@ contract RefinancingTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.inLiquidation, "post-refi liquidation should engage");
         assertEq(loan.liquidator, liquidator, "liquidator field set");
     }
@@ -401,7 +401,7 @@ contract RefinancingTest is OpenLendingBaseTest {
             lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
             vm.prank(lenders[i]);
-            lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+            lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lenders[i]);
         }
 
         // Contract still holds exactly the original supply collateral (no skim)

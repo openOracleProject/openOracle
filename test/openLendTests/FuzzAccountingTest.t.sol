@@ -39,7 +39,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
 
     function testFuzz_PartialRepayTracksExactAmount(uint96 repayAmountRaw) public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
         uint128 repayAmount = uint128(bound(repayAmountRaw, 1, totalOwed - 1));
 
@@ -50,7 +50,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "partial repayment should not finish the loan");
         assertEq(
             borrowToken.balanceOf(borrower), borrowerBorrowBefore - repayAmount, "borrower should spend exact amount"
@@ -71,7 +71,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
 
     function testFuzz_FullRepayAcceptsOversizedInput(uint96 repayAmountRaw) public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
         uint128 repayAmount = uint128(bound(repayAmountRaw, totalOwed, totalOwed + 1_000 ether));
 
@@ -82,7 +82,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "full repayment branch should finish the loan");
         assertEq(
             borrowToken.balanceOf(borrower),
@@ -107,7 +107,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         vm.prank(topper);
         lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + topUpAmount, "supplyAmount should increase by top-up");
         assertEq(supplyToken.balanceOf(topper), topperSupplyBefore - topUpAmount, "topper should fund the exact amount");
         assertEq(
@@ -130,7 +130,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         lending.refinance(lendingId, extraDemanded, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         // Snapshot pre-accept amort state
-        openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+        openLend.LendingArrangement memory pre = lendView.getLending(lendingId);
         uint256 interestClaim = pre.interestAccrued > pre.commitmentInterest
             ? uint256(pre.interestAccrued)
             : uint256(pre.commitmentInterest);
@@ -140,9 +140,9 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
 
         // Lender2 accepts at the current curve
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.principal, expectedNewBorrow,
             "post-refi principal = principal + max(accrued, commitInt) - interestPaid + extra");
         assertEq(loan.lender, lender2, "lender2 should be the new lender");
@@ -181,7 +181,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
             uint256 jump = bound(uint256(uint96(uint256(elapsedSeed) ^ (i * 7919))), 1 hours, maxJump);
             vm.warp(block.timestamp + jump);
 
-            openLend.LendingArrangement memory pre = lending.getLending(lendingId);
+            openLend.LendingArrangement memory pre = lendView.getLending(lendingId);
             if (pre.finished) break;
 
             uint256 claimPre = pre.interestAccrued > pre.commitmentInterest
@@ -197,7 +197,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
             totalRepaid += amount;
 
             // Per-round amort invariant: interestPaid never exceeds the lender's interest claim
-            openLend.LendingArrangement memory post = lending.getLending(lendingId);
+            openLend.LendingArrangement memory post = lendView.getLending(lendingId);
             uint256 claimPost = post.interestAccrued > post.commitmentInterest
                 ? uint256(post.interestAccrued)
                 : uint256(post.commitmentInterest);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "forge-std/Test.sol";
 import "../../src/openLend.sol";
+import "../../src/openLendParamHashHelper.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -50,6 +52,7 @@ contract BlacklistableMintableERC20 is ERC20 {
 /// @notice Coverage for the helper / view / fallback paths in V3 that aren't naturally exercised by lifecycle tests.
 contract HelperCoverageTest is Test {
     openLend internal lending;
+    openLendParamHashHelper internal lendView;
     OpenOracle internal oracle;
     MintableERC20 internal supplyToken;
     MintableERC20 internal borrowToken;
@@ -73,6 +76,7 @@ contract HelperCoverageTest is Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
+        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
 
         supplyToken = new MintableERC20("Supply Token", "SUP");
         borrowToken = new MintableERC20("Borrow Token", "BOR");
@@ -105,7 +109,7 @@ contract HelperCoverageTest is Test {
     function testTempHolding_FailedTransferCreditsAndCanBeWithdrawn() public {
         uint256 lendingId =
             _setupActiveLoan(address(supplyToken), address(blacklistedBorrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
 
         uint256 lenderBorrowBefore = blacklistedBorrowToken.balanceOf(lender);
@@ -145,7 +149,7 @@ contract HelperCoverageTest is Test {
         assertEq(
             blacklistedBorrowToken.balanceOf(lender),
             lenderBorrowBefore + totalOwed,
-            "lender should recover withheld funds"
+            "lender should withdraw withheld funds"
         );
     }
 
@@ -184,7 +188,7 @@ contract HelperCoverageTest is Test {
 
         uint256 lendingId =
             _setupActiveLoan(address(bSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint128 totalOwed = _calculateOwedAtMaturity(BORROW_AMOUNT, rate, LOAN_TERM);
 
         uint256 borrowerSupplyBefore = bSupply.balanceOf(borrower);
@@ -193,7 +197,7 @@ contract HelperCoverageTest is Test {
         vm.prank(borrower);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan should finish even when borrower cannot receive collateral");
         assertEq(bSupply.balanceOf(borrower), borrowerSupplyBefore, "borrower direct receipt blocked");
         assertEq(
@@ -205,7 +209,7 @@ contract HelperCoverageTest is Test {
         lending.getTempHolding(address(bSupply));
 
         assertEq(lending.tempHolding(borrower, address(bSupply)), 0, "borrower escrow cleared");
-        assertEq(bSupply.balanceOf(borrower), borrowerSupplyBefore + SUPPLY_AMOUNT, "borrower recovered collateral");
+        assertEq(bSupply.balanceOf(borrower), borrowerSupplyBefore + SUPPLY_AMOUNT, "borrower received collateral");
     }
 
     function testTempHolding_BlacklistedLenderClaimCollateral() public {
@@ -214,7 +218,7 @@ contract HelperCoverageTest is Test {
 
         uint256 lendingId =
             _setupActiveLoan(address(bSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
-        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanBefore = lendView.getLending(lendingId);
 
         bSupply.blacklist(lender);
         uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
@@ -222,7 +226,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(loanBefore.start) + loanBefore.term + 1);
         lending.claimCollateral(lendingId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "claim should finish even when lender cannot receive collateral");
         assertEq(bSupply.balanceOf(lender), lenderSupplyBefore, "lender direct receipt blocked");
         assertEq(lending.tempHolding(lender, address(bSupply)), SUPPLY_AMOUNT, "lender collateral escrowed");
@@ -232,7 +236,7 @@ contract HelperCoverageTest is Test {
         lending.getTempHolding(address(bSupply));
 
         assertEq(lending.tempHolding(lender, address(bSupply)), 0, "lender escrow cleared");
-        assertEq(bSupply.balanceOf(lender), lenderSupplyBefore + SUPPLY_AMOUNT, "lender recovered collateral");
+        assertEq(bSupply.balanceOf(lender), lenderSupplyBefore + SUPPLY_AMOUNT, "lender received collateral");
     }
 
     // -------------------------------------------------------------------------
@@ -248,8 +252,8 @@ contract HelperCoverageTest is Test {
         vm.prank(topper);
         lending.topUpCollateralAnyone(lendingId, 25 ether, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        openLend.OracleParams memory oracleParams = lending.getOracleParams(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        openLend.OracleParams memory oracleParams = lendView.getOracleParams(lendingId);
 
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + 25 ether, "supply should increase after third-party top-up");
         assertEq(
@@ -275,7 +279,7 @@ contract HelperCoverageTest is Test {
             _setupActiveLoan(address(supplyToken), address(borrowToken), largeSupply, 1, 10_000 /* 100% stake */);
 
         vm.prank(topper);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply amount + stake"));
+        vm.expectRevert(LendErrors.SupplyPlusStakeTooHigh.selector);
         lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, type(uint128).max);
     }
 
@@ -289,7 +293,7 @@ contract HelperCoverageTest is Test {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
 
         uint128 largeSupply = type(uint128).max / 10;
@@ -303,7 +307,7 @@ contract HelperCoverageTest is Test {
         );
 
         vm.prank(topper);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "escalation halt too high"));
+        vm.expectRevert(LendErrors.EscalationHaltTooHigh.selector);
         lending.topUpCollateralAnyone(lendingId, 1, bytes32(0), 0, type(uint128).max);
     }
 
@@ -330,8 +334,8 @@ contract HelperCoverageTest is Test {
             type(uint128).max
         );
 
-        openLend.RefiParams memory rp = lending.getRefiParams(lendingId);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.RefiParams memory rp = lendView.getRefiParams(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         assertEq(rp.extraDemanded, 5 ether, "extraDemanded getter mismatch");
         assertEq(rp.supplyPulled, 7 ether, "supplyPulled getter mismatch");
@@ -340,16 +344,49 @@ contract HelperCoverageTest is Test {
 
         // Lender2 accepts the refi
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
-        openLend.RefiParams memory rpAfter = lending.getRefiParams(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
+        openLend.RefiParams memory rpAfter = lendView.getRefiParams(lendingId);
         assertEq(loanAfter.lender, lender2, "lender should switch to lender2");
         assertGt(loanAfter.liquidatorFraction, 0, "liquidatorFraction should be set per the lend call");
         assertFalse(loanAfter.curveOpen, "curve should close after lend");
         assertEq(rpAfter.extraDemanded, 0, "refi extraDemanded should clear");
         assertEq(rpAfter.supplyPulled, 0, "refi supplyPulled should clear");
         assertEq(rpAfter.newTerm, 0, "refi newTerm should clear");
+    }
+
+    function testHelperLendingView_MatchesRawMappingGetterTuple() public {
+        uint256 lendingId =
+            _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(borrower);
+        lending.refinance(
+            lendingId,
+            5 ether,
+            7 ether,
+            0,
+            0,
+            _standardInterestRateParams(),
+            openLend.OracleParams(0, 0, 0, 0, 0, 0, 0, 0),
+            bytes32(0),
+            0,
+            type(uint128).max
+        );
+
+        (bool rawOk, bytes memory rawGetterData) =
+            address(lending).staticcall(abi.encodeWithSelector(lending.lendingArrangements.selector, lendingId));
+        (bool helperOk, bytes memory helperData) =
+            address(lendView).staticcall(abi.encodeWithSelector(lendView.getLending.selector, lendingId));
+
+        assertTrue(rawOk, "raw mapping getter failed");
+        assertTrue(helperOk, "helper getLending failed");
+        assertEq(keccak256(rawGetterData), keccak256(helperData), "helper lending view must match raw mapping getter");
     }
 
     // -------------------------------------------------------------------------
@@ -359,7 +396,7 @@ contract HelperCoverageTest is Test {
     function testTopUp_StaleLooseHashWithSatisfiedBoundsSucceeds() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
         uint128 supplySnapshot = SUPPLY_AMOUNT;
 
         // Borrower partial repay (changes repaidDebt but loose hash zeros it; bound 0 satisfied)
@@ -370,27 +407,27 @@ contract HelperCoverageTest is Test {
         vm.prank(topper);
         lending.topUpCollateralAnyone(lendingId, 5 ether, staleHash, supplySnapshot, type(uint128).max);
 
-        assertEq(lending.getLending(lendingId).supplyAmount, SUPPLY_AMOUNT + 5 ether, "stale hash + satisfied bounds OK");
+        assertEq(lendView.getLending(lendingId).supplyAmount, SUPPLY_AMOUNT + 5 ether, "stale hash + satisfied bounds OK");
     }
 
     function testTopUp_StaleHashWithExpectedMinSupplyTooHighReverts() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
 
         vm.prank(topper);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "supply too low"));
+        vm.expectRevert(LendErrors.SupplyTooLow.selector);
         lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, SUPPLY_AMOUNT + 1, type(uint128).max);
     }
 
     function testTopUp_StaleHashWithExpectedMaxPrincipalTooLowReverts() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
 
         // principal = BORROW_AMOUNT; cap below it → reverts
         vm.prank(topper);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.topUpCollateralAnyone(lendingId, 1 ether, staleHash, 0, uint128(BORROW_AMOUNT - 1));
     }
 
@@ -403,9 +440,9 @@ contract HelperCoverageTest is Test {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
         // Liquidate (deploys feeRecipient) but don't dispute or settle yet — no fees can have accrued
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(lender);
-        lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
         uint256 reportId = oracle.nextReportId() - 1;
         address feeRecipient = Clones.predictDeterministicAddress(
@@ -428,13 +465,13 @@ contract HelperCoverageTest is Test {
     }
 
     // -------------------------------------------------------------------------
-    // Callback liveness: onSettle must clear inLiquidation even if a participant token transfer fails
+    // Payout liveness: finalize must clear inLiquidation even if a participant token transfer fails
     // -------------------------------------------------------------------------
 
     /// @dev Streaming-era liveness: a blacklisted lender must not brick the borrower's partial repay. Borrower's
     ///      funds still leave; the lender's streamed payment lands in tempHolding[lender][borrowToken] until
     ///      they're unblacklisted and can pull it.
-    function testCallbackLiveness_BlacklistedLenderDuringPartialRepay() public {
+    function testPayoutLiveness_BlacklistedLenderDuringPartialRepay() public {
         uint256 lendingId = _setupCustomLoan(
             address(supplyToken),
             address(blacklistedBorrowToken),
@@ -457,7 +494,7 @@ contract HelperCoverageTest is Test {
 
         // Borrower's funds still moved; loan accounting still progresses
         assertEq(blacklistedBorrowToken.balanceOf(borrower), borrowerBorrowBefore - 5 ether, "borrower paid");
-        // assertEq(lending.getLending(lendingId).repaidDebt, 5 ether, "repaidDebt incremented");  // [amort: removed/no-op]
+        // assertEq(lendView.getLending(lendingId).repaidDebt, 5 ether, "repaidDebt incremented");  // [amort: removed/no-op]
 
         // Lender's wallet balance did NOT change (blacklisted; direct receipt blocked)
         assertEq(
@@ -488,7 +525,7 @@ contract HelperCoverageTest is Test {
         assertEq(
             blacklistedBorrowToken.balanceOf(lender),
             lenderBorrowBefore + 5 ether,
-            "lender recovers via getTempHolding"
+            "lender withdraws via getTempHolding"
         );
         assertEq(
             lending.tempHolding(lender, address(blacklistedBorrowToken)),
@@ -498,13 +535,13 @@ contract HelperCoverageTest is Test {
     }
 
     // -------------------------------------------------------------------------
-    // onSettle liquidation-payout liveness — blacklisted recipients land in tempHolding instead of bricking the loan
+    // Liquidation-payout liveness: blacklisted recipients land in tempHolding instead of bricking the loan
     // -------------------------------------------------------------------------
 
     /// @dev Underwater settle pays the entire `supplyAmount` to the lender. If the supplyToken blacklists the lender,
     ///      _transferTokens routes that amount to tempHolding[lender][supplyToken]. The loan still finishes,
     ///      inLiquidation clears, and the lender pulls funds via getTempHolding once unblacklisted.
-    function testCallbackLiveness_BlacklistedLenderUnderwaterLiquidation() public {
+    function testPayoutLiveness_BlacklistedLenderUnderwaterLiquidation() public {
         BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
         _setupBlacklistableSupplyAccounts(bSupply);
 
@@ -520,16 +557,17 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
 
         vm.warp(block.timestamp + 10 days);
 
         // Liquidate at oracleAmount2=6 then dispute to underwater 20/10
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -537,8 +575,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
         uint256 reportId = oracle.nextReportId() - 1;
         bytes32 stateHash = bytes32(0);
@@ -557,7 +594,7 @@ contract HelperCoverageTest is Test {
         _settleOracle(reportId);
 
         // Loan finished, inLiquidation cleared
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished underwater despite blacklisted lender");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
 
@@ -584,14 +621,14 @@ contract HelperCoverageTest is Test {
         assertEq(
             bSupply.balanceOf(lender),
             lenderSupplyBefore + expectedEscrow,
-            "lender recovers via getTempHolding"
+            "lender withdraws via getTempHolding"
         );
         assertEq(lending.tempHolding(lender, address(bSupply)), 0, "tempHolding cleared");
     }
 
     /// @dev Underwater no-equity settle: lender gets supplyAmount, liquidator gets tokenStake. Blacklisting the
     ///      liquidator routes their stake (+ fee piece) into tempHolding; lender still receives directly.
-    function testCallbackLiveness_BlacklistedLiquidatorUnderwaterLiquidation() public {
+    function testPayoutLiveness_BlacklistedLiquidatorUnderwaterLiquidation() public {
         BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
         _setupBlacklistableSupplyAccounts(bSupply);
 
@@ -606,16 +643,17 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
 
         vm.warp(block.timestamp + 10 days);
 
         // Liquidate then dispute to a buffer-region ratio (20/12 → debt-in-supply > LT but < supplyAmount)
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -623,8 +661,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
         uint256 reportId = oracle.nextReportId() - 1;
         bytes32 stateHash = bytes32(0);
@@ -644,7 +681,7 @@ contract HelperCoverageTest is Test {
         _settleOracle(reportId);
 
         // Loan finished underwater
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished underwater despite blacklisted liquidator");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
 
@@ -681,7 +718,7 @@ contract HelperCoverageTest is Test {
     }
 
     /// @dev Both lender AND liquidator blacklisted: the entire underwater payout pair lands in tempHolding.
-    function testCallbackLiveness_BothBlacklistedUnderwaterLiquidation() public {
+    function testPayoutLiveness_BothBlacklistedUnderwaterLiquidation() public {
         BlacklistableMintableERC20 bSupply = new BlacklistableMintableERC20("BL Supply", "BSUP");
         _setupBlacklistableSupplyAccounts(bSupply);
 
@@ -696,15 +733,16 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
 
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -712,8 +750,7 @@ contract HelperCoverageTest is Test {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
         uint256 reportId = oracle.nextReportId() - 1;
         bytes32 stateHash = bytes32(0);
@@ -730,7 +767,7 @@ contract HelperCoverageTest is Test {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished even when both parties blacklisted");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
 
@@ -757,7 +794,7 @@ contract HelperCoverageTest is Test {
             "liquidator fee share credited internally"
         );
 
-        // Both can recover after unblacklist
+        // Both can withdraw after unblacklist
         bSupply.unblacklist(lender);
         bSupply.unblacklist(liquidator);
         vm.prank(lender);
@@ -828,12 +865,13 @@ contract HelperCoverageTest is Test {
             stake,
             uint24(1e7),
             0,
+            borrower,
             oracleParams,
             _standardInterestRateParams()
         );
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
     }
 
     function _standardOracleParams() internal pure returns (openLend.OracleParams memory) {
@@ -845,7 +883,7 @@ contract HelperCoverageTest is Test {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -882,6 +920,14 @@ contract HelperCoverageTest is Test {
     }
 
     function _settleOracle(uint256 reportId) internal {
+        uint256 lendingId = lending.reportIdToLending(reportId);
+        if (lendingId != 0 && lendView.getLending(lendingId).inLiquidation) {
+            lending.finalize(lendingId);
+        }
+        _settleOracleWithoutFinalize(reportId);
+    }
+
+    function _settleOracleWithoutFinalize(uint256 reportId) internal {
         IOpenOracle2(address(oracle)).settle(
             reportId,
             IOpenOracle2(address(oracle)).storedGame(reportId),
@@ -910,8 +956,7 @@ contract HelperCoverageTest is Test {
             false,
             false,
             game,
-            helper,
-            _emptyTiming()
+            helper, _emptyTiming()
         );
     }
 

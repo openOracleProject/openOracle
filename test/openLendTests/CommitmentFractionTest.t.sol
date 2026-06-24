@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 
 /// @notice Pins the smooth interpolation of `commitmentFraction`: close-out interest = max(committed, accrued).
@@ -33,7 +34,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function _setup(uint24 commitmentFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, commitmentFraction, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
     }
 
     /// @dev Compute interest for a given elapsed-equivalent (effectiveElapsed) under the contract's formula.
@@ -49,7 +50,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function testCommitment_FlatInsideWindow_50pct() public {
         // commitmentFraction = 50% → commitWindow = 15 days
         uint256 lendingId = _setup(5e6);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint256 commitWindow = uint256(LOAN_TERM) * 5e6 / 1e7; // 15 days
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, commitWindow);
 
@@ -68,7 +69,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function testCommitment_FlatAtMidWindow_70pct() public {
         // commitmentFraction = 70% → commitWindow = 21 days
         uint256 lendingId = _setup(7e6);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint256 commitWindow = uint256(LOAN_TERM) * 7e6 / 1e7; // 21 days
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, commitWindow);
 
@@ -91,7 +92,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function testCommitment_AtBoundary_50pct() public {
         // commitmentFraction = 50% → commitWindow = 15 days. Close exactly at day 15.
         uint256 lendingId = _setup(5e6);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint256 commitWindow = uint256(LOAN_TERM) * 5e6 / 1e7;
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, commitWindow);
 
@@ -116,7 +117,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         // 50% commitment, commitWindow = 15 days. Close at day 20, day 25.
         uint256 lendingId1 = _setup(5e6);
         uint256 lendingId2 = _setup(5e6);
-        uint32 rate = lending.getLending(lendingId1).rate;
+        uint32 rate = lendView.getLending(lendingId1).rate;
 
         // Day 20 close on loan 1
         vm.warp(block.timestamp + 20 days);
@@ -152,7 +153,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         // (accrued at that elapsed). Confirms commitmentFraction has no effect at maturity.
         uint256 lendingId50 = _setup(5e6);
         uint256 lendingId90 = _setup(9e6);
-        uint32 rate = lending.getLending(lendingId50).rate;
+        uint32 rate = lendView.getLending(lendingId50).rate;
         // Both started at the same block.timestamp; close 1 sec before maturity (exact maturity reverts as expired).
         uint256 elapsedAtClose = uint256(LOAN_TERM) - 1;
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, elapsedAtClose);
@@ -185,7 +186,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function testCommitment_RefiPaysPriorLenderCommitted_InsideWindow() public {
         // 50% commitment, refi at day 5 (well inside 15-day window) → prior lender paid committed (15d) interest.
         uint256 lendingId = _setup(5e6);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint256 commitWindow = uint256(LOAN_TERM) * 5e6 / 1e7;
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, commitWindow);
 
@@ -196,7 +197,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
         uint256 lenderBefore = borrowToken.balanceOf(lender);
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         assertEq(
             borrowToken.balanceOf(lender) - lenderBefore,
@@ -205,7 +206,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         );
         // New principal = committed payout
         assertEq(
-            lending.getLending(lendingId).principal,
+            lendView.getLending(lendingId).principal,
             uint256(BORROW_AMOUNT) + expectedInterest,
             "new principal = prior owed"
         );
@@ -214,7 +215,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
     function testCommitment_RefiPaysPriorLenderAccrued_PastBoundary() public {
         // 50% commitment, refi at day 22 (past 15-day window) → prior lender paid accrued (22d) interest.
         uint256 lendingId = _setup(5e6);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
         uint256 expectedInterest = _interest(BORROW_AMOUNT, rate, 22 days);
 
         vm.warp(block.timestamp + 22 days);
@@ -224,7 +225,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
         uint256 lenderBefore = borrowToken.balanceOf(lender);
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         assertEq(
             borrowToken.balanceOf(lender) - lenderBefore,
@@ -239,7 +240,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
     function testCommitment_RejectsCommitmentFractionAboveBound() public {
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "commitment fraction too high"));
+        vm.expectRevert(LendErrors.CommitmentFractionTooHigh.selector);
         lending.requestBorrow(
             LOAN_TERM,
             address(supplyToken),
@@ -250,6 +251,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
             100,
             uint24(1e7 + 1),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );

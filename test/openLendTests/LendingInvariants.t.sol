@@ -5,8 +5,10 @@ import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 
 import "../../src/openLend.sol";
+import "../../src/openLendParamHashHelper.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/oracleFeeReceiver2.sol";
+import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
@@ -39,6 +41,7 @@ contract InvariantBlacklistableERC20 is MockERC20 {
 
 contract LendingInvariantHandler is Test {
     openLend public immutable lending;
+    openLendParamHashHelper public immutable lendView;
     InvariantBlacklistableERC20 public immutable supplyToken;
     MockERC20 public immutable borrowToken;
 
@@ -55,8 +58,14 @@ contract LendingInvariantHandler is Test {
     uint24 internal constant LIQUIDATION_THRESHOLD = 8e6;
     uint16 internal constant STAKE = 100;
 
-    constructor(openLend _lending, InvariantBlacklistableERC20 _supplyToken, MockERC20 _borrowToken) {
+    constructor(
+        openLend _lending,
+        openLendParamHashHelper _lendView,
+        InvariantBlacklistableERC20 _supplyToken,
+        MockERC20 _borrowToken
+    ) {
         lending = _lending;
+        lendView = _lendView;
         supplyToken = _supplyToken;
         borrowToken = _borrowToken;
     }
@@ -118,6 +127,7 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -149,6 +159,7 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -180,6 +191,7 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -191,17 +203,15 @@ contract LendingInvariantHandler is Test {
     function lendLoan(uint256 loanSeed, uint24 liquidatorFraction) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (loan.cancelled || loan.active || loan.finished || !loan.curveOpen) return;
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
         if (loan.borrowToken == ETH) {
-            try lending.lend{value: loan.principal}(
-                lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction
-            ) {} catch {}
+            try lending.lend{value: loan.principal}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
         } else {
-            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction) {} catch {}
+            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
         }
         vm.stopPrank();
     }
@@ -209,7 +219,7 @@ contract LendingInvariantHandler is Test {
     function repay(uint256 loanSeed, uint96 repaySeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
 
         uint128 totalOwed = _calculateOwedAtMaturity(loan.principal, loan.rate, loan.term);
@@ -230,7 +240,7 @@ contract LendingInvariantHandler is Test {
     function topUp(uint256 loanSeed, uint96 topUpSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (loan.finished || loan.cancelled || loan.inLiquidation || !loan.active) return;
 
         uint128 amount = uint128(bound(topUpSeed, 1, 1_000 ether));
@@ -248,7 +258,7 @@ contract LendingInvariantHandler is Test {
     function openRefi(uint256 loanSeed, uint96 extraSeed, uint96 pullSeed, uint96 gasCompSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.curveOpen || loan.supplyAmount <= 1) return;
         if (loan.borrowToken == ETH) return;
 
@@ -264,20 +274,20 @@ contract LendingInvariantHandler is Test {
     function acceptRefi(uint256 loanSeed, uint24 liquidatorFraction) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || !loan.curveOpen || loan.inLiquidation) return;
         if (loan.borrowToken == ETH) return;
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
-        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction) {} catch {}
+        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
         vm.stopPrank();
     }
 
     function cancelRefi(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || !loan.curveOpen) return;
 
         vm.startPrank(borrower);
@@ -293,7 +303,7 @@ contract LendingInvariantHandler is Test {
     function repayAny(uint256 loanSeed, uint96 repaySeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
 
         uint128 totalOwed = _calculateOwedAtMaturity(loan.principal, loan.rate, loan.term);
@@ -322,7 +332,7 @@ contract LendingInvariantHandler is Test {
     function claimCollateralToTempHolding(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
         if (loan.supplyToken != address(supplyToken)) return;
 
@@ -351,7 +361,7 @@ contract LendingInvariantHandler is Test {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -364,7 +374,7 @@ contract LendingInvariantHandler is Test {
             initialLiquidity: 0,
             multiplier: 0,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -387,6 +397,7 @@ contract LendingInvariantHandler is Test {
 
 contract LendingInvariantsTest is StdInvariant, Test {
     openLend internal lending;
+    openLendParamHashHelper internal lendView;
     OpenOracle internal oracle;
     InvariantBlacklistableERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -401,10 +412,11 @@ contract LendingInvariantsTest is StdInvariant, Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
+        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
         supplyToken = new InvariantBlacklistableERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
-        handler = new LendingInvariantHandler(lending, supplyToken, borrowToken);
+        handler = new LendingInvariantHandler(lending, lendView, supplyToken, borrowToken);
         supplyToken.transfer(address(handler), 400_000 ether);
         borrowToken.transfer(address(handler), 400_000 ether);
         handler.prime();
@@ -427,7 +439,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (loan.finished) {
                 assertFalse(loan.inLiquidation, "finished loan cannot remain in liquidation");
             }
@@ -443,7 +455,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (loan.principal == 0 && loan.commitmentInterest == 0) continue;
 
             uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
@@ -487,7 +499,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 stagedGasComp;
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             stagedGasComp += loan.gasCompensation;
             if (!loan.cancelled && !loan.finished) {
                 uint256 backedSupply = loan.supplyAmount;
@@ -522,7 +534,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 stagedGasComp;
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            stagedGasComp += lending.getLending(lendingId).gasCompensation;
+            stagedGasComp += lendView.getLending(lendingId).gasCompensation;
         }
         assertGe(
             address(lending).balance,
@@ -536,7 +548,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             // After full repayment / liquidation the supplyAmount stays as last-snapshot; we only check pre-finish.
             if (loan.cancelled || loan.finished) continue;
             assertGt(loan.supplyAmount, 0, "active loan should have positive supplyAmount");
@@ -548,7 +560,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (loan.curveOpen) {
                 assertFalse(loan.finished, "curveOpen requires not finished");
                 assertFalse(loan.cancelled, "curveOpen requires not cancelled");

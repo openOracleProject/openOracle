@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 import "../../src/libraries/Errors.sol";
 import "../../src/oracleFeeReceiver2.sol";
@@ -64,7 +65,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 reportId = oracle.nextReportId();
         address feeRecipient = _predictFeeReceiver(reportId);
         IOpenOracle2.TimingBoundaries memory timing = _currentTiming();
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
@@ -74,6 +75,8 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             paramHash,
             0,
             SETTLER_REWARD,
+            liquidator,
+            0,
             timing
         );
 
@@ -99,8 +102,8 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(o.disputeDelay, 60, "disputeDelay");
         assertEq(o.feePercentage, 0, "feePercentage");
         assertEq(o.multiplier, 200, "multiplier");
-        assertEq(o.callbackContract, address(lending), "callbackContract");
-        assertEq(o.callbackGasLimit, 4_000_000, "callbackGasLimit");
+        assertEq(o.callbackContract, address(0), "callbackContract");
+        assertEq(o.callbackGasLimit, 0, "callbackGasLimit");
         assertEq(o.protocolFee, 100_000, "protocolFee");
         assertEq(o.flags, 5, "flags");
 
@@ -114,7 +117,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = oracle.nextReportId();
         address feeRecipient = _predictFeeReceiver(reportId);
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         IOpenOracle2.TimingBoundaries memory stale = IOpenOracle2.TimingBoundaries({
             blockNumber: block.number,
             blockNumberBound: 60,
@@ -136,11 +139,13 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             paramHash,
             0,
             SETTLER_REWARD,
+            liquidator,
+            0,
             stale
         );
 
         assertEq(oracle.nextReportId(), reportId, "report id rolled back");
-        assertFalse(lending.getLending(lendingId).inLiquidation, "loan not left in liquidation");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "loan not left in liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId rolled back");
         assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending rolled back");
         assertEq(feeRecipient.code.length, 0, "fee receiver deployment rolled back");
@@ -154,7 +159,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = oracle.nextReportId();
         address feeRecipient = _predictFeeReceiver(reportId);
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         IOpenOracle2.TimingBoundaries memory stale = IOpenOracle2.TimingBoundaries({
             blockNumber: block.number + 1,
             blockNumberBound: 0,
@@ -176,11 +181,13 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             paramHash,
             0,
             SETTLER_REWARD,
+            liquidator,
+            0,
             stale
         );
 
         assertEq(oracle.nextReportId(), reportId, "report id rolled back");
-        assertFalse(lending.getLending(lendingId).inLiquidation, "loan not left in liquidation");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "loan not left in liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId rolled back");
         assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending rolled back");
         assertEq(feeRecipient.code.length, 0, "fee receiver deployment rolled back");
@@ -197,7 +204,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 reportId = oracle.nextReportId();
         address predicted = _predictFeeReceiver(reportId);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
@@ -205,8 +212,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
 
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
@@ -214,8 +220,8 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(o.protocolFeeRecipient, address(0), "zero-fee recipient");
         assertEq(o.protocolFee, 0, "zero protocolFee");
         assertEq(o.flags, 5, "flags still store all timestamp mode");
-        assertEq(o.callbackContract, address(lending), "callbackContract");
-        assertEq(o.callbackGasLimit, 4_000_000, "callbackGasLimit");
+        assertEq(o.callbackContract, address(0), "callbackContract");
+        assertEq(o.callbackGasLimit, 0, "callbackGasLimit");
         assertEq(o.currentAmount1, 10 ether, "amount1");
         assertEq(o.currentAmount2, 8 ether, "amount2");
         assertEq(o.currentReporter, liquidator, "currentReporter");
@@ -226,28 +232,26 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
     function testLiquidate_InitialReportEligibilityExactBoundary() public {
         uint256 equalId = _setupThresholdLoan();
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "initial report not liquidation-eligible"));
+        vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             equalId,
             _priceRatioFor(10 ether),
             type(uint128).max,
             bytes32(0),
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
 
         uint256 healthyId = _setupThresholdLoan();
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "initial report not liquidation-eligible"));
+        vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             healthyId,
             _priceRatioFor(10 ether + 10),
             type(uint128).max,
             bytes32(0),
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
 
         uint256 underwaterId = _setupThresholdLoan();
@@ -258,10 +262,9 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             type(uint128).max,
             bytes32(0),
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
-        assertTrue(lending.getLending(underwaterId).inLiquidation, "one tick underwater should pass");
+        assertTrue(lendView.getLending(underwaterId).inLiquidation, "one tick underwater should pass");
     }
 
     function testLiquidate_TopUpBeforeLiquidatorTxCanInvalidateSubmittedPrice() public {
@@ -271,15 +274,14 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "initial report not liquidation-eligible"));
+        vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
             _priceRatioFor(10 ether - 10),
             type(uint128).max,
             bytes32(0),
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
     }
 
@@ -344,7 +346,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         _assertFeeSplit(address(supplyToken), feesSupply, borrowerSupplyBefore, lenderSupplyBefore, liquidatorSupplyBefore);
     }
 
-    function testSettleLiquidation_ConsumesStoredGameAfterMultipleDisputes() public {
+    function testFinalize_ConsumesStoredGameAfterMultipleDisputes() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = _liquidate(lendingId, 8 ether);
 
@@ -357,11 +359,11 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
 
         vm.warp(uint256(beforeSettle.reportTimestamp) + beforeSettle.settlementTime + 1);
         vm.prank(disputer);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
         IOpenOracle2.OracleGame memory afterSettle = IOpenOracle2(address(oracle)).storedGame(reportId);
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertGt(afterSettle.settlementTimestamp, 0, "oracle settled");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertEq(afterSettle.settlementTimestamp, 0, "oracle accounting not settled by finalize");
         assertFalse(loan.inLiquidation, "liquidation cleared");
         assertFalse(loan.finished, "one-to-one final price is failed liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
@@ -369,7 +371,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + SUPPLY_AMOUNT / 100, "stake added to collateral");
     }
 
-    function testRecover_ConsumesStoredGameAfterMultipleDisputes() public {
+    function testOracleSettleAfterFinalize_ConsumesStoredHelperAfterMultipleDisputes() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = _liquidate(lendingId, 8 ether);
 
@@ -377,22 +379,22 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
 
         IOpenOracle2.OracleGame memory beforeSettle = IOpenOracle2(address(oracle)).storedGame(reportId);
         vm.warp(uint256(beforeSettle.reportTimestamp) + beforeSettle.settlementTime + 1);
-        _forceCallbackRevert();
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
-
-        assertTrue(lending.getLending(lendingId).inLiquidation, "callback revert leaves loan stuck");
-        assertGt(IOpenOracle2(address(oracle)).storedGame(reportId).settlementTimestamp, 0, "oracle settled");
-
         vm.prank(lender2);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertFalse(loan.inLiquidation, "recovery clears liquidation");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "finalize clears liquidation");
         assertFalse(loan.finished, "one-to-one final price is failed liquidation");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
         assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + SUPPLY_AMOUNT / 100, "stake added to collateral");
+
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        IOpenOracle2.PreimageHelper memory helper = _helperFor(reportId);
+        vm.prank(disputer2);
+        IOpenOracle2(address(oracle)).settle(reportId, game, helper);
+
+        assertGt(IOpenOracle2(address(oracle)).storedGame(reportId).settlementTimestamp, 0, "oracle settled after finalize");
     }
 
     function testOracleFeeReceiver_CollectCapsAtUint128MaxAndCanBeCalledAgain() public {
@@ -453,14 +455,6 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         _disputeAndSwap(reportId, address(borrowToken), 40 ether, 40 ether, disputer2, 0, bytes32(0));
     }
 
-    function _forceCallbackRevert() internal {
-        vm.mockCallRevert(
-            address(lending),
-            abi.encodeWithSelector(openLend.openOracleCallback.selector),
-            "callback bricked"
-        );
-    }
-
     function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         _lendWithFraction(lender, lendingId, liquidatorFraction);
@@ -504,12 +498,13 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
+            borrower,
             oracleParams,
             _standardInterestRateParams()
         );
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
@@ -522,7 +517,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         address,
         uint256 oracleAmount2Target
     ) internal returns (uint256 reportId) {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
@@ -530,8 +525,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }

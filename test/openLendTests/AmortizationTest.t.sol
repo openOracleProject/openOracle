@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./OpenLendingBase.t.sol";
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 
 /// @notice End-to-end coverage for the amortization model: principal/interestAccrued/interestPaid/commitmentInterest
 ///         state, residual-vs-mark-to-market debt, refi math, overflow guards, paramHash-with-zeroed-amort-fields,
@@ -60,11 +61,11 @@ contract AmortizationTest is OpenLendingBaseTest {
     function _liquidateAt(address by, uint256 lendingId, uint256 priceRatio18, uint96 settlerReward)
         internal returns (uint256 reportId)
     {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(by);
-        lending.liquidate{value: settlerReward}(
-            lendingId, priceRatio18, type(uint128).max, paramHash, 0, settlerReward,
-            _emptyTiming()
+        lending.liquidate{value: uint256(settlerReward) + finalizerReward}(
+            lendingId, priceRatio18, type(uint128).max, paramHash, 0, settlerReward, by, finalizerReward, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }
@@ -98,7 +99,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(lendingId, 1, bytes32(0), 0, type(uint128).max);
 
-        assertGt(lending.getLending(lendingId).interestRemainder, 0, "interestRemainder seeded");
+        assertGt(lendView.getLending(lendingId).interestRemainder, 0, "interestRemainder seeded");
     }
 
     // -------------------------------------------------------------------------
@@ -108,7 +109,7 @@ contract AmortizationTest is OpenLendingBaseTest {
     /// @dev Partial repay below the unpaid interest claim only increases interestPaid; principal is unchanged.
     function testAmort_PartialBelowInterestClaim_OnlyInterestPaid() public {
         uint256 lendingId = _setupActiveLoan(0);
-        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanBefore = lendView.getLending(lendingId);
         uint128 commitInt = loanBefore.commitmentInterest;
 
         // Pay strictly less than the interest claim (commitInt at t=0).
@@ -117,7 +118,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, small, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertEq(loanAfter.principal, loanBefore.principal, "principal unchanged");
         assertEq(loanAfter.interestPaid, small, "interestPaid increased by partial");
     }
@@ -130,7 +131,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lendingId = _requestBorrowFlex(borrower, tinySupply, tinyBorrow, term, 0, 0);
         _lend(lender, lendingId);
 
-        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanBefore = lendView.getLending(lendingId);
         assertEq(loanBefore.commitmentInterest, 0, "commitment floor disabled");
 
         uint48 firstTouch = loanBefore.start + 1;
@@ -138,7 +139,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(lendingId, 1, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory afterDust = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterDust = lendView.getLending(lendingId);
         assertEq(afterDust.interestAccrued, 0, "sub-unit interest not booked");
         assertGt(afterDust.interestRemainder, 0, "sub-unit interest carried");
         assertEq(afterDust.lastTouch, firstTouch, "carried touch advances lastTouch");
@@ -148,7 +149,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(lendingId, 1, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory afterAccrual = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterAccrual = lendView.getLending(lendingId);
         assertGt(afterAccrual.interestAccrued, 0, "elapsed time eventually accrues");
         assertEq(afterAccrual.lastTouch, secondTouch, "nonzero accrual advances lastTouch");
     }
@@ -161,7 +162,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 singleId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, term, 0, 0);
         _lend(lender, singleId);
 
-        uint48 start = lending.getLending(streamedId).start;
+        uint48 start = lendView.getLending(streamedId).start;
         for (uint256 i = 1; i <= 150; ++i) {
             vm.warp(uint256(start) + i * 12);
             vm.prank(payer);
@@ -172,8 +173,8 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(singleId, 1, bytes32(0), 0, type(uint128).max);
 
-        uint256 streamedAccrued = lending.getLending(streamedId).interestAccrued;
-        uint256 singleAccrued = lending.getLending(singleId).interestAccrued;
+        uint256 streamedAccrued = lendView.getLending(streamedId).interestAccrued;
+        uint256 singleAccrued = lendView.getLending(singleId).interestAccrued;
         uint256 delta = streamedAccrued > singleAccrued
             ? streamedAccrued - singleAccrued
             : singleAccrued - streamedAccrued;
@@ -184,14 +185,14 @@ contract AmortizationTest is OpenLendingBaseTest {
     /// @dev Partial repay exceeding unpaid interest claim caps interestPaid at the claim and reduces principal.
     function testAmort_PartialAboveInterestClaim_ReducesPrincipal() public {
         uint256 lendingId = _setupActiveLoan(0);
-        openLend.LendingArrangement memory loanBefore = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanBefore = lendView.getLending(lendingId);
         uint128 commitInt = loanBefore.commitmentInterest;
 
         uint128 big = commitInt + 5 ether;
         vm.prank(borrower);
         lending.repayDebt(lendingId, big, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertEq(loanAfter.interestPaid, commitInt, "interestPaid caps at interest claim");
         assertEq(loanAfter.principal, loanBefore.principal - 5 ether, "excess reduces principal");
     }
@@ -199,13 +200,13 @@ contract AmortizationTest is OpenLendingBaseTest {
     /// @dev After amortization, future interest accrues on reduced principal, not original.
     function testAmort_FutureInterestAccruesOnReducedPrincipal() public {
         uint256 lendingId = _setupActiveLoan(0);
-        openLend.LendingArrangement memory loanInit = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanInit = lendView.getLending(lendingId);
         uint128 commitInt = loanInit.commitmentInterest;
 
         // Pay a chunk that pushes principal down significantly.
         vm.prank(borrower);
         lending.repayDebt(lendingId, commitInt + 30 ether, bytes32(0), 0, type(uint128).max);
-        openLend.LendingArrangement memory loanAfterPartial = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfterPartial = lendView.getLending(lendingId);
         uint128 reducedPrincipal = loanAfterPartial.principal;
         assertEq(reducedPrincipal, BORROW_AMOUNT - 30 ether, "principal reduced");
 
@@ -214,7 +215,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, 1 wei, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfterTouch = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfterTouch = lendView.getLending(lendingId);
         // Interest accrued during the 10-day window must equal `reducedPrincipal * 10d * rate / year`,
         // strictly less than what would have accrued on the original principal.
         uint256 expectedSegment = uint256(reducedPrincipal) * 10 days * loanInit.rate / (1e9 * 365 days);
@@ -231,7 +232,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint128 commitInt = loan.commitmentInterest;
         // Residual = principal + max(commitInt, interestAccrued) - interestPaid. At ~t=0, accrued≈0 so floor binds.
         uint256 expectedResidual = uint256(loan.principal)
@@ -245,7 +246,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "loan finished after full close");
         assertEq(borrowerBefore - borrowToken.balanceOf(borrower), expectedResidual, "borrower paid only residual");
         assertEq(borrowToken.balanceOf(lender) - lenderBefore, expectedResidual, "lender received residual");
@@ -255,7 +256,7 @@ contract AmortizationTest is OpenLendingBaseTest {
     /// @dev Full repay before any interest accrual still requires the commitment-floor interest.
     function testAmort_FullRepayPreFloor_RequiresCommitmentInterest() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
@@ -290,6 +291,7 @@ contract AmortizationTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             ir
         );
@@ -300,11 +302,11 @@ contract AmortizationTest is OpenLendingBaseTest {
         lending.repayDebt(lendingId, uint128(0.5 ether), bytes32(0), 0, type(uint128).max);
 
         // _residualDebt = principal(0.5) + commitInt(1.0) - paid(0.5) = 1 ether → still liquidatable.
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(0.06 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(0.06 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
-        assertTrue(lending.getLending(lendingId).inLiquidation,
+        assertTrue(lendView.getLending(lendingId).inLiquidation,
             "liquidation succeeded; commitment floor counted toward liquidation debt");
     }
 
@@ -312,9 +314,9 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      the commitment-inclusive residual debt. (Liquidation debt = principal + max(accrued, commitInt) - paid.)
     function testLiqDebt_HealthyPositionFailedLiquidation() public {
         uint256 lendingId = _setupActiveLoan(0);
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -322,7 +324,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "failed-liq: residual stayed under threshold");
         assertFalse(loan.inLiquidation, "liq cleared");
     }
@@ -336,17 +338,17 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 1 days);
         vm.prank(borrower);
         lending.repayDebt(lendingId, 30 ether, bytes32(0), 0, type(uint128).max);
-        openLend.LendingArrangement memory loanAfterAmort = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfterAmort = lendView.getLending(lendingId);
         assertLt(loanAfterAmort.principal, BORROW_AMOUNT, "principal reduced");
 
         // Now price that would trip threshold on full principal but not on reduced.
         // liqThresh = 80 ether. borrowValueInSupplyTerms must exceed for underwater.
         // With reduced principal ≈ 25 ether, even at oracleAmount2 = 6 ether (priceRatio 6e17), debt-in-supply
         // ≈ 25 * 10/6 ≈ 41.6 ether < 80 ether → not underwater.
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "initial report not liquidation-eligible"));
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
     }
 
     // -------------------------------------------------------------------------
@@ -357,7 +359,7 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      (which includes the commitment floor when accrued < commitInt).
     function testRefi_PaysPreviousLenderResidualWithFloor() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         vm.prank(borrower);
         lending.refinance(
@@ -368,7 +370,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lender2Before = borrowToken.balanceOf(lender2);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         // Old lender was paid principal + commitInt.
         assertEq(borrowToken.balanceOf(lender) - lenderBefore, uint256(BORROW_AMOUNT) + uint256(commitInt),
@@ -381,13 +383,13 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      residualDebt + extraDemanded.
     function testRefi_NewPrincipalEqualsResidualPlusExtra() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         // Partial: covers commitInt then reduces principal.
         vm.prank(borrower);
         lending.repayDebt(lendingId, commitInt + 10 ether, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory midLoan = lendView.getLending(lendingId);
         uint256 expectedResidual = uint256(midLoan.principal)
             + (uint256(midLoan.interestAccrued) > commitInt ? uint256(midLoan.interestAccrued) : commitInt)
             - uint256(midLoan.interestPaid);
@@ -399,9 +401,9 @@ contract AmortizationTest is OpenLendingBaseTest {
         );
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory finalLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory finalLoan = lendView.getLending(lendingId);
         assertEq(uint256(finalLoan.principal), expectedResidual + uint256(extra),
             "new principal = residual + extraDemanded");
     }
@@ -416,7 +418,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory mid = lending.getLending(lendingId);
+        openLend.LendingArrangement memory mid = lendView.getLending(lendingId);
         assertGt(mid.interestAccrued, 0, "accrued > 0 after time + partial");
         assertGt(mid.interestPaid, 0, "interestPaid > 0 after partial");
         assertEq(mid.lastTouch, uint48(block.timestamp), "lastTouch updated");
@@ -427,9 +429,9 @@ contract AmortizationTest is OpenLendingBaseTest {
         );
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
-        openLend.LendingArrangement memory after_ = lending.getLending(lendingId);
+        openLend.LendingArrangement memory after_ = lendView.getLending(lendingId);
         assertEq(after_.interestAccrued, 0, "interestAccrued reset on refi");
         assertEq(after_.interestRemainder, 0, "interestRemainder reset on refi");
         assertEq(after_.interestPaid, 0, "interestPaid reset on refi");
@@ -442,7 +444,7 @@ contract AmortizationTest is OpenLendingBaseTest {
     /// @dev Lender's minLendAmount/maxLendAmount catches a residual that has shrunk or grown beyond expectation.
     function testRefi_MinMaxLendAmountCatchAmortizedResidualDrift() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         // Snapshot the residual the lender would compute.
         uint256 expectedResidual = uint256(BORROW_AMOUNT) + uint256(commitInt);
@@ -458,8 +460,8 @@ contract AmortizationTest is OpenLendingBaseTest {
 
         // Lender expects newBorrowAmount >= expectedResidual; partial shrunk it.
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "lend amount out of bounds"));
-        lending.lend(lendingId, bytes32(0), uint128(expectedResidual), type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.LendAmountOutOfBounds.selector);
+        lending.lend(lendingId, bytes32(0), uint128(expectedResidual), type(uint128).max, 0, 0, 0, lender2);
     }
 
     // -------------------------------------------------------------------------
@@ -478,7 +480,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         deal(address(supplyToken), borrower, huge);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "residual overflow"));
+        vm.expectRevert(LendErrors.ResidualOverflow.selector);
         lending.requestBorrow(
             uint48(365 days),
             address(supplyToken),
@@ -489,6 +491,7 @@ contract AmortizationTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             ir
         );
@@ -517,8 +520,8 @@ contract AmortizationTest is OpenLendingBaseTest {
         );
 
         vm.prank(lender2);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "residual overflow"));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        vm.expectRevert(LendErrors.ResidualOverflow.selector);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     /// @dev Boundary: just below the overflow threshold succeeds.
@@ -543,6 +546,7 @@ contract AmortizationTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             ir
         );
@@ -557,7 +561,7 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      and lastTouch — so a stale hash stays valid after partial repayments that change those fields.
     function testHash_StaleHashRemainsValidAfterAmortMutations() public {
         uint256 lendingId = _setupActiveLoan(0);
-        bytes32 staleHash = lending.getParamHash(lendingId);
+        bytes32 staleHash = lendView.getParamHash(lendingId);
 
         // Mutate the volatile fields with a partial repay.
         vm.prank(borrower);
@@ -570,12 +574,12 @@ contract AmortizationTest is OpenLendingBaseTest {
 
     function testHash_RoundTripWithInterestRemainderRepayTopUpAndLend() public {
         uint256 repayId = _setupLoanWithInterestRemainder();
-        bytes32 repayHash = lending.getParamHash(repayId);
+        bytes32 repayHash = lendView.getParamHash(repayId);
         vm.prank(borrower);
         lending.repayDebt(repayId, 1, repayHash, 0, type(uint128).max);
 
         uint256 topUpId = _setupLoanWithInterestRemainder();
-        bytes32 topUpHash = lending.getParamHash(topUpId);
+        bytes32 topUpHash = lendView.getParamHash(topUpId);
         vm.prank(borrower);
         lending.topUpCollateral(topUpId, 1, topUpHash, 0, type(uint128).max);
 
@@ -588,12 +592,12 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(lendId, 1, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory lendLoan = lending.getLending(lendId);
+        openLend.LendingArrangement memory lendLoan = lendView.getLending(lendId);
         assertGt(lendLoan.interestRemainder, 0, "lend path remainder seeded");
 
-        bytes32 lendHash = lending.getParamHash(lendId);
+        bytes32 lendHash = lendView.getParamHash(lendId);
         vm.prank(lender2);
-        lending.lend(lendId, lendHash, 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendId, lendHash, 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     /// @dev expectedMaxPrincipal rejects when principal exceeds the cap.
@@ -601,7 +605,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(0);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, uint128(BORROW_AMOUNT - 1));
     }
 
@@ -609,17 +613,17 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      a cap at the new principal succeeds, a cap below reverts.
     function testHash_ExpectedMaxPrincipalPinsAmortizedValue() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         vm.prank(borrower);
         lending.repayDebt(lendingId, commitInt + 5 ether, bytes32(0), 0, type(uint128).max);
 
-        uint128 newPrincipal = lending.getLending(lendingId).principal;
+        uint128 newPrincipal = lendView.getLending(lendingId).principal;
         uint128 lowCap = newPrincipal / 2;
 
         // Cap below current principal reverts.
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "principal too high"));
+        vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
         lending.repayDebt(lendingId, 1 wei, bytes32(0), 0, lowCap);
 
         // Cap at current principal passes (no revert).
@@ -644,10 +648,10 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint48 settleableAt = _settleableAtFor(reportId);
         vm.warp(uint256(settleableAt) + 5);
 
-        bytes32 projected = lending.getParamHash(lendingId);
+        bytes32 projected = lendView.getParamHash(lendingId);
         vm.prank(lender2);
-        lending.lend(lendingId, projected, 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getLending(lendingId).lender, lender2, "projected hash accepted post-auto-settle");
+        lending.lend(lendingId, projected, 0, type(uint128).max, 0, 0, 0, lender2);
+        assertEq(lendView.getLending(lendingId).lender, lender2, "projected hash accepted post-auto-settle");
     }
 
     // -------------------------------------------------------------------------
@@ -659,11 +663,11 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(0);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(randomCaller);
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(6 ether), type(uint128).max, paramHash, 0, 1e15, randomCaller, 0, _emptyTiming());
 
-        assertEq(lending.getLending(lendingId).liquidator, randomCaller, "non-lender liquidated");
+        assertEq(lendView.getLending(lendingId).liquidator, randomCaller, "non-lender liquidated");
     }
 
     /// @dev liquidatorFraction = 0: lender keeps all of the equity buffer. Snapshot is taken BEFORE liquidate
@@ -683,7 +687,7 @@ contract AmortizationTest is OpenLendingBaseTest {
 
         uint256 lenderGain = supplyToken.balanceOf(lender) - lenderBefore;
         // Liquidator's net change in supply over the whole flow: paid (initialLiquidity + stake), got back
-        // initialLiquidity from oracle.settle, got tokenStake (and any buffer share) from onSettle. Net = bufferShare.
+        // initialLiquidity from oracle.settle, got tokenStake (and any buffer share) from finalize. Net = bufferShare.
         int256 liquidatorNet = int256(_supplyExposure(liquidator)) - int256(liquidatorBefore);
         // fraction=0: liquidator's buffer share is 0, so the round-trip is exactly net 0.
         assertEq(liquidatorNet, 0, "fraction=0: liquidator's net supply change is zero");
@@ -756,10 +760,10 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(0);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "msg.value"));
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 2e15, _emptyTiming());
+        vm.expectRevert(LendErrors.MsgValue.selector);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 2e15, liquidator, 0, _emptyTiming());
     }
 
     /// @dev Custom settlerReward is forwarded to the settler when an external party calls _settleOracle().
@@ -784,30 +788,49 @@ contract AmortizationTest is OpenLendingBaseTest {
         );
     }
 
-    /// @dev settleLiquidation() forwards the same settler reward to its caller via _settleHelper.
-    function testSettlerReward_settleLiquidationForwardsReward() public {
-        uint256 lendingId = _setupActiveLoan(0);
+    /// @dev finalize() forwards the configured finalizer reward to its caller.
+    function testFinalizerReward_finalizeForwardsReward() public {
+        uint64 customReward = 3e15;
+        openLend.OracleParams memory params = _standardOracleParams();
+        params.finalizerReward = customReward;
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(supplyToken),
+            address(borrowToken),
+            8e6,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            0,
+            borrower,
+            params,
+            _standardInterestRateParams()
+        );
+        _lendWithFraction(lender, lendingId, 0);
+
         vm.warp(block.timestamp + 10 days);
 
-        uint96 customReward = 3e15;
-        uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(6 ether), customReward);
+        uint256 reportId = _liquidateAt(liquidator, lendingId, _priceRatioFor(6 ether), SETTLER_REWARD);
 
         uint48 settleableAt = _settleableAtFor(reportId);
         vm.warp(uint256(settleableAt) + 1);
 
         uint256 callerBefore = randomCaller.balance;
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
-        assertEq(randomCaller.balance - callerBefore, customReward, "settleLiquidation forwarded the custom reward");
+        assertEq(randomCaller.balance - callerBefore, customReward, "finalize forwarded the finalizer reward");
     }
 
     // -------------------------------------------------------------------------
     // 7. Regression
     // -------------------------------------------------------------------------
 
-    /// @dev Recover() touches amort and follows the normal failed-liq near-grace stake split.
-    function testRegression_RecoverStakeSplitAndAmortTouched() public {
+    /// @dev finalize() touches amort and follows the normal failed-liq near-grace stake split.
+    function testRegression_FinalizeStakeSplitAndAmortTouched() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM - 900);
 
@@ -817,24 +840,17 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint48 settleableAt = _settleableAtFor(reportId);
         vm.warp(uint256(settleableAt) + 5);
 
-        // Force the callback to revert so recover() is the resolution path.
-        vm.mockCallRevert(address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked");
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
-
         uint256 liqBefore = supplyToken.balanceOf(liquidator);
         uint256 lenderBefore = supplyToken.balanceOf(lender);
         uint256 tokenStake = uint256(SUPPLY_AMOUNT) * STAKE / 10000;
-        uint48 lastTouchBefore = lending.getLending(lendingId).lastTouch;
+        uint48 lastTouchBefore = lendView.getLending(lendingId).lastTouch;
 
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        assertEq(supplyToken.balanceOf(liquidator) - liqBefore, 0, "recover does not return failed-liq stake");
+        assertEq(supplyToken.balanceOf(liquidator) - liqBefore, 0, "finalize does not return failed-liq stake");
         assertEq(supplyToken.balanceOf(lender), lenderBefore + tokenStake / 2, "lender receives half stake");
-        // Amort lastTouch advanced past the pre-recover value.
-        assertGt(lending.getLending(lendingId).lastTouch, lastTouchBefore, "recover touched amort state");
+        assertGt(lendView.getLending(lendingId).lastTouch, lastTouchBefore, "finalize touched amort state");
     }
 
     /// @dev Fuzz: random partial repayments keep `interestPaid <= max(commitmentInterest, interestAccrued)`
@@ -862,7 +878,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         lending.repayDebt(lendingId, a3, bytes32(0), 0, type(uint128).max);
 
         // Amort invariant: interestPaid <= max(commitmentInterest, interestAccrued).
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
             ? uint256(loan.interestAccrued)
             : uint256(loan.commitmentInterest);
@@ -900,7 +916,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         _settleOracle(reportId);
 
         // Read post-settle amort state to reproduce the contract's exact `_residualDebt` value (commitment-inclusive).
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
             ? uint256(loan.interestAccrued)
             : uint256(loan.commitmentInterest);
@@ -928,12 +944,12 @@ contract AmortizationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(0);
 
         // Borrower partial that hits commitment floor then reduces principal by 5 ether.
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
         vm.prank(borrower);
         lending.repayDebt(lendingId, commitInt + 5 ether, bytes32(0), 0, type(uint128).max);
 
         // Snapshot pre-liquidate state for exact payout math.
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // Sanity: amort fields reflect the partial.
         assertEq(loan.principal, BORROW_AMOUNT - 5 ether, "principal reduced by amort excess");
         assertEq(loan.interestPaid, commitInt, "interestPaid capped at commitInt");
@@ -951,7 +967,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "underwater succeeded post-amort");
 
         // Reproduce contract math from post-settle amort state (commitment-inclusive residual).
@@ -974,17 +990,17 @@ contract AmortizationTest is OpenLendingBaseTest {
     ///      below the floor only updates `interestPaid`, large partial above the floor also reduces principal.
     function testRepayAnyDebt_ThirdPartyAmortBehavior() public {
         uint256 lendingId = _setupActiveLoan(0);
-        uint128 commitInt = lending.getLending(lendingId).commitmentInterest;
+        uint128 commitInt = lendView.getLending(lendingId).commitmentInterest;
 
         // Below interest claim → only interestPaid changes.
         uint128 small = commitInt / 2;
         assertGt(small, 0, "commitInt > 1 wei prerequisite");
 
-        openLend.LendingArrangement memory before_ = lending.getLending(lendingId);
+        openLend.LendingArrangement memory before_ = lendView.getLending(lendingId);
         vm.prank(payer);
         lending.repayAnyDebt(lendingId, small, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory afterSmall = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterSmall = lendView.getLending(lendingId);
         assertEq(afterSmall.principal, before_.principal, "principal unchanged below floor");
         assertEq(afterSmall.interestPaid, small, "interestPaid grew by exactly the partial");
 
@@ -994,7 +1010,7 @@ contract AmortizationTest is OpenLendingBaseTest {
         vm.prank(payer);
         lending.repayAnyDebt(lendingId, big, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory afterBig = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterBig = lendView.getLending(lendingId);
         assertEq(afterBig.interestPaid, commitInt, "interestPaid capped at commitInt");
         assertEq(afterBig.principal, before_.principal - 3 ether, "excess reduced principal by exactly 3 ether");
     }

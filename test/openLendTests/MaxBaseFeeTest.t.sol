@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 
 contract MaxBaseFeeTest is OpenLendingBaseTest {
@@ -59,7 +60,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "underwater liquidation succeeds below cap");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
     }
@@ -77,7 +78,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "high basefee converts liquidation to unsuccessful");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT + 1 ether, "liquidator stake added to collateral");
@@ -102,7 +103,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertTrue(lending.getLending(lendingId).finished, "scaled cap permits settlement");
+        assertTrue(lendView.getLending(lendingId).finished, "scaled cap permits settlement");
     }
 
     function testZeroMaxBaseFeeIsUncapped() public {
@@ -116,7 +117,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertTrue(lending.getLending(lendingId).finished, "zero maxBaseFee leaves liquidation uncapped");
+        assertTrue(lendView.getLending(lendingId).finished, "zero maxBaseFee leaves liquidation uncapped");
     }
 
     function testRefiPreservesThenUpdatesMaxBaseFee() public {
@@ -136,11 +137,11 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             type(uint128).max
         );
 
-        assertEq(lending.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "zero sentinel preserves maxBaseFee");
+        assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "zero sentinel preserves maxBaseFee");
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "accepting sentinel refi preserves");
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "accepting sentinel refi preserves");
 
         openLend.OracleParams memory updated = _oracleParamsWithMaxBaseFee(uint48(123 gwei));
         vm.prank(borrower);
@@ -157,50 +158,65 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             type(uint128).max
         );
 
-        assertEq(lending.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "staged params not applied before lend");
+        assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "staged params not applied before lend");
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getOracleParams(lendingId).maxBaseFee, 123 gwei, "refi acceptance updates maxBaseFee");
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        assertEq(lendView.getOracleParams(lendingId).maxBaseFee, 123 gwei, "refi acceptance updates maxBaseFee");
     }
 
     function testParamHashChangesWhenMaxBaseFeeChanges() public {
         uint256 lendingIdA = _requestLoanWithMaxBaseFee(uint48(BASE_CAP));
         uint256 lendingIdB = _requestLoanWithMaxBaseFee(uint48(BASE_CAP + 1));
 
-        bytes32 hashA = lending.getParamHash(lendingIdA);
-        bytes32 hashB = lending.getParamHash(lendingIdB);
+        bytes32 hashA = lendView.getParamHash(lendingIdA);
+        bytes32 hashB = lendView.getParamHash(lendingIdB);
 
         assertTrue(hashA != hashB, "maxBaseFee is part of param hash");
     }
 
-    function testLiquidate_RevertsBelowMinSettlerReward() public {
-        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD + 1)));
-        bytes32 paramHash = lending.getParamHash(lendingId);
+    function testLiquidate_RevertsWhenFinalizerRewardNotFunded() public {
+        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD + 1)));
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "settlerReward too low"));
+        vm.expectRevert(LendErrors.MsgValue.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
             _priceRatioFor(6 ether),
             type(uint128).max,
             paramHash,
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, uint64(SETTLER_REWARD + 1), _emptyTiming()
         );
     }
 
-    function testLiquidate_AcceptsMinSettlerRewardAndStoresIt() public {
-        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD)));
+    function testLiquidate_RevertsWhenExpectedFinalizerRewardIsStale() public {
+        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD + 1)));
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+
+        vm.prank(liquidator);
+        vm.expectRevert(LendErrors.FinalizerRewardMismatch.selector);
+        lending.liquidate{value: SETTLER_REWARD * 2 + 1}(
+            lendingId,
+            _priceRatioFor(6 ether),
+            type(uint128).max,
+            paramHash,
+            0,
+            SETTLER_REWARD, liquidator, uint64(SETTLER_REWARD), _emptyTiming()
+        );
+    }
+
+    function testLiquidate_AcceptsFinalizerRewardAndStoresSettlerReward() public {
+        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD)));
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
         assertEq(o.settlerReward, SETTLER_REWARD, "settlerReward stored");
     }
 
-    function testRefiPreservesThenUpdatesMinSettlerReward() public {
-        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD)));
+    function testRefiPreservesThenUpdatesFinalizerReward() public {
+        uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD)));
 
         vm.prank(borrower);
         lending.refinance(
@@ -216,13 +232,13 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             type(uint128).max
         );
 
-        assertEq(lending.getOracleParams(lendingId).minSettlerReward, SETTLER_REWARD, "zero sentinel preserves min");
+        assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "zero sentinel preserves min");
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getOracleParams(lendingId).minSettlerReward, SETTLER_REWARD, "accepting sentinel preserves min");
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "accepting sentinel preserves min");
 
-        openLend.OracleParams memory updated = _oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD * 2));
+        openLend.OracleParams memory updated = _oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD * 2));
         vm.prank(borrower);
         lending.refinance(
             lendingId,
@@ -237,33 +253,33 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             type(uint128).max
         );
 
-        assertEq(lending.getOracleParams(lendingId).minSettlerReward, SETTLER_REWARD, "staged min not applied before lend");
+        assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "staged min not applied before lend");
 
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
-        assertEq(lending.getOracleParams(lendingId).minSettlerReward, SETTLER_REWARD * 2, "refi acceptance updates min");
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD * 2, "refi acceptance updates min");
     }
 
-    function testParamHashChangesWhenMinSettlerRewardChanges() public {
-        uint256 lendingIdA = _requestLoanWithOracleParams(_oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD)));
-        uint256 lendingIdB = _requestLoanWithOracleParams(_oracleParamsWithMinSettlerReward(uint64(SETTLER_REWARD + 1)));
+    function testParamHashChangesWhenFinalizerRewardChanges() public {
+        uint256 lendingIdA = _requestLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD)));
+        uint256 lendingIdB = _requestLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD + 1)));
 
-        bytes32 hashA = lending.getParamHash(lendingIdA);
-        bytes32 hashB = lending.getParamHash(lendingIdB);
+        bytes32 hashA = lendView.getParamHash(lendingIdA);
+        bytes32 hashB = lendView.getParamHash(lendingIdB);
 
-        assertTrue(hashA != hashB, "minSettlerReward is part of param hash");
+        assertTrue(hashA != hashB, "finalizerReward is part of param hash");
     }
 
     function _openLoanWithMaxBaseFee(uint48 maxBaseFee) internal returns (uint256 lendingId) {
         lendingId = _requestLoanWithMaxBaseFee(maxBaseFee);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
     }
 
     function _openLoanWithOracleParams(openLend.OracleParams memory oracleParams) internal returns (uint256 lendingId) {
         lendingId = _requestLoanWithOracleParams(oracleParams);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
     }
 
     function _requestLoanWithMaxBaseFee(uint48 maxBaseFee) internal returns (uint256 lendingId) {
@@ -282,22 +298,23 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             STAKE,
             0,
             0,
+            borrower,
             oracleParams,
             _standardInterestRateParams()
         );
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
-        lending.liquidate{value: SETTLER_REWARD}(
+        lending.liquidate{value: SETTLER_REWARD + finalizerReward}(
             lendingId,
             _priceRatioFor(oracleAmount2Target),
             type(uint128).max,
             paramHash,
             0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, finalizerReward, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }
@@ -311,12 +328,12 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
         p.maxBaseFee = maxBaseFee;
     }
 
-    function _oracleParamsWithMinSettlerReward(uint64 minSettlerReward)
+    function _oracleParamsWithFinalizerReward(uint64 finalizerReward)
         internal
         pure
         returns (openLend.OracleParams memory p)
     {
         p = _standardOracleParams();
-        p.minSettlerReward = minSettlerReward;
+        p.finalizerReward = finalizerReward;
     }
 }

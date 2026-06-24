@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "../../src/openLend.sol";
+import "../../src/openLendParamHashHelper.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockERC20.sol";
@@ -11,6 +12,7 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 abstract contract OpenLendingBaseTest is Test {
     openLend internal lending;
+    openLendParamHashHelper internal lendView;
     OpenOracle internal oracle;
     MockERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -27,6 +29,7 @@ abstract contract OpenLendingBaseTest is Test {
         oracle = new OpenOracle();
         weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
+        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
         supplyToken = new MockERC20(supplyName, supplySymbol);
         borrowToken = new MockERC20(borrowName, borrowSymbol);
     }
@@ -89,7 +92,7 @@ abstract contract OpenLendingBaseTest is Test {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -135,6 +138,7 @@ abstract contract OpenLendingBaseTest is Test {
             100,                 // 1% liquidator stake
             commitmentFraction,
             gasCompensation,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -150,7 +154,7 @@ abstract contract OpenLendingBaseTest is Test {
             initialLiquidity: 0,
             multiplier: 0,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -170,7 +174,8 @@ abstract contract OpenLendingBaseTest is Test {
             type(uint128).max,   // maxLendAmount (refi-only, ignored on origination)
             0,                   // expectedMinSupply
             0,                   // minRate floor
-            liquidatorFraction
+            liquidatorFraction,
+            lender
         );
     }
 
@@ -219,6 +224,14 @@ abstract contract OpenLendingBaseTest is Test {
     }
 
     function _settleOracle(uint256 reportId) internal {
+        uint256 lendingId = lending.reportIdToLending(reportId);
+        if (lendingId != 0 && lendView.getLending(lendingId).inLiquidation) {
+            lending.finalize(lendingId);
+        }
+        _settleOracleWithoutFinalize(reportId);
+    }
+
+    function _settleOracleWithoutFinalize(uint256 reportId) internal {
         IOpenOracle2(address(oracle)).settle(
             reportId,
             IOpenOracle2(address(oracle)).storedGame(reportId),
@@ -247,8 +260,7 @@ abstract contract OpenLendingBaseTest is Test {
             false,
             false,
             game,
-            helper,
-            _emptyTiming()
+            helper, _emptyTiming()
         );
     }
 

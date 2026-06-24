@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
+import {Errors} from "../../src/libraries/Errors.sol";
 import "./OpenLendingBase.t.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 // ---------------------------------------------------------------------------
-// Helper: a contract that can call settleLiquidation but rejects incoming ETH
+// Helper: a contract that can call finalize but rejects incoming ETH
 // (no receive / fallback). Used to exercise _payEth's WETH wrap fallback.
 // ---------------------------------------------------------------------------
 contract EthRejectorCaller {
@@ -16,7 +19,7 @@ contract EthRejectorCaller {
     }
 
     function callSettle(uint256 lendingId) external {
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
     }
     // No receive() / fallback() — direct ETH send fails, _payEth falls back to WETH.
 }
@@ -36,7 +39,7 @@ contract ReentrantEthReceiver {
     }
 
     function callSettle(uint256 lendingId) external {
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
     }
 
     receive() external payable {
@@ -104,6 +107,8 @@ contract ReentrantSupplyToken is ERC20 {
 }
 
 contract SettleAndBusyLockTest is OpenLendingBaseTest {
+    event BountyPaid(uint256 indexed lendingId, address indexed finalizer, uint256 bounty);
+
     address internal borrower = address(0x1);
     address internal lender = address(0x2);
     address internal lender2 = address(0x3);
@@ -117,6 +122,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     uint48 constant LOAN_TERM = 30 days;
     uint16 constant STAKE = 100;
     uint96 constant SETTLER_REWARD = 1e15;
+    uint64 constant FINALIZER_REWARD = 1e15;
 
     function setUp() public {
         _deployCore("Supply Token", "SUP", "Borrow Token", "BOR");
@@ -143,30 +149,83 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     function _setupLoan() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+    }
+
+    function _setupLoanWithFinalizerReward(uint64 finalizerReward) internal returns (uint256 lendingId) {
+        openLend.OracleParams memory params = _standardOracleParams();
+        params.finalizerReward = finalizerReward;
+
+        vm.prank(borrower);
+        lendingId = lending.requestBorrow(
+            LOAN_TERM,
+            address(supplyToken),
+            address(borrowToken),
+            8e6,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            0,
+            borrower,
+            params,
+            _standardInterestRateParams()
+        );
+
+        vm.prank(lender);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
-        lending.liquidate{value: SETTLER_REWARD}(
+        lending.liquidate{value: SETTLER_REWARD + finalizerReward}(
             lendingId,
             oracleAmount2Target * 1e18 / 10 ether,
             type(uint128).max,
             paramHash,
              0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, finalizerReward, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }
 
+    function _setupSettleableFailedLiquidationWithFinalizerReward()
+        internal
+        returns (uint256 lendingId, uint256 reportId)
+    {
+        lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        vm.warp(block.timestamp + 10 days);
+        reportId = _liquidate(lendingId, 6 ether);
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+
+        IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
+    }
+
+    function _openRefiDuringLiquidation(uint256 lendingId) internal {
+        vm.prank(borrower);
+        lending.refinance(
+            lendingId,
+            0,
+            0,
+            0,
+            0,
+            _standardInterestRateParams(),
+            _zeroOracleParams(),
+            bytes32(0),
+            0,
+            type(uint128).max
+        );
+    }
+
     // -------------------------------------------------------------------------
-    // 1. settleLiquidation() happy path
+    // 1. finalize() happy path
     // -------------------------------------------------------------------------
 
-    function testSettleLiquidation_HappyPath_ClearsStateAndPaysCaller() public {
-        uint256 lendingId = _setupLoan();
+    function testFinalize_HappyPath_ClearsStateAndPaysCaller() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
@@ -175,47 +234,240 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(reportTs) + 301);
 
         uint256 callerEthBefore = randomCaller.balance;
+        vm.expectEmit(true, true, false, true, address(lending));
+        emit BountyPaid(lendingId, randomCaller, FINALIZER_REWARD);
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
         assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
-        assertEq(randomCaller.balance - callerEthBefore, SETTLER_REWARD, "caller receives settler reward");
+        assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "caller receives finalizer reward");
     }
 
-    function testSettleLiquidation_NoOpWhenNotInLiquidation() public {
+    function testAutoSettle_PaysFinalizerRewardToEntryCaller() public {
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationWithFinalizerReward();
+
+        uint256 borrowerEthBefore = borrower.balance;
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+
+        assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "auto-finalize pays entry caller");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
+    }
+
+    function testAutoSettle_RepayAnyDebtPaysFinalizerRewardToEntryCaller() public {
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationWithFinalizerReward();
+
+        uint256 callerEthBefore = lender2.balance;
+        vm.prank(lender2);
+        lending.repayAnyDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+
+        assertEq(lender2.balance - callerEthBefore, FINALIZER_REWARD, "repayAnyDebt caller gets bounty");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
+    }
+
+    function testAutoSettle_TopUpCollateralPaysFinalizerRewardToEntryCaller() public {
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationWithFinalizerReward();
+
+        uint256 borrowerEthBefore = borrower.balance;
+        vm.prank(borrower);
+        lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+
+        assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "topUpCollateral caller gets bounty");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
+    }
+
+    function testAutoSettle_TopUpCollateralAnyonePaysFinalizerRewardToEntryCaller() public {
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationWithFinalizerReward();
+
+        uint256 callerEthBefore = lender2.balance;
+        vm.prank(lender2);
+        lending.topUpCollateralAnyone(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+
+        assertEq(lender2.balance - callerEthBefore, FINALIZER_REWARD, "topUpCollateralAnyone caller gets bounty");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
+    }
+
+    function testAutoSettle_RefinancePaysFinalizerRewardToEntryCaller() public {
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationWithFinalizerReward();
+
+        uint256 borrowerEthBefore = borrower.balance;
+        vm.prank(borrower);
+        lending.refinance(
+            lendingId,
+            0,
+            0,
+            0,
+            0,
+            _standardInterestRateParams(),
+            _zeroOracleParams(),
+            bytes32(0),
+            0,
+            type(uint128).max
+        );
+
+        assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "refinance caller gets bounty");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
+        assertTrue(lendView.getLending(lendingId).curveOpen, "refinance body still runs");
+    }
+
+    function testAutoSettle_CancelRefinancePaysFinalizerRewardToEntryCaller() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportId = _liquidate(lendingId, 6 ether);
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+        _openRefiDuringLiquidation(lendingId);
+
+        IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
+
+        uint256 borrowerEthBefore = borrower.balance;
+        vm.prank(borrower);
+        lending.cancelRefinance(lendingId);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "cancelRefinance caller gets bounty");
+        assertFalse(loan.inLiquidation, "auto-finalize cleared liquidation");
+        assertFalse(loan.curveOpen, "cancel body still runs");
+    }
+
+    function testAutoSettle_LendPaysFinalizerRewardToEntryCaller() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportId = _liquidate(lendingId, 6 ether);
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+        _openRefiDuringLiquidation(lendingId);
+
+        IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
+
+        uint256 lenderEthBefore = lender2.balance;
+        vm.prank(lender2);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertEq(lender2.balance - lenderEthBefore, FINALIZER_REWARD, "lend caller gets bounty");
+        assertFalse(loan.inLiquidation, "auto-finalize cleared liquidation");
+        assertEq(loan.lender, lender2, "lend body still runs");
+    }
+
+    function testFinalizerReward_EscrowsAndPaysAcrossRepeatedLiquidations() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        uint256 baselineEth = address(lending).balance;
+
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportId1 = _liquidate(lendingId, 6 ether);
+        assertEq(address(lending).balance, baselineEth + FINALIZER_REWARD, "first bounty escrowed");
+
+        _disputeToNonLiquidatingPrice(reportId1, address(supplyToken), disputer);
+        IOpenOracle2.OracleGame memory o1 = IOpenOracle2(address(oracle)).storedGame(reportId1);
+        vm.warp(uint256(o1.reportTimestamp) + o1.settlementTime + 1);
+
+        uint256 caller1Before = randomCaller.balance;
+        vm.prank(randomCaller);
+        lending.finalize(lendingId);
+
+        assertEq(randomCaller.balance - caller1Before, FINALIZER_REWARD, "first finalizer paid");
+        assertEq(address(lending).balance, baselineEth, "first bounty fully paid out");
+        assertFalse(lendView.getLending(lendingId).finished, "first failed liquidation keeps loan active");
+
+        uint256 reportId2 = _liquidate(lendingId, 6 ether);
+        assertEq(address(lending).balance, baselineEth + FINALIZER_REWARD, "second bounty escrowed");
+
+        IOpenOracle2.OracleGame memory o2 = IOpenOracle2(address(oracle)).storedGame(reportId2);
+        vm.warp(uint256(o2.reportTimestamp) + o2.settlementTime + 1);
+
+        uint256 caller2Before = lender2.balance;
+        vm.prank(lender2);
+        lending.finalize(lendingId);
+
+        assertEq(lender2.balance - caller2Before, FINALIZER_REWARD, "second finalizer paid");
+        assertEq(address(lending).balance, baselineEth, "second bounty fully paid out");
+        assertTrue(lendView.getLending(lendingId).finished, "second underwater liquidation finishes loan");
+    }
+
+    function testFinalize_RevertsWhenNotInLiquidation() public {
         uint256 lendingId = _setupLoan();
-        // Loan never went to liquidation.
         uint256 callerEthBefore = randomCaller.balance;
 
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId); // no revert
+        vm.expectRevert(LendErrors.NotInLiquidation.selector);
+        lending.finalize(lendingId);
 
-        assertEq(randomCaller.balance, callerEthBefore, "no payout on no-op");
+        assertEq(randomCaller.balance, callerEthBefore, "no payout on revert");
     }
 
-    function testSettleLiquidation_NoOpWhenNotYetSettleable() public {
+    function testFinalize_RevertsWhenNotYetSettleable() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
         _liquidate(lendingId, 6 ether);
-        // Don't warp past settle window
         uint256 callerEthBefore = randomCaller.balance;
 
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId); // early return inside _settleHelper
+        vm.expectRevert(LendErrors.ReportStillDisputable.selector);
+        lending.finalize(lendingId);
 
-        assertEq(randomCaller.balance, callerEthBefore, "no payout when not settleable");
-        assertTrue(lending.getLending(lendingId).inLiquidation, "still in liquidation");
+        assertEq(randomCaller.balance, callerEthBefore, "no payout on revert");
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "still in liquidation");
+    }
+
+    function testDisputeAndFinalizeBoundary_NoOverlapNoGap() public {
+        uint256 lendingIdBefore = _setupLoan();
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportIdBefore = _liquidate(lendingIdBefore, 6 ether);
+
+        IOpenOracle2.OracleGame memory beforeGame = IOpenOracle2(address(oracle)).storedGame(reportIdBefore);
+        vm.warp(uint256(beforeGame.reportTimestamp) + beforeGame.settlementTime - 1);
+
+        vm.prank(randomCaller);
+        vm.expectRevert(LendErrors.ReportStillDisputable.selector);
+        lending.finalize(lendingIdBefore);
+
+        _disputeAndSwap(
+            reportIdBefore,
+            address(supplyToken),
+            uint128(uint256(beforeGame.currentAmount1) * beforeGame.multiplier / 100),
+            uint128(uint256(beforeGame.currentAmount2) * 2),
+            disputer,
+            0,
+            bytes32(0)
+        );
+        assertEq(IOpenOracle2(address(oracle)).storedGame(reportIdBefore).currentReporter, disputer, "T-1 dispute succeeds");
+
+        uint256 lendingIdAt = _setupLoan();
+        uint256 reportIdAt = _liquidate(lendingIdAt, 6 ether);
+        IOpenOracle2.OracleGame memory atGame = IOpenOracle2(address(oracle)).storedGame(reportIdAt);
+        IOpenOracle2.PreimageHelper memory atHelper = _helperFor(reportIdAt);
+        vm.warp(uint256(atGame.reportTimestamp) + atGame.settlementTime);
+
+        vm.prank(disputer);
+        vm.expectRevert(Errors.DisputeTooLate.selector);
+        IOpenOracle2(address(oracle)).dispute(
+            reportIdAt,
+            address(supplyToken),
+            uint128(uint256(atGame.currentAmount1) * atGame.multiplier / 100),
+            uint128(uint256(atGame.currentAmount2) * 2),
+            disputer,
+            false,
+            false,
+            atGame,
+            atHelper,
+            _emptyTiming()
+        );
+
+        vm.prank(randomCaller);
+        lending.finalize(lendingIdAt);
+        assertFalse(lendView.getLending(lendingIdAt).inLiquidation, "T finalize succeeds");
     }
 
     // -------------------------------------------------------------------------
     // 2. receive() / reward forwarding via WETH fallback
     // -------------------------------------------------------------------------
 
-    function testSettleLiquidation_RewardForwardsAsWETHToEthRejecter() public {
-        uint256 lendingId = _setupLoan();
+    function testFinalize_RewardForwardsAsWETHToEthRejecter() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
@@ -225,16 +477,12 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         EthRejectorCaller rejecter = new EthRejectorCaller(address(lending));
         rejecter.callSettle(lendingId);
 
-        assertEq(
-            IOpenOracle2(address(oracle)).tokenHolder(address(rejecter), address(0)),
-            SETTLER_REWARD + 1,
-            "rejecter receives settler reward as oracle-internal ETH"
-        );
+        assertEq(weth.balanceOf(address(rejecter)), FINALIZER_REWARD, "rejecter receives finalizer reward as WETH");
         assertEq(address(rejecter).balance, 0, "no plain ETH at rejecter");
     }
 
-    function testSettleLiquidation_EthRewardHookFallsBackToWethAndOuterCompletes() public {
-        uint256 lendingId = _setupLoan();
+    function testFinalize_EthRewardHookFallsBackToWethAndOuterCompletes() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
@@ -242,23 +490,39 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(reportTs) + 301);
 
         ReentrantEthReceiver receiver = new ReentrantEthReceiver(address(lending));
-        receiver.setPayload(abi.encodeWithSelector(lending.settleLiquidation.selector, lendingId));
+        receiver.setPayload(abi.encodeWithSelector(lending.finalize.selector, lendingId));
         receiver.callSettle(lendingId);
 
-        assertEq(address(receiver).balance, SETTLER_REWARD, "receiver accepts direct ETH reward");
+        assertEq(address(receiver).balance, 0, "receiver ETH hook exceeds capped send");
+        assertEq(weth.balanceOf(address(receiver)), FINALIZER_REWARD, "receiver gets WETH fallback reward");
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(address(receiver), address(0)), 0, "no internal ETH credit needed");
-        assertFalse(lending.getLending(lendingId).inLiquidation, "outer settle completed");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "outer settle completed");
     }
 
-    /// @dev Pins the bug fix: even when staged gasCompensation > settlerReward, settler reward forwarding
-    ///      uses meta.settlerReward (fixed) rather than balance delta (which would underflow).
-    function testSettleLiquidation_GasCompMuchLargerThanSettlerReward_NoUnderflow() public {
-        // Borrower opens a loan with a large gasCompensation (way bigger than the 1e15 settler reward).
-        uint96 hugeGasComp = 1 ether; // 10000x the settler reward
-        uint256 lendingId =
-            _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, uint24(1e7), hugeGasComp);
+    /// @dev Pins the bug fix: even when staged gasCompensation > finalizerReward, bounty forwarding
+    ///      uses finalizerReward (fixed) rather than balance delta (which would underflow).
+    function testFinalize_GasCompMuchLargerThanFinalizerReward_NoUnderflow() public {
+        uint96 hugeGasComp = 1 ether;
+        openLend.OracleParams memory params = _standardOracleParams();
+        params.finalizerReward = FINALIZER_REWARD;
+
+        vm.prank(borrower);
+        uint256 lendingId = lending.requestBorrow{value: hugeGasComp}(
+            LOAN_TERM,
+            address(supplyToken),
+            address(borrowToken),
+            8e6,
+            SUPPLY_AMOUNT,
+            BORROW_AMOUNT,
+            STAKE,
+            uint24(1e7),
+            hugeGasComp,
+            borrower,
+            params,
+            _standardInterestRateParams()
+        );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
 
         // Borrower opens a refi mid-loan with another big gasComp staged for the next lender
         vm.prank(borrower);
@@ -276,71 +540,122 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint256 callerEthBefore = randomCaller.balance;
 
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
-        // Caller gets exactly the settler reward (fixed amount from meta.settlerReward).
-        assertEq(randomCaller.balance - callerEthBefore, SETTLER_REWARD, "caller gets meta.settlerReward exactly");
-        // Borrower gets the staged gasComp refunded by onSettle's underwater branch.
+        assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "caller gets finalizerReward exactly");
         assertEq(borrower.balance - borrowerEthBefore, hugeGasComp, "borrower receives gasComp refund");
-        // Loan is finished underwater
-        assertTrue(lending.getLending(lendingId).finished, "loan finished");
+        assertTrue(lendView.getLending(lendingId).finished, "loan finished");
     }
 
-    /// @dev settleLiquidation should still pay the caller the settler reward and leave the loan in stuck-callback
-    ///      state when onSettle reverts mid-callback. Then recover() executes the settled oracle outcome.
-    function testSettleLiquidation_FailedCallback_PaysCallerAndLeavesStuckState() public {
-        uint256 lendingId = _setupLoan();
+    function testFinalize_CompletesBeforeOracleSettleAndOracleSettlePaysOracleRewardLater() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
 
-        // Force the onSettle callback to revert. oracle.settle still proceeds and pays the settler reward
-        // to msg.sender (= openLend) before the callback. _settleHelper's try/catch swallows the callback
-        // failure; settled stays true; reward forwards to the caller.
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-
         uint256 callerEthBefore = randomCaller.balance;
 
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
-        vm.clearMockedCalls();
-
-        // Caller received the settler reward via _payEth.
+        assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "caller receives finalizer reward");
         assertEq(
-            randomCaller.balance - callerEthBefore,
+            IOpenOracle2(address(oracle)).storedGame(reportId).settlerReward,
             SETTLER_REWARD,
-            "caller receives settler reward despite callback failure"
+            "oracle settler reward remains stored"
         );
 
-        // Loan is in stuck-callback state — oracle settled, but openLend's state is unchanged.
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
-        assertTrue(loan.inLiquidation, "still in liquidation (onSettle reverted)");
-        assertFalse(loan.finished, "not finished (onSettle didn't run)");
-        assertEq(lending.reportIdToLending(reportId), lendingId, "reportIdToLending preserved");
-        assertEq(lending.lendingToReportId(lendingId), reportId, "lendingToReportId preserved");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "finalize cleared inLiquidation");
+        assertTrue(loan.finished, "finalize finished underwater loan");
+        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
 
         (,,,, uint48 settlementTimestamp,,) = _reportStatus(reportId);
-        assertGt(settlementTimestamp, 0, "oracle marked the report settled");
+        assertEq(settlementTimestamp, 0, "oracle accounting not settled by finalize");
 
-        // recover() unsticks by executing the same underwater liquidation outcome.
-        uint256 recoverCallerEthBefore = randomCaller.balance;
+        uint256 oracleRewardBefore = IOpenOracle2(address(oracle)).tokenHolder(settler, address(0));
+        IOpenOracle2.OracleGame memory oracleGame = IOpenOracle2(address(oracle)).storedGame(reportId);
+        IOpenOracle2.PreimageHelper memory helper = _helperFor(reportId);
+        vm.prank(settler);
+        IOpenOracle2(address(oracle)).settle(
+            reportId,
+            oracleGame,
+            helper
+        );
+        uint256 oracleRewardAfter = IOpenOracle2(address(oracle)).tokenHolder(settler, address(0));
+        assertEq(
+            IOpenOracle2(address(oracle)).storedGame(reportId).settlerReward,
+            SETTLER_REWARD,
+            "oracle settle keeps stored reward field"
+        );
+
+        (,,,, uint48 settledAt,,) = _reportStatus(reportId);
+        assertGt(settledAt, 0, "oracle accounting settled later");
+        assertEq(
+            oracleRewardAfter - oracleRewardBefore,
+            SETTLER_REWARD + (oracleRewardBefore == 0 ? 1 : 0),
+            "oracle settle pays oracle settler reward"
+        );
+    }
+
+    function testFinalize_AfterOracleSettleFirstStillResolvesLoan() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportId = _liquidate(lendingId, 6 ether);
+
+        IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
+
+        vm.startPrank(settler);
+        _settleOracleWithoutFinalize(reportId);
+        vm.stopPrank();
+
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "oracle settle alone leaves loan in liquidation");
+        assertGt(IOpenOracle2(address(oracle)).storedGame(reportId).settlementTimestamp, 0, "oracle settled first");
+
+        uint256 callerEthBefore = randomCaller.balance;
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loanRecovered = lending.getLending(lendingId);
-        assertFalse(loanRecovered.inLiquidation, "recover cleared inLiquidation");
-        assertTrue(loanRecovered.finished, "recover finished underwater loan");
-        assertEq(loanRecovered.liquidator, liquidator, "successful liquidation keeps liquidator breadcrumb");
-        assertEq(lending.reportIdToLending(reportId), 0, "recover cleared reportIdToLending");
-        assertEq(lending.lendingToReportId(lendingId), 0, "recover cleared lendingToReportId");
-        // recover doesn't pay a settler reward — its own settler-reward forwarding only fires when settle
-        // happened mid-recover (it didn't here).
-        assertEq(randomCaller.balance, recoverCallerEthBefore, "recover doesn't double-pay settler reward");
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "finalize clears after prior oracle settle");
+        assertTrue(loan.finished, "underwater outcome still executes");
+        assertEq(randomCaller.balance - callerEthBefore, FINALIZER_REWARD, "finalizer reward paid after prior oracle settle");
+        assertEq(lending.reportIdToLending(reportId), 0, "report mapping cleared");
+        assertEq(lending.lendingToReportId(lendingId), 0, "loan mapping cleared");
+    }
+
+    function testGetParamHashAndAutoFinalize_AfterOracleSettleFirst() public {
+        uint256 lendingId = _setupLoanWithFinalizerReward(FINALIZER_REWARD);
+        vm.warp(block.timestamp + 10 days);
+        uint256 reportId = _liquidate(lendingId, 6 ether);
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+
+        IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
+
+        vm.startPrank(settler);
+        _settleOracleWithoutFinalize(reportId);
+        vm.stopPrank();
+
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "loan still in liquidation after oracle-only settle");
+        assertGt(IOpenOracle2(address(oracle)).storedGame(reportId).settlementTimestamp, 0, "oracle settled first");
+
+        bytes32 projectedHash = lendView.getParamHash(lendingId);
+        uint256 borrowerEthBefore = borrower.balance;
+        uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
+
+        vm.prank(borrower);
+        lending.repayDebt(lendingId, 5 ether, projectedHash, 0, type(uint128).max);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation, "auto-finalize clears after prior oracle settle");
+        assertFalse(loan.finished, "failed liquidation leaves loan active");
+        assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "auto-finalizer gets bounty");
+        assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, 5 ether, "repay body still runs");
     }
 
     // -------------------------------------------------------------------------
@@ -356,17 +671,16 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
 
-        // Borrower calls repayDebt. autoSettle modifier should:
-        //   1. Trigger oracle.settle.
-        //   2. onSettle's failed branch fires, clearing inLiquidation and adding stake to supplyAmount.
-        //   3. _repayDebt's body runs with normal post-settle state.
+        // Borrower calls repayDebt. auto-finalize should:
+        //   1. Finalize the failed liquidation, clearing inLiquidation and adding stake to supplyAmount.
+        //   2. Run _repayDebt's body with normal post-finalize state.
         uint128 partialRepay = 5 ether;
         uint256 lenderBefore = borrowToken.balanceOf(lender);
 
         vm.prank(borrower);
         lending.repayDebt(lendingId, partialRepay, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "inLiquidation cleared by auto-settle");
         assertFalse(loan.finished, "loan still live (failed liq)");
         // assertEq(loan.repaidDebt, partialRepay, "partial repay applied");  // [amort: removed/no-op]
@@ -389,7 +703,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "inLiquidation cleared by auto-settle");
         assertTrue(loan.curveOpen, "refi curve opened");
     }
@@ -407,7 +721,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(reportTs) + 301);
 
         // Snapshot state BEFORE the auto-settle attempt
-        bool inLiqBefore = lending.getLending(lendingId).inLiquidation;
+        bool inLiqBefore = lendView.getLending(lendingId).inLiquidation;
         uint256 reportBefore = lending.lendingToReportId(lendingId);
         (,,,, uint48 settleTsBefore,,) = _reportStatus(reportId);
         assertTrue(inLiqBefore, "in liquidation before");
@@ -417,11 +731,11 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         // Borrower calls repayDebt. autoSettle settles underwater, marks finished. _repayDebt then reverts.
         // Whole tx reverts → all state including the settle should unwind.
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "arrangement finished"));
+        vm.expectRevert(LendErrors.Finished.selector);
         lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
         // Verify EVM rollback unwound everything: state matches pre-call snapshot.
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.inLiquidation, "still in liquidation (rolled back)");
         assertFalse(loanAfter.finished, "loan not finished (rolled back)");
         assertEq(lending.lendingToReportId(lendingId), reportBefore, "mapping intact (rolled back)");
@@ -430,10 +744,10 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // 5. settleLiquidation() underwater persists (the standalone-path solves the rollback gap)
+    // 5. finalize() underwater persists (the standalone-path solves the rollback gap)
     // -------------------------------------------------------------------------
 
-    function testSettleLiquidation_UnderwaterPersists() public {
+    function testFinalize_UnderwaterPersists() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether); // underwater
@@ -442,9 +756,9 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(reportTs) + 301);
 
         vm.prank(randomCaller);
-        lending.settleLiquidation(lendingId);
+        lending.finalize(lendingId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished underwater");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
         assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
@@ -452,12 +766,12 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // 6. Naked onSettle reentrancy — malicious supplyToken hooks fire during onSettle
+    // 6. finalize reentrancy — malicious supplyToken hooks fire during liquidation transfers
     // -------------------------------------------------------------------------
 
-    /// @dev During onSettle's underwater branch, malicious supplyToken's transfer hook attempts to reenter.
-    ///      Since onSettle is naked, the loan's terminal state is what blocks repayDebt.
-    function testOnSettle_ReentryFromOnSettleBlocked_RepayDebt() public {
+    /// @dev During finalize's underwater branch, malicious supplyToken's transfer hook attempts to reenter.
+    ///      finalize is nonReentrant, so the nested call is rejected while the outer finalization completes.
+    function testFinalize_ReentryFromFinalizeBlocked_RepayDebt() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -475,14 +789,17 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         _settleOracle(reportId);
 
         assertTrue(evil.lastReentryReverted(), "reentry into repayDebt was rejected");
-        assertTrue(_revertHasMessage(evil.lastReentryReason(), "not borrower"), "reverted because reentrant caller is not borrower");
+        assertTrue(
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "reverted by reentrancy guard"
+        );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "outer settlement completed despite reentry attempt");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
     }
 
-    function testOnSettle_ReentryFromOnSettle_SettleLiquidationNoOps() public {
+    function testFinalize_ReentryFromFinalizeNestedFinalizeBlocked() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -492,16 +809,20 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(reportTs) + 301);
 
         evil.setTarget(address(lending));
-        evil.setPayload(abi.encodeWithSelector(lending.settleLiquidation.selector, lendingId));
+        evil.setPayload(abi.encodeWithSelector(lending.finalize.selector, lendingId));
 
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertFalse(evil.lastReentryReverted(), "nested settleLiquidation no-ops");
-        assertTrue(lending.getLending(lendingId).finished, "outer settle completed");
+        assertTrue(evil.lastReentryReverted(), "nested finalize rejected");
+        assertTrue(
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "nested finalize hit reentrancy guard"
+        );
+        assertTrue(lendView.getLending(lendingId).finished, "outer settle completed");
     }
 
-    function testOnSettle_ReentryFromOnSettle_GrabFeesDoesNotBlockSettlement() public {
+    function testFinalize_ReentryFromFinalize_GrabFeesDoesNotBlockSettlement() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -518,11 +839,15 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertFalse(evil.lastReentryReverted(), "nested fee grab does not block settlement");
-        assertTrue(lending.getLending(lendingId).finished, "outer settle completed");
+        assertTrue(evil.lastReentryReverted(), "nested fee grab rejected");
+        assertTrue(
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "nested fee grab hit reentrancy guard"
+        );
+        assertTrue(lendView.getLending(lendingId).finished, "outer settle completed");
     }
 
-    function testOnSettle_ReentryFromOnSettle_TopUpAnyoneBlockedByFinished() public {
+    function testFinalize_ReentryFromFinalize_TopUpAnyoneBlockedByFinished() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -546,16 +871,16 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         assertTrue(evil.lastReentryReverted(), "reentry into topUpCollateralAnyone was rejected");
         assertTrue(
-            _revertHasMessage(evil.lastReentryReason(), "arrangement finished"),
-            "reverted because underwater settlement already marked finished"
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "reverted by reentrancy guard"
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "outer settlement completed");
         assertFalse(loan.inLiquidation, "inLiquidation cleared");
     }
 
-    function testOnSettle_ReentryFromOnSettle_RefinanceRejectedForNonBorrower() public {
+    function testFinalize_ReentryFromFinalize_RefinanceRejectedForNonBorrower() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -583,11 +908,14 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         _settleOracle(reportId);
 
         assertTrue(evil.lastReentryReverted(), "reentry into refinance was rejected");
-        assertTrue(_revertHasMessage(evil.lastReentryReason(), "not borrower"), "only borrower can refinance");
-        assertTrue(lending.getLending(lendingId).finished, "outer settle completed");
+        assertTrue(
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "reverted by reentrancy guard"
+        );
+        assertTrue(lendView.getLending(lendingId).finished, "outer settle completed");
     }
 
-    function testFuzz_OnSettle_ReentryPayloadSelectionDoesNotBreakSettlement(uint8 actionSeed) public {
+    function testFuzz_Finalize_ReentryPayloadSelectionDoesNotBreakSettlement(uint8 actionSeed) public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -623,11 +951,11 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         } else if (action == 3) {
             payload = abi.encodeWithSelector(lending.grabOracleGameFeesAny.selector, lendingId, reportId);
         } else if (action == 4) {
-            payload = abi.encodeWithSelector(lending.settleLiquidation.selector, lendingId);
+            payload = abi.encodeWithSelector(lending.finalize.selector, lendingId);
         } else if (action == 5) {
             payload = abi.encodeWithSelector(lending.claimCollateral.selector, lendingId);
         } else {
-            payload = abi.encodeWithSelector(lending.recover.selector, reportId);
+            payload = abi.encodeWithSelector(lending.finalize.selector, lendingId);
         }
 
         evil.setTarget(address(lending));
@@ -636,13 +964,13 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "outer settlement completed for every reentry payload");
         assertFalse(loan.inLiquidation, "outer settlement cleared liquidation");
         assertEq(lending.reportIdToLending(reportId), 0, "report mapping cleared");
     }
 
-    function testOnSettle_ReentryFromFailedLiq_LendCannotStealRefiCurve() public {
+    function testFinalize_ReentryFromFailedLiq_LendCannotStealRefiCurve() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
 
@@ -687,7 +1015,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         assertTrue(evil.lastReentryReverted(), "reentrant lend reverted");
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "outer failed-liq settlement cleared inLiquidation");
         assertFalse(loan.finished, "loan remains live after failed liq");
         assertTrue(loan.curveOpen, "reentrant lend did not steal or close the curve");
@@ -751,11 +1079,11 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     /// @dev Fee sweeping redistributes oracle-internal balances, so ERC20 transfer hooks should not fire.
-    function testGrabFeesAllowsNestedOnSettleToFinalizeOtherLoan() public {
+    function testGrabFeesDoesNotTriggerNestedFinalizeOfOtherLoan() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
 
         // Two loans sharing the evil supply token: A drives the outer grabOracleGameFeesAny,
-        // B is the would-be settle victim whose onSettle the inner reentry will try to fire.
+        // B would be finalized by a token hook if fee sweeping used external token transfers.
         uint256 lendingIdA = _setupLoanWithEvilSupplyToken(evil);
         uint256 lendingIdB = _setupLoanWithEvilSupplyToken(evil);
 
@@ -781,7 +1109,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         evil.setAttackLimit(1);
 
         // Snapshot B before the attack
-        assertTrue(lending.getLending(lendingIdB).inLiquidation, "B in liquidation pre-test");
+        assertTrue(lendView.getLending(lendingIdB).inLiquidation, "B in liquidation pre-test");
         (,,,, uint48 settleTsBBefore,,) = _reportStatus(reportIdB);
         assertEq(settleTsBBefore, 0, "B not settled pre-test");
 
@@ -793,7 +1121,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         (,,,, uint48 settleTsBAfter,,) = _reportStatus(reportIdB);
         assertEq(settleTsBAfter, 0, "B remains unsettled");
 
-        openLend.LendingArrangement memory loanBAfter = lending.getLending(lendingIdB);
+        openLend.LendingArrangement memory loanBAfter = lendView.getLending(lendingIdB);
         assertTrue(loanBAfter.inLiquidation, "B remains in liquidation");
         assertFalse(loanBAfter.finished, "B not finalized");
         assertEq(lending.reportIdToLending(reportIdB), lendingIdB, "B reportId mapping unchanged");
@@ -801,10 +1129,10 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     // -------------------------------------------------------------------------
-    // 7. recover() nonReentrant — callback during recover's _transferTokens
+    // 7. finalize nonReentrant — token hook during finalize's _transferTokens
     // -------------------------------------------------------------------------
 
-    function testBusyLock_ReentryFromRecoverBlocked() public {
+    function testBusyLock_ReentryFromFinalizeBlocked() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -813,28 +1141,21 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
 
-        // Settle on oracle side but force callback to fail so recover() is the path forward.
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
-
-        // Now configure malicious token to attempt reentry, then call recover().
         evil.setTarget(address(lending));
         evil.setPayload(abi.encodeWithSelector(
             lending.repayDebt.selector, lendingId, uint128(1 ether), bytes32(0), uint128(0), type(uint128).max
         ));
 
-        // recover() does _transferTokens(supplyToken, this, liquidator, tokenStake) — fires hook.
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        assertTrue(evil.lastReentryReverted(), "reentry into repayDebt during recover rejected");
-        // recover() carries nonReentrant. The invariant we care about is rejection.
+        assertTrue(evil.lastReentryReverted(), "reentry into repayDebt during finalize rejected");
+        assertTrue(
+            _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
+            "reverted by reentrancy guard"
+        );
 
-        assertFalse(lending.getLending(lendingId).inLiquidation, "inLiquidation cleared by recover");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "inLiquidation cleared by finalize");
     }
 
     // -------------------------------------------------------------------------
@@ -850,7 +1171,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         assertEq(lending.lendingToReportId(lendingId), reportId, "lendingToReportId populated");
     }
 
-    function testMappingLifecycle_SuccessfulOnSettleClearsBoth() public {
+    function testMappingLifecycle_SuccessfulFinalizeClearsBoth() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
@@ -865,34 +1186,22 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
     }
 
-    function testMappingLifecycle_RecoverClearsBoth() public {
+    function testMappingLifecycle_FinalizeClearsBoth() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
 
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
-
-        // Force broken callback path
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
-
-        // Both mappings still set since onSettle reverted
-        assertEq(lending.reportIdToLending(reportId), lendingId, "still populated post-failed-callback");
-        assertEq(lending.lendingToReportId(lendingId), reportId, "still populated post-failed-callback");
 
         vm.prank(randomCaller);
-        lending.recover(reportId);
+        lending.finalize(lendingId);
 
-        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared by recover");
-        assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared by recover");
+        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared by finalize");
+        assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared by finalize");
     }
 
-    function testMappingLifecycle_FailedCallbackBeforeRecoverLeavesBoth() public {
+    function testMappingLifecycle_FinalizeClearsBeforeOracleSettle() public {
         uint256 lendingId = _setupLoan();
         vm.warp(block.timestamp + 10 days);
         uint256 reportId = _liquidate(lendingId, 6 ether);
@@ -900,16 +1209,14 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 301);
 
-        vm.mockCallRevert(
-            address(lending), abi.encodeWithSelector(openLend.openOracleCallback.selector), "callback bricked"
-        );
-        vm.prank(settler);
-        _settleOracle(reportId);
-        vm.clearMockedCalls();
+        vm.prank(randomCaller);
+        lending.finalize(lendingId);
 
-        // BEFORE calling recover, mappings should still be set (the canary signaling stuck state).
-        assertEq(lending.reportIdToLending(reportId), lendingId, "reportIdToLending preserved (stuck canary)");
-        assertEq(lending.lendingToReportId(lendingId), reportId, "lendingToReportId preserved (stuck canary)");
+        assertEq(lending.reportIdToLending(reportId), 0, "reportIdToLending cleared");
+        assertEq(lending.lendingToReportId(lendingId), 0, "lendingToReportId cleared");
+
+        (,,,, uint48 settlementTimestamp,,) = _reportStatus(reportId);
+        assertEq(settlementTimestamp, 0, "oracle accounting still unsettled");
     }
 
     // -------------------------------------------------------------------------
@@ -942,11 +1249,12 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _standardOracleParams(),
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
     }
 
     function _liquidateEvil(uint256 lendingId, ReentrantSupplyToken evil) internal returns (uint256 reportId) {
@@ -955,40 +1263,27 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     function _liquidateEvilAt(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
+        uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
-        lending.liquidate{value: SETTLER_REWARD}(
+        lending.liquidate{value: SETTLER_REWARD + finalizerReward}(
             lendingId,
             oracleAmount2Target * 1e18 / 10 ether,
             type(uint128).max,
             paramHash,
              0,
-            SETTLER_REWARD,
-            _emptyTiming()
+            SETTLER_REWARD, liquidator, finalizerReward, _emptyTiming()
         );
         reportId = oracle.nextReportId() - 1;
     }
 
-    /// @dev Decode whether a low-level call's returndata contains the given Error(string) message.
-    function _revertHasMessage(bytes memory returndata, string memory expected) internal pure returns (bool) {
-        // Error(string) selector = 0x08c379a0
+    /// @dev Decode whether a low-level call's returndata contains the given custom-error selector.
+    function _revertHasSelector(bytes memory returndata, bytes4 expected) internal pure returns (bool) {
         if (returndata.length < 4) return false;
         bytes4 selector;
         assembly {
             selector := mload(add(returndata, 0x20))
         }
-        if (selector != 0x08c379a0) {
-            // Could be a custom error (InvalidInput(string) = bytes4 of "InvalidInput(string)")
-            // InvalidInput(string) selector
-            bytes4 invInput = bytes4(keccak256("InvalidInput(string)"));
-            if (selector != invInput) return false;
-        }
-        // Decode string from returndata[4:]
-        bytes memory data = new bytes(returndata.length - 4);
-        for (uint256 i = 0; i < data.length; i++) {
-            data[i] = returndata[i + 4];
-        }
-        string memory reason = abi.decode(data, (string));
-        return keccak256(bytes(reason)) == keccak256(bytes(expected));
+        return selector == expected;
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "forge-std/Test.sol";
 import "./OpenLendingBase.t.sol";
 
@@ -45,7 +46,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         returns (uint256 lendingId, uint32 rate1, uint128 owedAtMaturity1, uint128 refiBorrowAmount)
     {
         lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        rate1 = lending.getLending(lendingId).rate;
+        rate1 = lendView.getLending(lendingId).rate;
 
         vm.warp(block.timestamp + 5 days);
 
@@ -58,13 +59,13 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         // Lender2 accepts the refi curve
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
     }
 
     function testRefiLoan_BorrowAndRepayOnTime() public {
         (uint256 lendingId,, , uint128 refiBorrowAmount) = setupRefinancedLoan();
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint32 rate2 = loan.rate;
 
         assertEq(loan.lender, lender2, "Lender should be lender2 after refi");
@@ -83,7 +84,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after full repayment");
 
         assertEq(
@@ -104,7 +105,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
     function testRefiLoan_LateRepay_LenderClaimsCollateral() public {
         (uint256 lendingId,, , uint128 refiBorrowAmount) = setupRefinancedLoan();
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint32 rate2 = loan.rate;
         uint256 lender2SupplyBefore = supplyToken.balanceOf(lender2);
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
@@ -115,14 +116,14 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 totalOwed = _calculateOwedAtMaturity(refiBorrowAmount, rate2, LOAN_TERM);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
 
         // Lender2 claims collateral (anyone can call but funds go to lender)
         vm.prank(lender2);
         lending.claimCollateral(lendingId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after claim");
         assertEq(
             supplyToken.balanceOf(lender2),
@@ -141,7 +142,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
     function testRefiLoan_PartialRepayThenLate_LenderGetsCollateralAndPartialRepay() public {
         (uint256 lendingId,,,) = setupRefinancedLoan();
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint256 lender2SupplyBefore = supplyToken.balanceOf(lender2);
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
 
@@ -151,7 +152,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanMid = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanMid = lendView.getLending(lendingId);
         // assertEq(loanMid.repaidDebt, partialRepayment, "Repaid debt should match partial payment");  // [amort: removed/no-op]
 
         vm.warp(uint256(loan.start) + LOAN_TERM + 1);
@@ -176,7 +177,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
     function testRefiLoan_MultiplePartialRepayments() public {
         (uint256 lendingId,, , uint128 refiBorrowAmount) = setupRefinancedLoan();
 
-        uint32 rate2 = lending.getLending(lendingId).rate;
+        uint32 rate2 = lendView.getLending(lendingId).rate;
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
 
@@ -188,7 +189,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, payment1, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan1 = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan1 = lendView.getLending(lendingId);
         // assertEq(loan1.repaidDebt, payment1, "First partial payment tracked");  // [amort: removed/no-op]
         assertFalse(loan1.finished, "Loan not finished after partial");
 
@@ -198,7 +199,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, payment2, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loan2 = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan2 = lendView.getLending(lendingId);
         // assertEq(loan2.repaidDebt, payment1 + payment2, "Both payments tracked");  // [amort: removed/no-op]
         assertFalse(loan2.finished, "Loan still not finished");
 
@@ -208,7 +209,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, remaining, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished after full payment");
 
         assertEq(
@@ -224,7 +225,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
     function testRefiLoan_StateCorrect() public {
         (uint256 lendingId,, , uint128 refiBorrowAmount) = setupRefinancedLoan();
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         assertEq(loan.lender, lender2, "Lender should be lender2");
         assertEq(loan.borrower, borrower, "Borrower unchanged");
@@ -242,7 +243,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
     function testDoubleRefi_ThenRepay() public {
         (uint256 lendingId,, , uint128 refiBorrowAmount) = setupRefinancedLoan();
-        uint32 rate2 = lending.getLending(lendingId).rate;
+        uint32 rate2 = lendView.getLending(lendingId).rate;
 
         // Second refi: lender1 takes it back
         vm.prank(borrower);
@@ -252,14 +253,14 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
 
         vm.prank(lender1);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender1);
 
         // Lender2 paid out the owed-at-maturity from the second loan
         assertEq(
             borrowToken.balanceOf(lender2), lender2BorrowBefore + owedToLender2, "Lender2 should receive owed amount"
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.lender, lender1, "Lender should be back to lender1");
         assertEq(loan.principal, owedToLender2, "Borrow amount is what was owed to lender2");
 
@@ -272,7 +273,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, finalOwed, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished");
         assertEq(
             borrowToken.balanceOf(lender1), lender1BorrowBefore + finalOwed, "Lender1 should receive final payment"
@@ -284,7 +285,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
     function testRefiWithSupplyPulled_ThenRepay() public {
         uint256 lendingId = _originateLoan(borrower, lender1, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        uint32 rate1 = lending.getLending(lendingId).rate;
+        uint32 rate1 = lendView.getLending(lendingId).rate;
 
         uint128 supplyPulled = 30e18;
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
@@ -295,7 +296,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 owedToLender1 = _calculateOwedAtMaturity(BORROW_AMOUNT, rate1, LOAN_TERM);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
 
         assertEq(
             supplyToken.balanceOf(borrower),
@@ -303,7 +304,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
             "Borrower should have received pulled supply"
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.supplyAmount, SUPPLY_AMOUNT - supplyPulled, "Collateral reduced");
 
         uint32 rate2 = loan.rate;

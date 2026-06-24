@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 
 contract LiquidationTest is OpenLendingBaseTest {
@@ -61,7 +62,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     function _setupLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, lender);
     }
 
     /// @dev priceRatio = oracleAmount2_target * 1e18 / initialLiquidity. With standard params
@@ -71,7 +72,7 @@ contract LiquidationTest is OpenLendingBaseTest {
     }
 
     function _liquidate(address who, uint256 lendingId, uint256 oracleAmount2Target) internal {
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(who);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -79,8 +80,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, who, 0, _emptyTiming()
         );
     }
 
@@ -108,7 +108,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 8 ether);
 
         // Mid-liq state checks
-        openLend.LendingArrangement memory loanDuring = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanDuring = lendView.getLending(lendingId);
         assertTrue(loanDuring.inLiquidation, "Loan should be in liquidation");
         assertEq(loanDuring.liquidator, liquidator, "Liquidator should be set");
         assertTrue(_predictFeeReceiver(_latestReportId()).code.length > 0, "fee receiver should be deployed");
@@ -129,7 +129,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after liquidation");
         assertFalse(loanAfter.inLiquidation, "inLiquidation cleared");
 
@@ -161,7 +161,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished");
     }
 
@@ -188,7 +188,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertFalse(loanAfter.finished, "Loan should still be live");
         assertFalse(loanAfter.inLiquidation, "Should be out of liquidation");
         assertTrue(loanAfter.active, "Loan should still be active");
@@ -215,7 +215,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         assertEq(initialGame.currentReporter, liquidator, "liquidator posted the initial report");
         assertEq(initialGame.currentAmount1, initialLiquidity, "initial liquidity fixed from supply");
         assertEq(initialGame.currentAmount2, 6 ether, "malicious price accepted into oracle game");
-        assertTrue(lending.getLending(lendingId).inLiquidation, "loan enters liquidation game");
+        assertTrue(lendView.getLending(lendingId).inLiquidation, "loan enters liquidation game");
 
         // The oracle game resolves to a healthy price, so openLend treats the liquidation as failed.
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
@@ -227,7 +227,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertFalse(loanAfter.finished, "healthy settlement keeps loan live");
         assertFalse(loanAfter.inLiquidation, "failed liq clears liquidation state");
         assertEq(loanAfter.supplyAmount, SUPPLY_AMOUNT + tokenStake, "liquidator stake added to borrower collateral");
@@ -253,13 +253,13 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(0);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         // Non-lender third party can call liquidate even with liquidatorFraction = 0.
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.inLiquidation, "third party can liquidate regardless of liquidatorFraction");
         assertEq(loan.liquidator, liquidator, "liquidator field tracks msg.sender");
     }
@@ -272,11 +272,11 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + LOAN_TERM + 1);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "arrangement expired"));
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        vm.expectRevert(LendErrors.Expired.selector);
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
     }
 
     function testLiquidation_CannotRepayOrTopupDuringLiquidation() public {
@@ -286,11 +286,11 @@ contract LiquidationTest is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 8 ether);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
+        vm.expectRevert(LendErrors.InLiquidation.selector);
         lending.repayDebt(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "in liquidation"));
+        vm.expectRevert(LendErrors.InLiquidation.selector);
         lending.topUpCollateral(lendingId, 10 ether, bytes32(0), 0, type(uint128).max);
     }
 
@@ -313,7 +313,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // settle delta = ORACLE_SETTLEMENT_TIME + 1 = 301; gracePeriod = 1800 + 301*2
         assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "exact gracePeriod from near-maturity failed liq");
 
@@ -331,7 +331,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.repayDebt(lendingId, paymentAmount, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanFinal = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished after grace-period repay");
 
         // Failed liq with grace already routed half the stake to the lender at settle. Borrower reclaims the
@@ -356,7 +356,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertGt(loan.gracePeriod, 0, "gracePeriod should be set after near-maturity failed liq");
 
         // Past original maturity, within grace.
@@ -369,7 +369,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.topUpCollateral(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
 
-        openLend.LendingArrangement memory loanAfter = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertEq(
             loanAfter.supplyAmount,
             supplyBefore + topUpAmount,
@@ -395,14 +395,14 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertGt(loan.gracePeriod, 0, "gracePeriod should be set after near-maturity failed liq");
 
         // Past grace.
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod + 1);
 
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "expired"));
+        vm.expectRevert(LendErrors.Expired.selector);
         lending.topUpCollateral(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
     }
 
@@ -418,14 +418,14 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace
         vm.warp(uint256(loan.start) + loan.term + 100);
 
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "not expired"));
+        vm.expectRevert(LendErrors.NotExpired.selector);
         lending.claimCollateral(lendingId);
     }
 
@@ -453,7 +453,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             "Lender should receive half the stake at settle"
         );
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
 
         // Past grace
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod + 1);
@@ -489,15 +489,14 @@ contract LiquidationTest is OpenLendingBaseTest {
         bytes32 wrongHash = bytes32(uint256(0xdead));
 
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "params"));
+        vm.expectRevert(LendErrors.Params.selector);
         lending.liquidate{value: 1e15}(
             lendingId,
             _priceRatioFor(8 ether),
             type(uint128).max,
             wrongHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
     }
 
@@ -514,11 +513,10 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             bytes32(0),
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
-        assertTrue(lending.getLending(lendingId).inLiquidation,
+        assertTrue(lendView.getLending(lendingId).inLiquidation,
             "liquidate succeeds with bytes32(0) paramHash (skip sentinel)");
     }
 
@@ -528,7 +526,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         // priceRatio = 0 → oracleAmount2 = 0 → openOracle bounces the initial report
         vm.prank(liquidator);
@@ -539,12 +537,11 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         // No state should have stuck — liquidator can still call cleanly afterwards
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "should not be in liquidation after revert");
         assertEq(lending.lendingToReportId(lendingId), 0, "no reportId after revert");
     }
@@ -553,19 +550,18 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         // initialLiquidity = supplyAmount * 10 / 100 = 10 ether. Cap at 1 ether forces revert.
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "too much oracle game initial liquidity"));
+        vm.expectRevert(LendErrors.TooMuchOracleGameInitialLiquidity.selector);
         lending.liquidate{value: 1e15}(
             lendingId,
             _priceRatioFor(8 ether),
             1 ether,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
     }
 
@@ -573,19 +569,18 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 lendingId = _setupLoan(5e6);
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         // Set worstRatio above the actual ratio so the position is "too healthy" to liquidate at this floor
         vm.prank(liquidator);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "position too healthy"));
+        vm.expectRevert(LendErrors.PositionTooHealthy.selector);
         lending.liquidate{value: 1e15}(
             lendingId,
             _priceRatioFor(8 ether),
             type(uint128).max,
             paramHash,
             type(uint256).max,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
     }
 
@@ -601,7 +596,7 @@ contract LiquidationTest is OpenLendingBaseTest {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
 
         vm.prank(borrower);
@@ -615,15 +610,16 @@ contract LiquidationTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             zeroFeeParams,
             _standardInterestRateParams()
         );
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
 
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -631,12 +627,11 @@ contract LiquidationTest is OpenLendingBaseTest {
             type(uint128).max,
             paramHash,
              0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, 0, _emptyTiming()
         );
 
         // No fee recipient deployed when fee is 0
-        openLend.LendingArrangement memory midLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory midLoan = lendView.getLending(lendingId);
         assertEq(_predictFeeReceiver(_latestReportId()).code.length, 0, "no clone deployed when oracleGameFee == 0");
         assertTrue(midLoan.inLiquidation, "inLiquidation set");
 
@@ -651,7 +646,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory afterLoan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory afterLoan = lendView.getLending(lendingId);
         assertTrue(afterLoan.finished, "loan finished after no-fee liq");
         assertFalse(afterLoan.inLiquidation, "inLiquidation cleared");
     }
@@ -675,7 +670,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         _disputeAndSwap(reportId1, address(supplyToken), 20 ether, 30 ether, disputer1, 12 ether, stateHash1);
 
         // Snapshot beneficiaries and fees BEFORE settle (settle's _grabOracleGameFees would clear them)
-        openLend.Beneficiaries memory bens1 = lending.getBeneficiaries(lendingId, feeRecipient1);
+        openLend.Beneficiaries memory bens1 = lendView.getBeneficiaries(lendingId, feeRecipient1);
         assertEq(bens1.lender, lender, "receiver1 lender beneficiary");
         assertEq(bens1.liquidator, liquidator, "receiver1 liquidator beneficiary");
 
@@ -698,19 +693,19 @@ contract LiquidationTest is OpenLendingBaseTest {
         assertTrue(feeRecipient2 != feeRecipient1, "fee receivers should be distinct clones");
 
         // Beneficiaries on receiver #2 are independent
-        openLend.Beneficiaries memory bens2 = lending.getBeneficiaries(lendingId2, feeRecipient2);
+        openLend.Beneficiaries memory bens2 = lendView.getBeneficiaries(lendingId2, feeRecipient2);
         assertEq(bens2.lender, lender, "receiver2 lender beneficiary");
         assertEq(bens2.liquidator, liquidator, "receiver2 liquidator beneficiary");
 
         // Calling grabOracleGameFeesAny on receiver1 with the WRONG lendingId reverts
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
         lending.grabOracleGameFeesAny(lendingId2, reportId1);
 
         // And on receiver2 with the wrong lendingId reverts
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
         lending.grabOracleGameFeesAny(lendingId, reportId2);
 
-        // Each receiver is callable with its own lendingId (no fees second time around — onSettle already swept,
+        // Each receiver is callable with its own lendingId (no fees second time around because finalize already swept,
         // but the call should not revert)
         lending.grabOracleGameFeesAny(lendingId, reportId1);
         // (lendingId2's liq #2 is still in flight; skip the no-op grab)
@@ -729,7 +724,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
         _settleOracle(reportId1);
-        assertFalse(lending.getLending(lendingId).inLiquidation, "first failed liq settled");
+        assertFalse(lendView.getLending(lendingId).inLiquidation, "first failed liq settled");
 
         // Refi the same loan to a new lender, then liquidate again. The second liquidation should deploy
         // a fresh receiver, while the old receiver remains tied to reportId1 and the same lendingId.
@@ -750,7 +745,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(disputer2);
         borrowToken.approve(address(lending), type(uint256).max);
         vm.prank(disputer2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, disputer2);
 
         vm.warp(block.timestamp + 1 days);
         _liquidate(liquidator, lendingId, 6 ether);
@@ -760,16 +755,16 @@ contract LiquidationTest is OpenLendingBaseTest {
         assertTrue(feeRecipient2.code.length > 0, "second receiver deployed");
         assertTrue(feeRecipient2 != feeRecipient1, "later liquidation gets fresh receiver");
 
-        openLend.Beneficiaries memory oldBens = lending.getBeneficiaries(lendingId, feeRecipient1);
-        openLend.Beneficiaries memory newBens = lending.getBeneficiaries(lendingId, feeRecipient2);
+        openLend.Beneficiaries memory oldBens = lendView.getBeneficiaries(lendingId, feeRecipient1);
+        openLend.Beneficiaries memory newBens = lendView.getBeneficiaries(lendingId, feeRecipient2);
         assertEq(oldBens.lender, lender, "old receiver keeps original lender beneficiary");
         assertEq(newBens.lender, disputer2, "new receiver tracks refi lender beneficiary");
 
         // A different lendingId cannot sweep either receiver by reusing old reportIds.
         uint256 otherLendingId = _setupLoan(5e6);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
         lending.grabOracleGameFeesAny(otherLendingId, reportId1);
-        vm.expectRevert(abi.encodeWithSelector(openLend.InvalidInput.selector, "feeRecipient not for lendingId"));
+        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
         lending.grabOracleGameFeesAny(otherLendingId, reportId2);
 
         // But the original lendingId can still address both deterministic receivers by reportId.
@@ -777,7 +772,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         lending.grabOracleGameFeesAny(lendingId, reportId2);
     }
 
-    // ---------------- callback liveness with failing token recipients ----------------
+    // ---------------- payout liveness with failing token recipients ----------------
     // (covered in HelperCoverageTest where the blacklist token type is defined)
 
     /// @dev V3 explicitly blocks new liquidations whenever gracePeriod != 0.
@@ -794,16 +789,16 @@ contract LiquidationTest is OpenLendingBaseTest {
         vm.prank(settler);
         _settleOracle(reportId);
 
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "exact gracePeriod from near-maturity failed liq");
 
         // Past original maturity but within grace — V3 blocks at the gracePeriod gate
         vm.warp(uint256(loan.start) + loan.term + 100);
 
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
 
         vm.prank(liquidator);
         vm.expectRevert();
-        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(lendingId, _priceRatioFor(8 ether), type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
     }
 }

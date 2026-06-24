@@ -51,7 +51,7 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
     function _setup(uint24 commitmentFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, commitmentFraction, 0);
         vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
     }
 
     function _owedNow(uint128 amount, uint32 rate, uint48 term, uint48 start) internal view returns (uint256) {
@@ -70,9 +70,9 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 fullId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 1e7, 0);
         uint256 halfId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, 5e6, 0);
 
-        assertEq(lending.getLending(zeroId).commitmentFraction, 0, "0 stored");
-        assertEq(lending.getLending(fullId).commitmentFraction, 1e7, "1e7 stored");
-        assertEq(lending.getLending(halfId).commitmentFraction, 5e6, "5e6 stored");
+        assertEq(lendView.getLending(zeroId).commitmentFraction, 0, "0 stored");
+        assertEq(lendView.getLending(fullId).commitmentFraction, 1e7, "1e7 stored");
+        assertEq(lendView.getLending(halfId).commitmentFraction, 5e6, "5e6 stored");
     }
 
     // -------------------------------------------------------------------------
@@ -81,8 +81,8 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
 
     function testCommitmentZero_FullRepayUsesTotalOwedNow() public {
         uint256 lendingId = _setup(0);
-        uint32 rate = lending.getLending(lendingId).rate;
-        uint48 start = lending.getLending(lendingId).start;
+        uint32 rate = lendView.getLending(lendingId).rate;
+        uint48 start = lendView.getLending(lendingId).start;
 
         vm.warp(block.timestamp + 10 days);
 
@@ -98,12 +98,12 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         assertEq(borrowerBorrowBefore - borrowToken.balanceOf(borrower), expectedNow, "borrower pays exactly totalOwedNow");
         // Lender should have received exactly totalOwedNow
         assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, expectedNow, "lender receives totalOwedNow");
-        assertTrue(lending.getLending(lendingId).finished, "finished");
+        assertTrue(lendView.getLending(lendingId).finished, "finished");
     }
 
     function testCommitmentFull_FullRepayUsesTotalOwedAtMaturity() public {
         uint256 lendingId = _setup(1e7);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
 
         vm.warp(block.timestamp + 10 days);
 
@@ -142,8 +142,8 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
 
     function testCommitmentZero_RefiPaysPriorLenderTotalOwedNow() public {
         uint256 lendingId = _setup(0);
-        uint32 rate = lending.getLending(lendingId).rate;
-        uint48 start = lending.getLending(lendingId).start;
+        uint32 rate = lendView.getLending(lendingId).rate;
+        uint48 start = lendView.getLending(lendingId).start;
 
         vm.warp(block.timestamp + 10 days);
 
@@ -154,15 +154,15 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, expectedNow, "prev lender paid totalOwedNow under flex");
-        assertEq(lending.getLending(lendingId).principal, expectedNow, "new principal = totalOwedNow");
+        assertEq(lendView.getLending(lendingId).principal, expectedNow, "new principal = totalOwedNow");
     }
 
     function testCommitmentFull_RefiPaysPriorLenderTotalOwedAtMaturity() public {
         uint256 lendingId = _setup(1e7);
-        uint32 rate = lending.getLending(lendingId).rate;
+        uint32 rate = lendView.getLending(lendingId).rate;
 
         vm.warp(block.timestamp + 10 days);
 
@@ -173,10 +173,10 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6);
+        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
 
         assertEq(borrowToken.balanceOf(lender) - lenderBorrowBefore, expectedMaturity, "prev lender paid totalOwedAtMaturity");
-        assertEq(lending.getLending(lendingId).principal, expectedMaturity, "new principal = totalOwedAtMaturity");
+        assertEq(lendView.getLending(lendingId).principal, expectedMaturity, "new principal = totalOwedAtMaturity");
     }
 
     // -------------------------------------------------------------------------
@@ -185,8 +185,8 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
 
     function testCommitmentZero_PartialThenFullAmortizesInterest() public {
         uint256 lendingId = _setup(0);
-        uint32 rate = lending.getLending(lendingId).rate;
-        uint48 start = lending.getLending(lendingId).start;
+        uint32 rate = lendView.getLending(lendingId).rate;
+        uint48 start = lendView.getLending(lendingId).start;
 
         vm.warp(block.timestamp + 5 days);
 
@@ -223,9 +223,9 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 lenderBefore = supplyToken.balanceOf(lender);
 
         // Liquidate flex loan
-        bytes32 paramHash = lending.getParamHash(flexLoan);
+        bytes32 paramHash = lendView.getParamHash(flexLoan);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(flexLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(flexLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
         uint256 flexReportId = oracle.nextReportId() - 1;
         bytes32 stateHash = bytes32(0);
 
@@ -239,9 +239,9 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 flexPayout = lenderAfterFlexLiq - lenderBefore;
 
         // Liquidate fixed loan, same shape. Read timestamps from oracle storage to defeat via_ir block.timestamp hoisting.
-        paramHash = lending.getParamHash(fixedLoan);
+        paramHash = lendView.getParamHash(fixedLoan);
         vm.prank(liquidator);
-        lending.liquidate{value: 1e15}(fixedLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, _emptyTiming());
+        lending.liquidate{value: 1e15}(fixedLoan, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
         uint256 fixedReportId = oracle.nextReportId() - 1;
         stateHash = bytes32(0);
 
@@ -266,8 +266,8 @@ contract CommitmentExtremesTest is OpenLendingBaseTest {
         uint256 flexLoan = _setup(0);
         uint256 fixedLoan = _setup(1e7);
 
-        bytes32 flexHash = lending.getParamHash(flexLoan);
-        bytes32 fixedHash = lending.getParamHash(fixedLoan);
+        bytes32 flexHash = lendView.getParamHash(flexLoan);
+        bytes32 fixedHash = lendView.getParamHash(fixedLoan);
 
         assertTrue(flexHash != fixedHash, "paramHash must distinguish flex vs fixed even with otherwise identical loans");
     }

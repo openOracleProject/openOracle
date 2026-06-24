@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 
 import "../../src/openLend.sol";
+import "../../src/openLendParamHashHelper.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/oracleFeeReceiver2.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
@@ -12,11 +13,12 @@ import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
-/// @notice Invariant handler that exercises the lend → liquidate → settle path. Bounded action set:
-///         createLoan / lendLoan / liquidate / settleLatest / advanceTime. No disputes (settle resolves to whatever
+/// @notice Invariant handler that exercises the lend -> liquidate -> finalize path. Bounded action set:
+///         createLoan / lendLoan / liquidate / settleOracleOnly / finalizeLatest / advanceTime. No disputes (settle resolves to whatever
 ///         price the liquidator initially submitted) — keeps the state machine focused on lending lifecycle, not oracle internals.
 contract LiquidationInvariantHandler is Test {
     openLend public immutable lending;
+    openLendParamHashHelper public immutable lendView;
     OpenOracle public immutable oracle;
     MockERC20 public immutable supplyToken;
     MockERC20 public immutable borrowToken;
@@ -37,8 +39,15 @@ contract LiquidationInvariantHandler is Test {
     uint24 internal constant LIQUIDATION_THRESHOLD = 8e6;
     uint16 internal constant STAKE = 100;
 
-    constructor(openLend _lending, OpenOracle _oracle, MockERC20 _supplyToken, MockERC20 _borrowToken) {
+    constructor(
+        openLend _lending,
+        openLendParamHashHelper _lendView,
+        OpenOracle _oracle,
+        MockERC20 _supplyToken,
+        MockERC20 _borrowToken
+    ) {
         lending = _lending;
+        lendView = _lendView;
         oracle = _oracle;
         supplyToken = _supplyToken;
         borrowToken = _borrowToken;
@@ -111,6 +120,7 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -138,6 +148,7 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -165,6 +176,7 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
+            borrower,
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -176,16 +188,16 @@ contract LiquidationInvariantHandler is Test {
     function lendLoan(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (loan.cancelled || loan.active || loan.finished || !loan.curveOpen) return;
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
         if (loan.borrowToken == ETH) {
-            try lending.lend{value: loan.principal}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6) {}
+            try lending.lend{value: loan.principal}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, caller) {}
             catch {}
         } else {
-            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6) {} catch {}
+            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, caller) {} catch {}
         }
         vm.stopPrank();
     }
@@ -193,18 +205,18 @@ contract LiquidationInvariantHandler is Test {
     function liquidateLoan(uint256 loanSeed, uint96 priceSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (loan.cancelled || loan.finished || !loan.active || loan.inLiquidation) return;
         if (loan.gracePeriod != 0) return;
         if (block.timestamp > uint256(loan.start) + loan.term) return;
 
         // priceRatio in 1e18 fixed-point; bound between 0.5e18 and 2e18 for sane oracle states
         uint256 priceRatio = bound(uint256(priceSeed), 5e17, 2e18);
-        bytes32 paramHash = lending.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         uint256 initialLiquidity = uint256(loan.supplyAmount) * loan.oracleParams.initialLiquidity / 100;
         uint256 oracleAmount2 = initialLiquidity * priceRatio / 1e18;
         uint256 tokenStake = uint256(loan.supplyAmount) * loan.stake / 10000;
-        uint256 msgValue = 1e15;
+        uint256 msgValue = 1e15 + loan.oracleParams.finalizerReward;
         if (loan.supplyToken == ETH) msgValue += initialLiquidity + tokenStake;
         if (loan.borrowToken == ETH) msgValue += oracleAmount2;
 
@@ -215,8 +227,7 @@ contract LiquidationInvariantHandler is Test {
             type(uint128).max,
             paramHash,
             0,
-            1e15,
-            _emptyTiming()
+            1e15, liquidator, loan.oracleParams.finalizerReward, _emptyTiming()
         ) {
             uint256 reportId = oracle.nextReportId() - 1;
             openReportId[lendingId] = reportId;
@@ -235,8 +246,8 @@ contract LiquidationInvariantHandler is Test {
         vm.warp(block.timestamp + 400);
 
         vm.startPrank(settler);
-        try lending.settleLiquidation(lendingId) {
-            if (!lending.getLending(lendingId).inLiquidation) openReportId[lendingId] = 0;
+        try lending.finalize(lendingId) {
+            if (!lendView.getLending(lendingId).inLiquidation) openReportId[lendingId] = 0;
         } catch {}
         vm.stopPrank();
     }
@@ -277,8 +288,7 @@ contract LiquidationInvariantHandler is Test {
             false,
             false,
             game,
-            helper,
-            _emptyTiming()
+            helper, _emptyTiming()
         ) {} catch {}
         vm.stopPrank();
     }
@@ -286,7 +296,7 @@ contract LiquidationInvariantHandler is Test {
     function openRefiDuringLiquidation(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || !loan.inLiquidation || loan.curveOpen) return;
 
         vm.startPrank(borrower);
@@ -305,7 +315,7 @@ contract LiquidationInvariantHandler is Test {
         vm.stopPrank();
     }
 
-    function settleOracleWithCallbackFailure(uint256 loanSeed) external {
+    function settleOracleOnly(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
         uint256 reportId = openReportId[lendingId];
@@ -316,17 +326,10 @@ contract LiquidationInvariantHandler is Test {
 
         uint256 settleableAt = uint256(game.reportTimestamp) + game.settlementTime + 1;
         if (block.timestamp < settleableAt) vm.warp(settleableAt);
-
-        vm.mockCallRevert(
-            address(lending),
-            abi.encodeWithSelector(openLend.openOracleCallback.selector),
-            "callback bricked"
-        );
         try IOpenOracle2(address(oracle)).settle(reportId, game, _helperFor(reportId)) {} catch {}
-        vm.clearMockedCalls();
     }
 
-    function recoverLatest(uint256 loanSeed) external {
+    function finalizeLatest(uint256 loanSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
         uint256 reportId = openReportId[lendingId];
@@ -335,8 +338,8 @@ contract LiquidationInvariantHandler is Test {
         IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
         if (game.settlementTimestamp == 0) return;
 
-        try lending.recover(reportId) {
-            if (!lending.getLending(lendingId).inLiquidation) openReportId[lendingId] = 0;
+        try lending.finalize(lendingId) {
+            if (!lendView.getLending(lendingId).inLiquidation) openReportId[lendingId] = 0;
         } catch {}
     }
 
@@ -353,7 +356,7 @@ contract LiquidationInvariantHandler is Test {
     function repayOrTopUp(uint256 loanSeed, uint96 amountSeed) external {
         if (lendingIds.length == 0) return;
         uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
-        openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         if (!loan.active || loan.finished || loan.cancelled || loan.inLiquidation) return;
 
         uint128 amount = uint128(bound(amountSeed, 1, 10 ether));
@@ -394,13 +397,16 @@ contract LiquidationInvariantHandler is Test {
             initialLiquidity: 10,
             multiplier: 200,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
     function _oracleParams(uint64 maxBaseFeeSeed) internal pure returns (openLend.OracleParams memory p) {
         p = _standardOracleParams();
-        if (maxBaseFeeSeed != 0) p.maxBaseFee = uint48(bound(uint256(maxBaseFeeSeed), 1 gwei, 500 gwei));
+        if (maxBaseFeeSeed != 0) {
+            p.maxBaseFee = uint48(bound(uint256(maxBaseFeeSeed), 1 gwei, 500 gwei));
+            p.finalizerReward = uint64(bound(uint256(maxBaseFeeSeed), 1 wei, 0.01 ether));
+        }
     }
 
     function _zeroOracleParams() internal pure returns (openLend.OracleParams memory) {
@@ -412,7 +418,7 @@ contract LiquidationInvariantHandler is Test {
             initialLiquidity: 0,
             multiplier: 0,
             maxBaseFee: 0,
-            minSettlerReward: 0
+            finalizerReward: 0
         });
     }
 
@@ -439,6 +445,7 @@ contract LiquidationInvariantHandler is Test {
 
 contract LiquidationInvariantsTest is StdInvariant, Test {
     openLend internal lending;
+    openLendParamHashHelper internal lendView;
     OpenOracle internal oracle;
     MockERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -448,10 +455,11 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
+        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
         supplyToken = new MockERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
-        handler = new LiquidationInvariantHandler(lending, oracle, supplyToken, borrowToken);
+        handler = new LiquidationInvariantHandler(lending, lendView, oracle, supplyToken, borrowToken);
         supplyToken.transfer(address(handler), 300_000 ether);
         borrowToken.transfer(address(handler), 300_000 ether);
         handler.prime();
@@ -463,7 +471,7 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (handler.openReportId(lendingId) == 0) {
                 // No in-flight liq tracked for this loan → must not be inLiquidation
                 assertFalse(loan.inLiquidation, "no tracked report but inLiquidation == true");
@@ -476,7 +484,7 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (loan.finished) {
                 assertEq(handler.openReportId(lendingId), 0, "finished loan should have no tracked report");
             }
@@ -502,17 +510,20 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
     }
 
     /// @notice The contract's supply balance always covers active-loan supplyAmounts plus in-flight liquidator stakes.
+    ///         Native ETH accounting also covers any finalizer rewards escrowed for in-flight liquidations.
     function invariant_contractSupplyCoversActiveLoansAndStakes() public view {
         uint256 count = handler.loanCount();
         uint256 requiredErc20;
         uint256 requiredNative;
+        uint256 requiredFinalizerRewards;
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (!loan.cancelled && !loan.finished) {
                 uint256 required = loan.supplyAmount;
                 if (loan.inLiquidation) {
                     required += (uint256(loan.supplyAmount) * loan.stake) / 10000;
+                    requiredFinalizerRewards += loan.oracleParams.finalizerReward;
                 }
                 if (loan.supplyToken == address(0)) {
                     requiredNative += required;
@@ -526,7 +537,11 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
             requiredErc20,
             "contract supplyToken balance should reconcile to active loans + in-flight stakes"
         );
-        assertGe(address(lending).balance, requiredNative, "contract ETH balance should cover native collateral + stakes");
+        assertGe(
+            address(lending).balance,
+            requiredNative + requiredFinalizerRewards,
+            "contract ETH balance should cover native collateral, stakes, and finalizer rewards"
+        );
     }
 
     /// @notice Amortization-state invariant for loans driven through the liquidation handler:
@@ -538,7 +553,7 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         uint256 count = handler.loanCount();
         for (uint256 i = 0; i < count; i++) {
             uint256 lendingId = handler.getLoanId(i);
-            openLend.LendingArrangement memory loan = lending.getLending(lendingId);
+            openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
             if (loan.principal == 0 && loan.commitmentInterest == 0) continue;
 
             uint256 interestClaim = loan.interestAccrued > loan.commitmentInterest
