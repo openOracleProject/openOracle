@@ -28,6 +28,17 @@ contract openLendParamHashHelper {
         }
     }
 
+    function getLending(uint256 startId, uint256 count)
+        external
+        view
+        returns (openLend.LendingArrangement[] memory lendings)
+    {
+        lendings = new openLend.LendingArrangement[](count);
+        for (uint256 i; i < count; ++i) {
+            lendings[i] = _getLending(startId + i);
+        }
+    }
+
     function getRefiParams(uint256 lendingId) external view returns (openLend.RefiParams memory) {
         openLend.LendingArrangement memory l = _getLending(lendingId);
         return l.refiParams;
