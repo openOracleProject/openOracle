@@ -15,6 +15,10 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
     address immutable token2;
 
     mapping(address => bool) private _openLendApproved;
+    mapping (address => mapping (uint256 => uint256)) public userToBorrow;
+    mapping (address => mapping (uint256 => uint256)) public userToLend;
+    mapping (address => uint256) public userBorrowCount;
+    mapping (address => uint256) public userLendCount;
 
     error InvalidParams();
 
@@ -59,6 +63,7 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
         uint256 supplyAmount = params.supplyAmount;
         uint256 gasCompensation = params.gasCompensation;
         uint256 ethRequired = isEth ? supplyAmount + gasCompensation : gasCompensation;
+        uint256 ubc = userBorrowCount[msg.sender];
 
         _validateBorrowParams(params);
         if (msg.value != ethRequired) revert InvalidParams();
@@ -83,6 +88,9 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
             params.interestRateParams
         );
 
+        userToBorrow[msg.sender][ubc] = lendingId;
+        userBorrowCount[msg.sender] += 1;
+
     }
 
     function lendAdapter(LendParams calldata params, uint128 amount) external payable nonReentrant {
@@ -94,6 +102,7 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
         uint256 balBeforeEth = address(this).balance - msg.value;
         uint256 balBeforeFallback = IERC20(weth).balanceOf(address(this));
         bool isRefi = lending.active && lending.curveOpen;
+        uint256 ulc = userLendCount[msg.sender];
 
         uint256 balBeforeToken;
         uint256 refundTokenAmount;
@@ -106,6 +115,9 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
             revert InvalidParams();
         }
         if (!lending.active && !isEth && amount != lending.principal) revert InvalidParams();
+
+        userToLend[msg.sender][ulc] = lendingId;
+        userLendCount[msg.sender] += 1;
 
         if (!isEth) {
             balBeforeToken = IERC20(borrowToken).balanceOf(address(this));
@@ -304,6 +316,36 @@ contract openLendEthUsdcAdapter1 is ReentrancyGuard {
     function _pullToken(address token, address from, address to, uint256 amount) internal {
         if (amount == 0) return;
         IERC20(token).safeTransferFrom(from, to, amount);
+    }
+
+    function returnBorrows(
+        address borrower,
+        uint256 ors, // optional range start
+        uint256 ore // optional range end
+    ) external view returns (uint256[] memory borrows) {
+        uint256 count = userBorrowCount[borrower];
+        if (ore == 0) ore = count;
+        if (ors > ore || ore > count) revert InvalidParams();
+
+        borrows = new uint256[](ore - ors);
+        for (uint256 i = ors; i < ore; ++i) {
+            borrows[i - ors] = userToBorrow[borrower][i];
+        }
+    }
+
+    function returnLends(
+        address lender,
+        uint256 ors, // optional range start
+        uint256 ore // optional range end
+    ) external view returns (uint256[] memory lends) {
+        uint256 count = userLendCount[lender];
+        if (ore == 0) ore = count;
+        if (ors > ore || ore > count) revert InvalidParams();
+
+        lends = new uint256[](ore - ors);
+        for (uint256 i = ors; i < ore; ++i) {
+            lends[i - ors] = userToLend[lender][i];
+        }
     }
 
     receive() external payable {}
