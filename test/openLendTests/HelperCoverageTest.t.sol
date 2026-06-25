@@ -382,7 +382,7 @@ contract HelperCoverageTest is Test {
         (bool rawOk, bytes memory rawGetterData) =
             address(lending).staticcall(abi.encodeWithSelector(lending.lendingArrangements.selector, lendingId));
         (bool helperOk, bytes memory helperData) =
-            address(lendView).staticcall(abi.encodeWithSelector(lendView.getLending.selector, lendingId));
+            address(lendView).staticcall(abi.encodeWithSelector(bytes4(keccak256("getLending(uint256)")), lendingId));
 
         assertTrue(rawOk, "raw mapping getter failed");
         assertTrue(helperOk, "helper getLending failed");
