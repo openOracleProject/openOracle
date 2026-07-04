@@ -132,7 +132,8 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
             100,
             1e7,
             GAS_COMP,
-            address(0),
+            address(0),address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -148,17 +149,18 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
         vm.expectEmit(true, true, false, true, address(lending));
         emit LoanOriginated(lendingId, recordedLender, BORROW_AMOUNT, 1e8, start, LOAN_TERM, GAS_COMP, 0);
 
-        vm.prank(lendFunder);
+        vm.startPrank(lendFunder);
         lending.lend(
-            lendingId,
-            bytes32(0),
+            lendingId,lendView.getParamHash(lendingId),
             0,
             type(uint128).max,
             0,
             0,
             0,
             recordedLender
-        );
+        ,
+            address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.lender, recordedLender);
@@ -171,7 +173,7 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
         uint256 lendFunderBorrowBeforeRepay = borrowToken.balanceOf(lendFunder);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, owed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, owed, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(borrowToken.balanceOf(recordedLender), recordedLenderBorrowBefore + owed);
         assertEq(borrowToken.balanceOf(lendFunder), lendFunderBorrowBeforeRepay);
@@ -181,18 +183,20 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
     function testLend_RejectsZeroLender() public {
         uint256 lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
 
-        vm.prank(lendFunder);
+        bytes32 paramHashExpected1 = lendView.getParamHash(lendingId);
+        vm.startPrank(lendFunder);
         vm.expectRevert(LendErrors.AddressCannotBeZero.selector);
         lending.lend(
-            lendingId,
-            bytes32(0),
+            lendingId,paramHashExpected1,
             0,
             type(uint128).max,
             0,
             0,
             0,
             address(0)
-        );
+        ,
+            address(0));
+        vm.stopPrank();
     }
 
     function testRefinance_ZeroMaxRateKeepsExistingRateParamsThroughAcceptance() public {
@@ -220,17 +224,18 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
 
         _assertRateParamsEq(lendView.getRateParams(lendingId), original);
 
-        vm.prank(lendFunder);
+        vm.startPrank(lendFunder);
         lending.lend(
-            lendingId,
-            bytes32(0),
+            lendingId,lendView.getParamHash(lendingId),
             0,
             type(uint128).max,
             0,
             0,
             0,
             recordedLender
-        );
+        ,
+            address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.lender, recordedLender);
@@ -252,7 +257,8 @@ contract AdapterCompatibilityTest is OpenLendingBaseTest {
             100,
             1e7,
             gasCompensation,
-            recordedBorrower,
+            recordedBorrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );

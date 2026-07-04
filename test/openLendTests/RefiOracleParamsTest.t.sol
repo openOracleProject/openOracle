@@ -33,8 +33,9 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
     function _setup() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _newOracleParams() internal pure returns (openLend.OracleParams memory) {
@@ -81,8 +82,9 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         openLend.OracleParams memory afterAcceptance = lendView.getOracleParams(lendingId);
         assertEq(
@@ -128,8 +130,9 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), newParams, bytes32(0), 0, type(uint128).max);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         openLend.OracleParams memory live = lendView.getOracleParams(lendingId);
         assertEq(
@@ -144,8 +147,9 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _newOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         openLend.RefiParams memory rp = lendView.getRefiParams(lendingId);
         assertEq(rp.oracleParams.settlementTime, 0, "staged params cleared after acceptance");
@@ -253,12 +257,14 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         // Refi staging: escFactor=5000 → refi-time escHalt = 3.4e38 (fits)
         openLend.OracleParams memory hot = openLend.OracleParams({
@@ -280,9 +286,11 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         lending.topUpCollateralAnyone(lendingId, topUpAmount, bytes32(0), 0, type(uint128).max);
 
         // lend acceptance: recheck escHalt = 6.9e36 * 5000 / 100 = 3.45e38 > uint128.max → revert
-        vm.prank(lender2);
+        bytes32 paramHashExpected15 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.EscalationHaltTooHigh.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        lending.lend(lendingId,paramHashExpected15, 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
     }
 
     // -------------------------------------------------------------------------
@@ -328,7 +336,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
 
         // Borrower fully repays — finishes the loan, _clearRefiCurve fires
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(
             lendView.getRefiParams(lendingId).oracleParams.settlementTime,
@@ -382,7 +390,7 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
         // Lender's lend with the original paramHash reverts — staged params changed, so loose hash mismatches
         vm.prank(lender2);
         vm.expectRevert(LendErrors.Params.selector);
-        lending.lend(lendingId, quotedHash, 0, type(uint128).max, 0, 0, 5e6, lender2);
+        lending.lend(lendingId, quotedHash, 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
     }
 
     // -------------------------------------------------------------------------
@@ -414,7 +422,8 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             params,
             _standardInterestRateParams()
         );
@@ -445,7 +454,8 @@ contract RefiOracleParamsTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             params,
             _standardInterestRateParams()
         );

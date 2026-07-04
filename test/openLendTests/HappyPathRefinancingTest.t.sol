@@ -58,8 +58,9 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         refiBorrowAmount = owedAtMaturity1;
 
         // Lender2 accepts the refi curve
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
     }
 
     function testRefiLoan_BorrowAndRepayOnTime() public {
@@ -82,7 +83,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 15 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after full repayment");
@@ -117,7 +118,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.Expired.selector);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         // Lender2 claims collateral (anyone can call but funds go to lender)
         vm.prank(lender2);
@@ -150,7 +151,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loanMid = lendView.getLending(lendingId);
         // assertEq(loanMid.repaidDebt, partialRepayment, "Repaid debt should match partial payment");  // [amort: removed/no-op]
@@ -187,7 +188,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 payment1 = 10e18;
         vm.warp(block.timestamp + 5 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, payment1, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, payment1, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan1 = lendView.getLending(lendingId);
         // assertEq(loan1.repaidDebt, payment1, "First partial payment tracked");  // [amort: removed/no-op]
@@ -197,7 +198,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 payment2 = 15e18;
         vm.warp(block.timestamp + 5 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, payment2, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, payment2, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan2 = lendView.getLending(lendingId);
         // assertEq(loan2.repaidDebt, payment1 + payment2, "Both payments tracked");  // [amort: removed/no-op]
@@ -207,7 +208,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 remaining = totalOwed - payment1 - payment2;
         vm.warp(block.timestamp + 5 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, remaining, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, remaining, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished after full payment");
@@ -252,8 +253,9 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
         uint128 owedToLender2 = _calculateOwedAtMaturity(refiBorrowAmount, rate2, LOAN_TERM);
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
 
-        vm.prank(lender1);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender1);
+        vm.startPrank(lender1);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender1, address(0));
+        vm.stopPrank();
 
         // Lender2 paid out the owed-at-maturity from the second loan
         assertEq(
@@ -271,7 +273,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 15 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, finalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, finalOwed, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loanFinal = lendView.getLending(lendingId);
         assertTrue(loanFinal.finished, "Loan should be finished");
@@ -295,8 +297,9 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         uint128 owedToLender1 = _calculateOwedAtMaturity(BORROW_AMOUNT, rate1, LOAN_TERM);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(
             supplyToken.balanceOf(borrower),
@@ -313,7 +316,7 @@ contract HappyPathRefinancingTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 15 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(
             supplyToken.balanceOf(borrower),

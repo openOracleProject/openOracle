@@ -31,7 +31,8 @@ contract NativeEthRejectingBorrower {
             stake,
             commitmentFraction,
             0,
-            address(this),
+            address(this),address(0),
+            
             oracleParams,
             interestRateParams
         );
@@ -132,7 +133,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -151,11 +153,12 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 borrowerEthBefore = borrower.balance;
         uint256 lendingId = _requestNativeSupplyLoan(0);
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan closed");
@@ -165,8 +168,9 @@ contract NativeEthTest is OpenLendingBaseTest {
     function testNativeSupply_TopUpRequiresExactMsgValueAndIncreasesCollateral() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.MsgValue.selector);
@@ -181,8 +185,9 @@ contract NativeEthTest is OpenLendingBaseTest {
     function testNativeSupply_TopUpRejectsOverpay() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.MsgValue.selector);
@@ -194,8 +199,9 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 lenderEthBefore = lender.balance;
         uint256 lendingId = _requestNativeBorrowLoan(0);
 
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         assertEq(borrower.balance, borrowerEthBefore + BORROW_AMOUNT, "borrower received native borrow");
         assertEq(lender.balance, lenderEthBefore - BORROW_AMOUNT, "lender funded native borrow");
@@ -207,7 +213,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             bytes32(0),
             0,
             type(uint128).max
-        );
+        ,
+            false);
 
         assertTrue(lendView.getLending(lendingId).finished, "loan closed");
         assertEq(borrower.balance, borrowerEthBefore, "borrower only paid owed amount after refund");
@@ -217,16 +224,17 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeBorrow_RepayAnyDebtExactAndRejectsWrongMsgValue() public {
         uint256 lendingId = _requestNativeBorrowLoan(0);
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(lender2);
         vm.expectRevert(LendErrors.MsgValue.selector);
-        lending.repayAnyDebt{value: 1 ether + 1}(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayAnyDebt{value: 1 ether + 1}(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         uint256 lenderBalanceBefore = lender.balance;
         vm.prank(lender2);
-        lending.repayAnyDebt{value: 1 ether}(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayAnyDebt{value: 1 ether}(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(lender.balance, lenderBalanceBefore + 1 ether, "third-party native repay streams to lender");
         assertEq(lendView.getLending(lendingId).principal, BORROW_AMOUNT - 1 ether, "principal amortized");
@@ -234,8 +242,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeBorrow_RefiPaysPreviousLenderAndExtraDemandedInEth() public {
         uint256 lendingId = _requestNativeBorrowLoan(0);
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(borrower);
         lending.refinance(lendingId, 1 ether, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
@@ -244,12 +253,15 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 lender2Before = lender2.balance;
         uint256 borrowerBefore = borrower.balance;
 
-        vm.prank(lender2);
+        bytes32 paramHashExpected9 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.MsgValue.selector);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,paramHashExpected9, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
-        vm.prank(lender2);
-        lending.lend{value: BORROW_AMOUNT + 1 ether}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend{value: BORROW_AMOUNT + 1 ether}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(lender.balance, lenderBefore + BORROW_AMOUNT, "previous lender paid native residual");
         assertEq(borrower.balance, borrowerBefore + 1 ether, "borrower received native extraDemanded");
@@ -259,8 +271,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_RefiWithExtraDemandedAndSupplyPulled() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         uint256 borrowerEthBefore = borrower.balance;
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
@@ -280,8 +293,9 @@ contract NativeEthTest is OpenLendingBaseTest {
             type(uint128).max
         );
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(borrower.balance, borrowerEthBefore + 5 ether, "borrower received native collateral pull");
@@ -309,14 +323,16 @@ contract NativeEthTest is OpenLendingBaseTest {
             _standardInterestRateParams()
         );
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         uint256 borrowerEthBeforeRefiPull = address(rejectingBorrower).balance;
         rejectingBorrower.refinance(lending, lendingId, 0, 5 ether, _standardInterestRateParams());
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(address(rejectingBorrower).balance, borrowerEthBeforeRefiPull, "borrower contract rejected plain ETH pull");
         assertEq(weth.balanceOf(address(rejectingBorrower)), 5 ether, "supplyPulled paid as WETH");
@@ -325,13 +341,14 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_LiquidationFundsOracleWithEthAndSettlesUnderwater() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 lenderEthBefore = lender.balance;
         uint256 liquidatorEthBefore = liquidator.balance;
         uint256 ethRequired = SETTLER_REWARD + 10 ether + 1 ether;
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: ethRequired}(
@@ -365,8 +382,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_OracleEthInternalCreditWithdrawsAsPlainEth() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 6 ether);
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
@@ -394,8 +412,9 @@ contract NativeEthTest is OpenLendingBaseTest {
         oracleParams.oracleGameFee = 0;
 
         uint256 lendingId = _requestNativeSupplyLoanWithOracleParams(0, oracleParams);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 6 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -411,8 +430,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_FailedLiquidationAddsStakeToCollateral() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
         _selfDisputeToken1Eth(reportId, 20 ether, 30 ether);
@@ -435,8 +455,9 @@ contract NativeEthTest is OpenLendingBaseTest {
         borrowToken.approve(address(lending), type(uint256).max);
 
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(address(rejector));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, address(rejector));
+        vm.startPrank(address(rejector));
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, address(rejector), address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + LOAN_TERM - 900);
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
@@ -455,8 +476,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_FinalizePaysEthCollateral() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 lenderBefore = lender.balance;
         uint256 reportId = _liquidateNativeSupply(lendingId, 6 ether);
@@ -472,8 +494,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_ExplicitFeeGrabSweepsEthProtocolFees() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
         _selfDisputeToken1Eth(reportId, 20 ether, 20 ether);
@@ -488,7 +511,7 @@ contract NativeEthTest is OpenLendingBaseTest {
 
         vm.prank(settler);
         lending.finalize(lendingId);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         _assertOracleFeeSplit(ETH, fee, borrowerBefore, lenderBefore, liquidatorBefore);
         assertFalse(lendView.getLending(lendingId).inLiquidation, "finalize clears native liquidation");
@@ -496,12 +519,13 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeBorrow_LiquidationForwardsEthAmount2AndRefundsExcess() public {
         uint256 lendingId = _requestNativeBorrowLoan(0);
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 liquidatorEthBefore = liquidator.balance;
         uint256 ethRequired = SETTLER_REWARD + 8 ether;
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: ethRequired + 1 ether}(
@@ -522,8 +546,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_OracleEthProtocolFeesDistributeInternally() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -537,7 +562,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, ETH);
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, ETH);
 
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         _assertOracleFeeSplit(ETH, fee, borrowerBefore, lenderBefore, liquidatorBefore);
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, ETH), 1, "fee receiver dust");
@@ -545,8 +570,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeBorrow_OracleEthProtocolFeesDistributeInternally() public {
         uint256 lendingId = _requestNativeBorrowLoan(0);
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 reportId = _liquidateNativeBorrow(lendingId, 8 ether, 0);
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -560,7 +586,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, ETH);
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, ETH);
 
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         _assertOracleFeeSplit(ETH, fee, borrowerBefore, lenderBefore, liquidatorBefore);
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, ETH), 1, "fee receiver dust");
@@ -575,8 +601,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
         uint256 lendingId = _requestNativeSupplyLoan(0);
 
-        vm.prank(address(rejector));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, address(rejector));
+        vm.startPrank(address(rejector));
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, address(rejector), address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + LOAN_TERM + 1);
         lending.claimCollateral(lendingId);
@@ -592,8 +619,9 @@ contract NativeEthTest is OpenLendingBaseTest {
         borrowToken.approve(address(lending), type(uint256).max);
 
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(address(receiver));
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, address(receiver));
+        vm.startPrank(address(receiver));
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, address(receiver), address(0));
+        vm.stopPrank();
 
         receiver.setPayload(
             abi.encodeWithSelector(
@@ -602,7 +630,8 @@ contract NativeEthTest is OpenLendingBaseTest {
                 uint128(1),
                 bytes32(0),
                 uint128(0),
-                type(uint128).max
+                type(uint128).max,
+                false
             )
         );
 
@@ -618,8 +647,9 @@ contract NativeEthTest is OpenLendingBaseTest {
 
     function testNativeSupply_ClaimCollateralPaysPlainEthToNormalLender() public {
         uint256 lendingId = _requestNativeSupplyLoan(0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         uint256 lenderBefore = lender.balance;
         vm.warp(block.timestamp + LOAN_TERM + 1);
@@ -641,7 +671,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -658,7 +689,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -675,25 +707,31 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
 
         uint256 nativeBorrowId = _requestNativeBorrowLoan(0);
-        vm.prank(lender);
+        bytes32 paramHashExpected10 = lendView.getParamHash(nativeBorrowId);
+        vm.startPrank(lender);
         vm.expectRevert(LendErrors.MsgValue.selector);
-        lending.lend{value: BORROW_AMOUNT - 1}(nativeBorrowId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        lending.lend{value: BORROW_AMOUNT - 1}(nativeBorrowId,paramHashExpected10, 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
-        vm.prank(lender);
+        bytes32 paramHashExpected11 = lendView.getParamHash(nativeBorrowId);
+        vm.startPrank(lender);
         vm.expectRevert(LendErrors.MsgValue.selector);
-        lending.lend{value: BORROW_AMOUNT + 1}(nativeBorrowId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        lending.lend{value: BORROW_AMOUNT + 1}(nativeBorrowId,paramHashExpected11, 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
-        vm.prank(lender);
-        lending.lend{value: BORROW_AMOUNT}(nativeBorrowId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend{value: BORROW_AMOUNT}(nativeBorrowId,lendView.getParamHash(nativeBorrowId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         uint256 ethRequired = SETTLER_REWARD + 8 ether;
-        bytes32 paramHash = lendView.getParamHash(nativeBorrowId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(nativeBorrowId);
         vm.prank(liquidator);
         vm.expectRevert(LendErrors.MsgValue.selector);
         lending.liquidate{value: ethRequired - 1}(
@@ -725,7 +763,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             commitmentFraction,
             0,
-            borrower,
+            borrower,address(0),
+            
             oracleParams,
             _standardInterestRateParams()
         );
@@ -743,7 +782,8 @@ contract NativeEthTest is OpenLendingBaseTest {
             100,
             commitmentFraction,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -754,7 +794,7 @@ contract NativeEthTest is OpenLendingBaseTest {
     }
 
     function _liquidateNativeSupply(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint256 ethRequired = SETTLER_REWARD + 10 ether + 1 ether;
         vm.prank(liquidator);
         lending.liquidate{value: ethRequired}(
@@ -772,7 +812,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         internal
         returns (uint256 reportId)
     {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint256 ethRequired = SETTLER_REWARD + oracleAmount2Target;
         vm.prank(liquidator);
         lending.liquidate{value: ethRequired + extraValue}(
@@ -855,4 +895,5 @@ contract NativeEthTest is OpenLendingBaseTest {
             "liquidator oracle fee split"
         );
     }
+
 }

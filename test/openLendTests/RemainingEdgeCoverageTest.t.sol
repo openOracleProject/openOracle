@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
-import "../../src/oracleFeeReceiver2.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 
 contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     address internal borrower = address(0x11);
@@ -57,7 +57,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.Expired.selector);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
     }
 
     /// @dev `liquidate` reverts at `currentTime >= start + term`. So exactly at maturity is expired.
@@ -67,7 +67,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.warp(uint256(loan.start) + loan.term);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         vm.expectRevert(LendErrors.Expired.selector);
         lending.liquidate{value: 1e15}(
@@ -88,7 +88,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         // Trigger a near-maturity liquidation that fails so a grace period gets set
         vm.warp(uint256(loan.start) + loan.term - 100);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -106,7 +106,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         _settleOracle(reportId);
 
         openLend.LendingArrangement memory afterFailedLiq = lendView.getLending(lendingId);
-        assertEq(afterFailedLiq.gracePeriod, 1800 + (60 + 300) * 2, "exact gracePeriod from failed late liq");
+        assertEq(afterFailedLiq.gracePeriod, 1800 + (60 + 300), "exact gracePeriod from failed late liq");
 
         vm.warp(uint256(loan.start) + loan.term + afterFailedLiq.gracePeriod);
 
@@ -127,7 +127,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testLiquidate_InitializesCloneFeeReceiver() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -142,11 +142,13 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         assertTrue(predicted.code.length > 0, "liquidation should deploy a fee receiver");
 
         oracleFeeReceiver feeReceiver = oracleFeeReceiver(predicted);
-        assertEq(feeReceiver.owner(), address(lending), "clone owner mismatch");
-        assertEq(feeReceiver.gameId(), lendingId, "clone gameId mismatch");
-        assertEq(address(feeReceiver.oracle()), address(oracle), "clone oracle mismatch");
+        assertEq(feeReceiver.lendingId(), lendingId, "clone lendingId mismatch");
+        assertEq(address(feeReceiver.ORACLE()), address(oracle), "clone oracle mismatch");
         assertEq(feeReceiver.token1(), address(supplyToken), "clone token1 mismatch");
         assertEq(feeReceiver.token2(), address(borrowToken), "clone token2 mismatch");
+        assertEq(feeReceiver.borrower(), borrower, "clone borrower mismatch");
+        assertEq(feeReceiver.lender(), lender, "clone lender mismatch");
+        assertEq(feeReceiver.liquidator(), liquidator, "clone liquidator mismatch");
     }
 
     /// @dev Refinance does NOT deploy a fee receiver; only liquidate does. Cleared on lend-refi.
@@ -170,8 +172,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         );
 
         // Lender2 accepts
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(lending.lendingToReportId(lendingId), 0, "refi should not deploy a fee receiver");
     }
@@ -193,16 +196,18 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             noFeeOracleParams,
             _standardInterestRateParams()
         );
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + 10 days);
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -219,15 +224,14 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 reportId = _latestReportId();
         assertEq(_predictFeeReceiver(reportId).code.length, 0, "zero-fee liquidation deploys no fee receiver");
 
-        vm.expectRevert(LendErrors.NoFeeReceiver.selector);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        assertEq(IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient, address(0), "zero-fee report has no recipient");
     }
 
     function testGrabOracleGameFeesAny_PermissionlessMidLiquidationSweepKeepsLoanInLiquidation() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 
         vm.warp(block.timestamp + 10 days);
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -256,7 +260,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(supplyToken));
 
         vm.prank(settler);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         assertTrue(lendView.getLending(lendingId).inLiquidation, "fee grab does not finalize liquidation");
         assertEq(lending.lendingToReportId(lendingId), reportId, "active report remains linked");
@@ -290,7 +294,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -318,7 +322,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 lenderInternalBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(borrowToken));
         uint256 liquidatorInternalBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(borrowToken));
 
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         uint256 feeDust = IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(borrowToken));
         uint256 swept = feeAccrued - feeDust;
@@ -354,7 +358,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         lenderInternalBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(borrowToken));
         liquidatorInternalBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(borrowToken));
 
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         assertEq(borrowToken.balanceOf(borrower), borrowerBefore, "second sweep should be a no-op for borrower");
         assertEq(borrowToken.balanceOf(lender), lenderBefore, "second sweep should be a no-op for lender");
@@ -367,7 +371,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testGrabOracleGameFeesAny_RevertsForWrongLendingId() public {
         uint256 lendingId = _setupActiveLoan(5e6);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -384,8 +388,11 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 otherLendingId = _setupActiveLoan(5e6);
         assertTrue(otherLendingId != lendingId, "two distinct lending ids");
 
-        vm.expectRevert(LendErrors.FeeRecipientNotForLendingId.selector);
-        lending.grabOracleGameFeesAny(otherLendingId, reportId);
+        assertEq(oracleFeeReceiver(_predictFeeReceiver(reportId)).lendingId(), lendingId, "receiver remains bound to original lendingId");
+        openLendDataProvider.Beneficiaries memory wrong = lendView.getBeneficiaries(otherLendingId, _predictFeeReceiver(reportId));
+        assertEq(wrong.borrower, address(0), "wrong lendingId borrower");
+        assertEq(wrong.lender, address(0), "wrong lendingId lender");
+        assertEq(wrong.liquidator, address(0), "wrong lendingId liquidator");
     }
 
     // ---------------- exact-boundary refi/lend ----------------
@@ -408,14 +415,16 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
     function testLend_RefiAtExactGraceEnd_Reverts() public {
         uint256 lendingId = _setupActiveLoanForGrace();
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
-        assertEq(loan.gracePeriod, 1800 + (60 + 300) * 2, "exact gracePeriod from helper");
+        assertEq(loan.gracePeriod, 1800 + (60 + 300), "exact gracePeriod from helper");
 
         // Exactly at the grace boundary
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod);
 
-        vm.prank(lender2);
+        bytes32 paramHashExpected21 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.Expired.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected21, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
     }
 
     /// @dev `lend` (active loan branch) succeeds one second BEFORE grace end.
@@ -426,8 +435,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         // One second before the grace boundary
         vm.warp(uint256(loan.start) + loan.term + loan.gracePeriod - 1);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(lendView.getLending(lendingId).lender, lender2, "should accept refi 1s before grace end");
     }
@@ -439,7 +449,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         // Get into the grace-trigger window
         vm.warp(block.timestamp + LOAN_TERM - 900);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -487,7 +497,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             bad
         );
@@ -514,7 +525,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             flat
         );
@@ -541,7 +553,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             bad
         );
@@ -609,7 +622,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             oracleParams,
             _standardInterestRateParams()
         );
@@ -683,7 +697,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             bad,
             _standardInterestRateParams()
         );
@@ -718,7 +733,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
             stake,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             ir
         );
@@ -811,7 +827,8 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
 
     function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, liquidatorFraction, lender, address(0));
+        vm.stopPrank();
     }
 }

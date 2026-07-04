@@ -148,8 +148,9 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
     function _setupLoan() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _setupLoanWithFinalizerReward(uint64 finalizerReward) internal returns (uint256 lendingId) {
@@ -167,17 +168,19 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             params,
             _standardInterestRateParams()
         );
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD + finalizerReward}(
@@ -251,7 +254,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         uint256 borrowerEthBefore = borrower.balance;
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(borrower.balance - borrowerEthBefore, FINALIZER_REWARD, "auto-finalize pays entry caller");
         assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
@@ -262,7 +265,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         uint256 callerEthBefore = lender2.balance;
         vm.prank(lender2);
-        lending.repayAnyDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayAnyDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(lender2.balance - callerEthBefore, FINALIZER_REWARD, "repayAnyDebt caller gets bounty");
         assertFalse(lendView.getLending(lendingId).inLiquidation, "auto-finalize cleared liquidation");
@@ -344,8 +347,9 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
 
         uint256 lenderEthBefore = lender2.balance;
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(lender2.balance - lenderEthBefore, FINALIZER_REWARD, "lend caller gets bounty");
@@ -517,12 +521,14 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             hugeGasComp,
-            borrower,
+            borrower,address(0),
+            
             params,
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         // Borrower opens a refi mid-loan with another big gasComp staged for the next lender
         vm.prank(borrower);
@@ -649,7 +655,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 5 ether, projectedHash, 0, type(uint128).max);
+        lending.repayDebt(lendingId, 5 ether, projectedHash, 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "auto-finalize clears after prior oracle settle");
@@ -678,7 +684,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint256 lenderBefore = borrowToken.balanceOf(lender);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialRepay, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, partialRepay, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "inLiquidation cleared by auto-settle");
@@ -732,7 +738,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         // Whole tx reverts → all state including the settle should unwind.
         vm.prank(borrower);
         vm.expectRevert(LendErrors.Finished.selector);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         // Verify EVM rollback unwound everything: state matches pre-call snapshot.
         openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
@@ -782,7 +788,13 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         evil.setTarget(address(lending));
         evil.setPayload(abi.encodeWithSelector(
-            lending.repayDebt.selector, lendingId, uint128(1 ether), bytes32(0), uint128(0), type(uint128).max
+            lending.repayDebt.selector,
+            lendingId,
+            uint128(1 ether),
+            bytes32(0),
+            uint128(0),
+            type(uint128).max,
+            false
         ));
 
         vm.prank(settler);
@@ -822,7 +834,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         assertTrue(lendView.getLending(lendingId).finished, "outer settle completed");
     }
 
-    function testFinalize_ReentryFromFinalize_GrabFeesDoesNotBlockSettlement() public {
+    function testFinalize_ReentryFromFinalize_CancelRefinanceDoesNotBlockSettlement() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
         uint256 lendingId = _setupLoanWithEvilSupplyToken(evil);
         vm.warp(block.timestamp + 10 days);
@@ -833,16 +845,16 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         evil.setTarget(address(lending));
         evil.setPayload(
-            abi.encodeWithSelector(lending.grabOracleGameFeesAny.selector, lendingId, reportId)
+            abi.encodeWithSelector(lending.cancelRefinance.selector, lendingId)
         );
 
         vm.prank(settler);
         _settleOracle(reportId);
 
-        assertTrue(evil.lastReentryReverted(), "nested fee grab rejected");
+        assertTrue(evil.lastReentryReverted(), "nested cancel refinance rejected");
         assertTrue(
             _revertHasSelector(evil.lastReentryReason(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector),
-            "nested fee grab hit reentrancy guard"
+            "nested cancel refinance hit reentrancy guard"
         );
         assertTrue(lendView.getLending(lendingId).finished, "outer settle completed");
     }
@@ -928,7 +940,13 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint8 action = actionSeed % 7;
         if (action == 0) {
             payload = abi.encodeWithSelector(
-                lending.repayDebt.selector, lendingId, uint128(1 ether), bytes32(0), uint128(0), type(uint128).max
+                lending.repayDebt.selector,
+                lendingId,
+                uint128(1 ether),
+                bytes32(0),
+                uint128(0),
+                type(uint128).max,
+                false
             );
         } else if (action == 1) {
             payload = abi.encodeWithSelector(
@@ -949,7 +967,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
                 type(uint128).max
             );
         } else if (action == 3) {
-            payload = abi.encodeWithSelector(lending.grabOracleGameFeesAny.selector, lendingId, reportId);
+            payload = abi.encodeWithSelector(lending.cancelRefinance.selector, lendingId);
         } else if (action == 4) {
             payload = abi.encodeWithSelector(lending.finalize.selector, lendingId);
         } else if (action == 5) {
@@ -1041,15 +1059,13 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(evil));
         uint256 feeRecipientBefore = IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(evil));
 
-        // During sweep(evil), the evil token tries to reenter collect() on the same fee receiver.
-        // The receiver's own nonReentrant should reject that nested collect, while the outer sweep
-        // still returns the exact amount distributed by openLend.
+        // Fee distribution is oracle-internal, so the evil token's external transfer hook should not fire.
         evil.setTarget(feeRecipient);
-        evil.setPayload(abi.encodeWithSignature("collect()"));
+        evil.setPayload(abi.encodeWithSignature("distribute()"));
         evil.setAttackLimit(1);
 
         vm.prank(randomCaller);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         assertEq(evil.attackCount(), 0, "internal fee sweep should not fire token hook");
 
@@ -1082,7 +1098,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     function testGrabFeesDoesNotTriggerNestedFinalizeOfOtherLoan() public {
         ReentrantSupplyToken evil = new ReentrantSupplyToken();
 
-        // Two loans sharing the evil supply token: A drives the outer grabOracleGameFeesAny,
+        // Two loans sharing the evil supply token: A drives the outer fee distribution,
         // B would be finalized by a token hook if fee sweeping used external token transfers.
         uint256 lendingIdA = _setupLoanWithEvilSupplyToken(evil);
         uint256 lendingIdB = _setupLoanWithEvilSupplyToken(evil);
@@ -1114,7 +1130,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         assertEq(settleTsBBefore, 0, "B not settled pre-test");
 
         vm.prank(randomCaller);
-        lending.grabOracleGameFeesAny(lendingIdA, reportIdA);
+        _distributeOracleGameFees(reportIdA);
 
         assertEq(evil.attackCount(), 0, "fee sweep should not call token transfer hook");
 
@@ -1143,7 +1159,13 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
 
         evil.setTarget(address(lending));
         evil.setPayload(abi.encodeWithSelector(
-            lending.repayDebt.selector, lendingId, uint128(1 ether), bytes32(0), uint128(0), type(uint128).max
+            lending.repayDebt.selector,
+            lendingId,
+            uint128(1 ether),
+            bytes32(0),
+            uint128(0),
+            type(uint128).max,
+            false
         ));
 
         vm.prank(randomCaller);
@@ -1249,12 +1271,14 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _liquidateEvil(uint256 lendingId, ReentrantSupplyToken evil) internal returns (uint256 reportId) {
@@ -1263,7 +1287,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
     }
 
     function _liquidateEvilAt(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD + finalizerReward}(

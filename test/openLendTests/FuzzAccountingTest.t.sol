@@ -48,7 +48,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         uint256 contractBorrowBefore = borrowToken.balanceOf(address(lending));
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.finished, "partial repayment should not finish the loan");
@@ -80,7 +80,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender1);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "full repayment branch should finish the loan");
@@ -139,8 +139,9 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
         );
 
         // Lender2 accepts at the current curve
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.principal, expectedNewBorrow,
@@ -193,7 +194,7 @@ contract FuzzAccountingTest is OpenLendingBaseTest {
             uint128 amount = uint128(bound(uint256(uint96(uint256(sizeSeed) ^ (i * 9587))), 1, residual - 1));
 
             vm.prank(borrower);
-            lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max);
+            lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max, false);
             totalRepaid += amount;
 
             // Per-round amort invariant: interestPaid never exceeds the lender's interest claim

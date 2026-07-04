@@ -139,7 +139,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         vm.expectEmit(true, true, false, true, address(lending));
         emit DebtRepaid(lendingId, borrower, totalOwed, true);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         assertTrue(loanAfter.finished, "Loan should be finished after full repayment");
@@ -176,7 +176,7 @@ contract HappyPathTest is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.Expired.selector);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         vm.expectEmit(true, false, false, true, address(lending));
         emit CollateralClaimedByLender(lendingId, SUPPLY_AMOUNT);
@@ -207,7 +207,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 15 days);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, partialRepayment, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // assertEq(loan.repaidDebt, partialRepayment, "Repaid debt should match partial payment");  // [amort: removed/no-op]
@@ -261,7 +261,8 @@ contract HappyPathTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -280,7 +281,8 @@ contract HappyPathTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -307,7 +309,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint256 payerSupplyBefore = supplyToken.balanceOf(payer);
 
         vm.prank(payer);
-        lending.repayAnyDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayAnyDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         // Loan finished
         assertTrue(lendView.getLending(lendingId).finished, "loan should be finished");
@@ -341,7 +343,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         uint256 payerBorrowBefore = borrowToken.balanceOf(payer);
 
         vm.prank(payer);
-        lending.repayAnyDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
+        lending.repayAnyDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max, false);
 
         // Loan still live
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -360,12 +362,12 @@ contract HappyPathTest is OpenLendingBaseTest {
         // Loose-hash + bounds gates still apply: partial w/ wrong hash reverts
         vm.prank(payer);
         vm.expectRevert(LendErrors.Params.selector);
-        lending.repayAnyDebt(lendingId, 1 ether, bytes32(uint256(1)), 0, type(uint128).max);
+        lending.repayAnyDebt(lendingId, 1 ether, bytes32(uint256(1)), 0, type(uint128).max, false);
 
         // expectedMaxPrincipal gate: cap well below current principal → reverts
         vm.prank(payer);
         vm.expectRevert(LendErrors.PrincipalTooHigh.selector);
-        lending.repayAnyDebt(lendingId, 1 ether, bytes32(0), 0, 1 ether);
+        lending.repayAnyDebt(lendingId, 1 ether, bytes32(0), 0, 1 ether, false);
     }
 
     function testLend_OriginationAcceptsCorrectParamHash() public {
@@ -374,7 +376,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         bytes32 hash = lendView.getParamHash(lendingId);
 
         vm.prank(lender);
-        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0, lender);
+        lending.lend(lendingId, hash, 0, type(uint128).max, 0, 0, 0, lender, address(0));
 
         assertTrue(lendView.getLending(lendingId).active, "origination should succeed with correct hash");
     }
@@ -385,7 +387,7 @@ contract HappyPathTest is OpenLendingBaseTest {
         bytes32 wrong = bytes32(uint256(0xdead));
         vm.prank(lender);
         vm.expectRevert(LendErrors.Params.selector);
-        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0, lender);
+        lending.lend(lendingId, wrong, 0, type(uint128).max, 0, 0, 0, lender, address(0));
     }
 
     /// @dev Replaces the V2 "view the offer" test. V3 has no offer slot — the curve is the offer.

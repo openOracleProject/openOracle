@@ -2,17 +2,18 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/openLendParamHashHelper.sol";
+import "../../src/lend/openLend.sol";
+import "../../src/lend/openLendDataProvider.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
 
 abstract contract OpenLendingBaseTest is Test {
     openLend internal lending;
-    openLendParamHashHelper internal lendView;
+    openLendDataProvider internal lendView;
     OpenOracle internal oracle;
     MockERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -29,7 +30,7 @@ abstract contract OpenLendingBaseTest is Test {
         oracle = new OpenOracle();
         weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
+        lendView = new openLendDataProvider(lending, IOpenOracle2(address(oracle)));
         supplyToken = new MockERC20(supplyName, supplySymbol);
         borrowToken = new MockERC20(borrowName, borrowSymbol);
     }
@@ -138,7 +139,8 @@ abstract contract OpenLendingBaseTest is Test {
             100,                 // 1% liquidator stake
             commitmentFraction,
             gasCompensation,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -158,7 +160,7 @@ abstract contract OpenLendingBaseTest is Test {
         });
     }
 
-    /// @dev Lender accepts the current rate on the curve. Skips paramHash and rate floor for simple test paths.
+    /// @dev Lender accepts the current rate on the curve. Uses the current paramHash and skips the rate floor for simple test paths.
     ///      Defaults `liquidatorFraction = 0` (lender keeps all of any post-settlement equity buffer).
     function _lend(address lender, uint256 lendingId) internal {
         _lendWithFraction(lender, lendingId, 0);
@@ -166,16 +168,18 @@ abstract contract OpenLendingBaseTest is Test {
 
     /// @dev Same as `_lend` but allows specifying `liquidatorFraction` (1e7 fixed-point).
     function _lendWithFraction(address lender, uint256 lendingId, uint24 liquidatorFraction) internal {
+        bytes32 paramHash = lendView.getParamHash(lendingId);
         vm.prank(lender);
         lending.lend(
             lendingId,
-            bytes32(0),          // skip paramHash
+            paramHash,
             0,                   // minLendAmount (refi-only, ignored on origination)
             type(uint128).max,   // maxLendAmount (refi-only, ignored on origination)
             0,                   // expectedMinSupply
             0,                   // minRate floor
             liquidatorFraction,
-            lender
+            lender,
+            address(0)
         );
     }
 
@@ -199,10 +203,26 @@ abstract contract OpenLendingBaseTest is Test {
         return uint128(principal + interest);
     }
 
-    /// @dev Predicts the deterministic fee-receiver clone address for a given oracle reportId.
+    /// @dev Predicts the deterministic fee-receiver clone address for a report after `liquidate` has linked it.
     function _predictFeeReceiver(uint256 reportId) internal view returns (address) {
-        return Clones.predictDeterministicAddress(
+        uint256 lendingId = _lendingIdForReportId(reportId);
+        if (lendingId == 0) return IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient;
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        return _predictFeeReceiver(reportId, lendingId, loan.liquidator);
+    }
+
+    /// @dev Predicts the deterministic fee-receiver clone address before liquidation has written report links.
+    function _predictFeeReceiver(uint256 reportId, uint256 lendingId, address liquidator)
+        internal
+        view
+        returns (address)
+    {
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        bytes memory args =
+            abi.encodePacked(lendingId, loan.supplyToken, loan.borrowToken, loan.borrower, loan.lender, liquidator);
+        return LibClone.predictDeterministicAddress(
             lending.feeReceiverImpl(),
+            args,
             bytes32(reportId),
             address(lending)
         );
@@ -219,6 +239,10 @@ abstract contract OpenLendingBaseTest is Test {
             if (lending.lendingToReportId(lendingId) == reportId) return lendingId;
         }
         return 0;
+    }
+
+    function _distributeOracleGameFees(uint256 reportId) internal returns (uint256 fees1, uint256 fees2) {
+        return oracleFeeReceiver(_predictFeeReceiver(reportId)).distribute();
     }
 
     function _emptyTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory timing) {}
@@ -284,7 +308,7 @@ abstract contract OpenLendingBaseTest is Test {
 
     function _failedLiqGracePeriod(uint256 reportId, uint256 liquidationStart) internal view returns (uint48) {
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
-        return uint48(1800 + (uint256(o.reportTimestamp) + o.settlementTime - liquidationStart) * 2);
+        return uint48(1800 + (uint256(o.reportTimestamp) + o.settlementTime - liquidationStart));
     }
 
     function _reportStatus(uint256 reportId)

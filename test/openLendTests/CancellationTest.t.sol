@@ -124,9 +124,11 @@ contract CancellationTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.cancelBorrowRequest(lendingId);
 
-        vm.prank(lender);
+        bytes32 paramHashExpected4 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender);
         vm.expectRevert(LendErrors.Cancelled.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        lending.lend(lendingId,paramHashExpected4, 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     // =========================================================================

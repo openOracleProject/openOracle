@@ -3,12 +3,21 @@ pragma solidity ^0.8.26;
 
 import "./OpenLendingBase.t.sol";
 import {IOpenLend} from "../../src/interfaces/IOpenLend.sol";
-import {openLendEthUsdcAdapter1} from "../../src/ETHUSDCLendingAdapter.sol";
+import {openLendEthUsdcAdapter1} from "../../src/lend/ETHUSDCLendingAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
 
 contract AdapterRejectingLender {
+    function approveAndRequest(
+        IERC20 token,
+        openLendEthUsdcAdapter1 adapter,
+        openLendEthUsdcAdapter1.BorrowParams calldata params
+    ) external payable returns (uint256 lendingId) {
+        token.approve(address(adapter), type(uint256).max);
+        lendingId = adapter.requestBorrowAdapter{value: msg.value}(params);
+    }
+
     function approveAndLend(
         IERC20 token,
         openLendEthUsdcAdapter1 adapter,
@@ -17,6 +26,13 @@ contract AdapterRejectingLender {
     ) external {
         token.approve(address(adapter), type(uint256).max);
         adapter.lendAdapter(params, amount);
+    }
+
+    function refinanceThroughAdapter(
+        openLendEthUsdcAdapter1 adapter,
+        openLendEthUsdcAdapter1.RefiAdapterParams calldata params
+    ) external payable {
+        adapter.refinanceAdapter{value: msg.value}(params);
     }
 }
 
@@ -118,6 +134,7 @@ contract AdapterOverpullOpenLend {
         uint128,
         uint32,
         uint24,
+        address,
         address
     ) external {
         IERC20(loan.borrowToken).transferFrom(msg.sender, address(this), uint256(loan.principal) + 1);
@@ -245,8 +262,26 @@ contract AdapterWethBountyOpenLend {
         uint128,
         uint32,
         uint24,
+        address,
         address
     ) external {
+        (bool ok,) = WETH.call{value: bounty}(abi.encodeWithSignature("deposit()"));
+        require(ok, "deposit failed");
+        IERC20(WETH).transfer(msg.sender, bounty);
+    }
+
+    function refinance(
+        uint256,
+        uint128,
+        uint128,
+        uint48,
+        uint96,
+        IOpenLend.InterestRateParams calldata,
+        IOpenLend.OracleParams calldata,
+        bytes32,
+        uint128,
+        uint128
+    ) external payable {
         (bool ok,) = WETH.call{value: bounty}(abi.encodeWithSignature("deposit()"));
         require(ok, "deposit failed");
         IERC20(WETH).transfer(msg.sender, bounty);
@@ -407,7 +442,7 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         params.stake = 10;
         params.oracleParams.oracleGameFee = 25_000;
         params.oracleParams.multiplier = 130;
-        params.oracleParams.maxBaseFee = 20e9;
+        params.oracleParams.maxBaseFee = 0;
         params.oracleParams.finalizerReward = 0.0005 ether;
         params.interestRateParams.maxRate = 5e7;
         params.interestRateParams.startingRate = 5e7;
@@ -435,7 +470,7 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         params.oracleParams.escalationFactor = 250;
         params.oracleParams.initialLiquidity = 100;
         params.oracleParams.multiplier = 250;
-        params.oracleParams.maxBaseFee = 20e9;
+        params.oracleParams.maxBaseFee = 0;
         params.oracleParams.finalizerReward = 0.01 ether;
         params.interestRateParams.maxRate = 3.5e8;
         params.interestRateParams.startingRate = 5e7;
@@ -484,12 +519,12 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         _assertDirectRequestAcceptedAdapterRejected(params);
 
         params = _borrowParams(address(supplyToken), address(borrowToken), borrower, 0);
-        params.oracleParams.escalationFactor = 300;
+        params.oracleParams.escalationFactor = 500;
         _assertDirectRequestAcceptedAdapterRejected(params);
 
         params = _borrowParams(address(supplyToken), address(borrowToken), borrower, 0);
-        params.oracleParams.initialLiquidity = 150;
-        params.oracleParams.escalationFactor = 200;
+        params.oracleParams.initialLiquidity = 201;
+        params.oracleParams.escalationFactor = 250;
         _assertDirectRequestAcceptedAdapterRejected(params);
 
         params = _borrowParams(address(supplyToken), address(borrowToken), borrower, 0);
@@ -549,7 +584,8 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
             params.stake,
             params.commitmentFraction,
             params.gasCompensation,
-            borrower,
+            borrower,address(0),
+            
             _toOpenLendOracleParams(params.oracleParams),
             _toOpenLendInterestRateParams(params.interestRateParams)
         );
@@ -1121,6 +1157,263 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         adapter.requestBorrowAdapter{value: GAS_COMP}(params);
     }
 
+    function testRefinanceAdapter_OpensRefiThroughAdapterDelegateAndLeavesNoBalances() public {
+        uint256 lendingId = _requestThroughAdapter(adapter, address(supplyToken), address(borrowToken), GAS_COMP);
+        openLendEthUsdcAdapter1.LendParams memory lendParams = _lendParams(lendingId, lender, 0);
+        vm.prank(lender);
+        adapter.lendAdapter(lendParams, BORROW_AMOUNT);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        refiParams.extraDemanded = 1 ether;
+        refiParams.newTerm = LOAN_TERM + 1 days;
+        refiParams.gasCompensation = GAS_COMP;
+        address[] memory actors = _actors3(borrower, address(adapter), address(lending));
+        uint256 ethBefore = _sumEth(actors);
+
+        vm.prank(borrower);
+        adapter.refinanceAdapter{value: GAS_COMP}(refiParams);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertTrue(loan.curveOpen);
+        assertEq(loan.refiParams.extraDemanded, 1 ether);
+        assertEq(loan.refiParams.newTerm, LOAN_TERM + 1 days);
+        assertEq(loan.gasCompensation, GAS_COMP);
+        assertEq(_sumEth(actors), ethBefore);
+        assertEq(address(adapter).balance, 0);
+        assertEq(supplyToken.balanceOf(address(adapter)), 0);
+        assertEq(borrowToken.balanceOf(address(adapter)), 0);
+    }
+
+    function testRefinanceAdapter_RejectsZeroHashAndBadCaller() public {
+        uint256 lendingId = _requestThroughAdapter(adapter, address(supplyToken), address(borrowToken), 0);
+        openLendEthUsdcAdapter1.LendParams memory lendParams = _lendParams(lendingId, lender, 0);
+        vm.prank(lender);
+        adapter.lendAdapter(lendParams, BORROW_AMOUNT);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        refiParams.expectedParamHash = bytes32(0);
+
+        vm.prank(borrower);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.refinanceAdapter(refiParams);
+
+        refiParams.expectedParamHash = lendView.getParamHash(lendingId);
+        vm.prank(lender);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.refinanceAdapter(refiParams);
+    }
+
+    function testRefinanceAdapter_RejectsBadStagedOracleAndInterestParams() public {
+        uint256 lendingId = _requestThroughAdapter(adapter, address(supplyToken), address(borrowToken), 0);
+        openLendEthUsdcAdapter1.LendParams memory lendParams = _lendParams(lendingId, lender, 0);
+        vm.prank(lender);
+        adapter.lendAdapter(lendParams, BORROW_AMOUNT);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        refiParams.oracleParams = _adapterOracleParams();
+        refiParams.oracleParams.settlementTime = 2 hours;
+
+        vm.prank(borrower);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.refinanceAdapter(refiParams);
+
+        refiParams = _refiAdapterParams(lendingId);
+        refiParams.interestRateParams = _adapterInterestParams();
+        refiParams.interestRateParams.roundLength = 6 minutes;
+
+        vm.prank(borrower);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.refinanceAdapter(refiParams);
+    }
+
+    function testRefinanceAdapter_AutoFinalizeSweepsFinalizerRewardToBorrower() public {
+        (uint256 lendingId, uint64 finalizerReward) = _setupSettleableFailedLiquidationNoRefi(uint64(0.004 ether));
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        refiParams.extraDemanded = 1 ether;
+        refiParams.newTerm = LOAN_TERM + 1 days;
+        address[] memory ethActors = _actors3(borrower, address(adapter), address(lending));
+        uint256 ethBefore = _sumEth(ethActors);
+        uint256 borrowerEthBefore = borrower.balance;
+
+        vm.prank(borrower);
+        adapter.refinanceAdapter(refiParams);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation);
+        assertTrue(loan.curveOpen);
+        assertEq(loan.refiParams.extraDemanded, 1 ether);
+        assertEq(loan.refiParams.newTerm, LOAN_TERM + 1 days);
+        assertEq(borrower.balance - borrowerEthBefore, finalizerReward);
+        assertEq(_sumEth(ethActors), ethBefore);
+        assertEq(address(adapter).balance, 0);
+        assertEq(weth.balanceOf(address(adapter)), 0);
+    }
+
+    function testRefinanceAdapter_DonationsAreNotSweptToBorrower() public {
+        (uint256 lendingId, uint64 finalizerReward) = _setupSettleableFailedLiquidationNoRefi(uint64(0.005 ether));
+        uint256 ethDonation = 2 ether;
+        uint256 wethDonation = 0.7 ether;
+        vm.deal(address(this), ethDonation + wethDonation);
+        (bool ok,) = payable(address(adapter)).call{value: ethDonation}("");
+        assertTrue(ok);
+        weth.deposit{value: wethDonation}();
+        weth.transfer(address(adapter), wethDonation);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        address[] memory ethActors = _actors3(borrower, address(adapter), address(lending));
+        uint256 ethBefore = _sumEth(ethActors);
+        uint256 borrowerEthBefore = borrower.balance;
+
+        vm.prank(borrower);
+        adapter.refinanceAdapter(refiParams);
+
+        assertEq(borrower.balance - borrowerEthBefore, finalizerReward);
+        assertEq(_sumEth(ethActors), ethBefore);
+        assertEq(address(adapter).balance, ethDonation);
+        assertEq(weth.balanceOf(address(adapter)), wethDonation);
+    }
+
+    function testFuzzRefinanceAdapter_AutoFinalizeRewardGasCompAndDonationsConserved(
+        uint64 finalizerRewardSeed,
+        uint96 gasCompSeed,
+        uint96 ethDonationSeed,
+        uint96 wethDonationSeed
+    ) public {
+        uint64 finalizerReward = uint64(bound(uint256(finalizerRewardSeed), 0.0005 ether, 0.01 ether));
+        uint96 gasCompensation = uint96(bound(uint256(gasCompSeed), 0, 0.05 ether));
+        uint256 ethDonation = bound(uint256(ethDonationSeed), 0, 5 ether);
+        uint256 wethDonation = bound(uint256(wethDonationSeed), 0, 5 ether);
+        (uint256 lendingId,) = _setupSettleableFailedLiquidationNoRefi(finalizerReward);
+
+        vm.deal(address(this), ethDonation + wethDonation);
+        if (ethDonation > 0) {
+            (bool ok,) = payable(address(adapter)).call{value: ethDonation}("");
+            assertTrue(ok);
+        }
+        if (wethDonation > 0) {
+            weth.deposit{value: wethDonation}();
+            weth.transfer(address(adapter), wethDonation);
+        }
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        refiParams.gasCompensation = gasCompensation;
+        address[] memory ethActors = _actors3(borrower, address(adapter), address(lending));
+        uint256 ethBefore = _sumEth(ethActors);
+        uint256 borrowerEthBefore = borrower.balance;
+
+        vm.prank(borrower);
+        adapter.refinanceAdapter{value: gasCompensation}(refiParams);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertFalse(loan.inLiquidation);
+        assertTrue(loan.curveOpen);
+        assertEq(_sumEth(ethActors), ethBefore);
+        assertEq(borrower.balance + gasCompensation, borrowerEthBefore + finalizerReward);
+        assertEq(address(adapter).balance, ethDonation);
+        assertEq(weth.balanceOf(address(adapter)), wethDonation);
+    }
+
+    function testRefinanceAdapter_SweepsWethFallbackBountyToCallerWithoutSweepingDonation() public {
+        uint256 bounty = 0.004 ether;
+        uint256 donation = 0.7 ether;
+        vm.deal(address(this), bounty + donation);
+        AdapterWethBountyOpenLend mockOpenLend =
+            new AdapterWethBountyOpenLend{value: bounty}(address(supplyToken), address(weth), bounty);
+        openLendEthUsdcAdapter1 fallbackAdapter =
+            new openLendEthUsdcAdapter1(address(mockOpenLend), address(supplyToken), address(0));
+
+        weth.deposit{value: donation}();
+        weth.transfer(address(fallbackAdapter), donation);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = openLendEthUsdcAdapter1.RefiAdapterParams({
+            lendingId: 1,
+            extraDemanded: 0,
+            supplyPulled: 0,
+            newTerm: LOAN_TERM,
+            gasCompensation: 0,
+            interestRateParams: _zeroAdapterInterestParams(),
+            oracleParams: _zeroAdapterOracleParams(),
+            expectedParamHash: bytes32(uint256(1)),
+            expectedMinSupply: 0,
+            expectedMaxPrincipal: type(uint128).max
+        });
+        uint256 ethBefore = address(mockOpenLend).balance + address(weth).balance;
+        uint256 borrowerWethBefore = weth.balanceOf(borrower);
+
+        vm.prank(borrower);
+        fallbackAdapter.refinanceAdapter(refiParams);
+
+        assertEq(weth.balanceOf(borrower) - borrowerWethBefore, bounty);
+        assertEq(weth.balanceOf(address(fallbackAdapter)), donation);
+        assertEq(address(fallbackAdapter).balance, 0);
+        assertEq(address(mockOpenLend).balance + address(weth).balance, ethBefore);
+    }
+
+    function testRefinanceAdapter_AutoFinalizeRewardSweepRevertsWhenCallerRejectsEth() public {
+        AdapterRejectingLender rejecter = new AdapterRejectingLender();
+        supplyToken.transfer(address(rejecter), SUPPLY_AMOUNT);
+
+        openLendEthUsdcAdapter1.BorrowParams memory borrowParams =
+            _borrowParams(address(supplyToken), address(borrowToken), address(rejecter), 0);
+        uint256 lendingId = rejecter.approveAndRequest(IERC20(address(supplyToken)), adapter, borrowParams);
+
+        openLendEthUsdcAdapter1.LendParams memory lendParams = _lendParams(lendingId, lender, 0);
+        vm.prank(lender);
+        adapter.lendAdapter(lendParams, BORROW_AMOUNT);
+
+        uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
+        vm.startPrank(liquidator);
+        lending.liquidate{value: uint256(SETTLER_REWARD) + finalizerReward}(
+            lendingId,
+            _priceRatioFor(6 ether),
+            type(uint128).max,
+            lendView.getLiquidateParamHash(lendingId),
+            0,
+            SETTLER_REWARD,
+            liquidator,
+            finalizerReward,
+            _emptyTiming()
+        );
+        vm.stopPrank();
+
+        uint256 reportId = _latestReportId();
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(game.reportTimestamp) + game.settlementTime + 1);
+
+        openLendEthUsdcAdapter1.RefiAdapterParams memory refiParams = _refiAdapterParams(lendingId);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        rejecter.refinanceThroughAdapter(adapter, refiParams);
+
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        assertTrue(loan.inLiquidation);
+        assertFalse(loan.curveOpen);
+        assertEq(address(adapter).balance, 0);
+    }
+
+    function testAdapter_FailedRequestAndLendDoNotChangeUserIndexes() public {
+        uint256 borrowCountBefore = adapter.userBorrowCount(borrower);
+        openLendEthUsdcAdapter1.BorrowParams memory badBorrow =
+            _borrowParams(address(supplyToken), address(borrowToken), address(0xBAD), 0);
+
+        vm.prank(borrower);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.requestBorrowAdapter(badBorrow);
+
+        assertEq(adapter.userBorrowCount(borrower), borrowCountBefore);
+
+        uint256 lendingId = _requestThroughAdapter(adapter, address(supplyToken), address(borrowToken), 0);
+        uint256 lendCountBefore = adapter.userLendCount(lender);
+        openLendEthUsdcAdapter1.LendParams memory badLend = _lendParams(lendingId, lender, 0);
+        badLend.paramHashExpected = bytes32(0);
+
+        vm.prank(lender);
+        vm.expectRevert(openLendEthUsdcAdapter1.InvalidParams.selector);
+        adapter.lendAdapter(badLend, BORROW_AMOUNT);
+
+        assertEq(adapter.userLendCount(lender), lendCountBefore);
+    }
+
     function _requestThroughAdapter(
         openLendEthUsdcAdapter1 targetAdapter,
         address supply,
@@ -1152,7 +1445,8 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
             params.stake,
             params.commitmentFraction,
             params.gasCompensation,
-            params.borrower,
+            params.borrower,address(0),
+            
             _toOpenLendOracleParams(params.oracleParams),
             _toOpenLendInterestRateParams(params.interestRateParams)
         );
@@ -1186,18 +1480,19 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
 
         finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
 
-        vm.prank(liquidator);
+        vm.startPrank(liquidator);
         lending.liquidate{value: uint256(SETTLER_REWARD) + finalizerReward}(
             lendingId,
             _priceRatioFor(6 ether),
             type(uint128).max,
-            bytes32(0),
+            lendView.getLiquidateParamHash(lendingId),
             0,
             SETTLER_REWARD,
             liquidator,
             finalizerReward,
             _emptyTiming()
         );
+        vm.stopPrank();
 
         uint256 reportId = _latestReportId();
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -1220,6 +1515,43 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         vm.warp(uint256(game.reportTimestamp) + game.settlementTime + 1);
     }
 
+    function _setupSettleableFailedLiquidationNoRefi(uint64 requestedFinalizerReward)
+        internal
+        returns (uint256 lendingId, uint64 finalizerReward)
+    {
+        openLendEthUsdcAdapter1.BorrowParams memory borrowParams =
+            _borrowParams(address(supplyToken), address(borrowToken), borrower, 0);
+        borrowParams.oracleParams.finalizerReward = requestedFinalizerReward;
+
+        vm.prank(borrower);
+        lendingId = adapter.requestBorrowAdapter(borrowParams);
+        openLendEthUsdcAdapter1.LendParams memory initialParams = _lendParams(lendingId, lender, 0);
+
+        vm.prank(lender);
+        adapter.lendAdapter(initialParams, BORROW_AMOUNT);
+
+        finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
+
+        vm.startPrank(liquidator);
+        lending.liquidate{value: uint256(SETTLER_REWARD) + finalizerReward}(
+            lendingId,
+            _priceRatioFor(6 ether),
+            type(uint128).max,
+            lendView.getLiquidateParamHash(lendingId),
+            0,
+            SETTLER_REWARD,
+            liquidator,
+            finalizerReward,
+            _emptyTiming()
+        );
+        vm.stopPrank();
+
+        uint256 reportId = _latestReportId();
+        _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        vm.warp(uint256(game.reportTimestamp) + game.settlementTime + 1);
+    }
+
     function _setupNativeBorrowSettleableFailedLiquidationWithOpenRefi()
         internal
         returns (uint256 lendingId, uint64 finalizerReward)
@@ -1237,18 +1569,18 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
         finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         uint256 oracleAmount2 = 6 ether;
 
-        vm.prank(liquidator);
+        vm.startPrank(liquidator);
         lending.liquidate{value: uint256(SETTLER_REWARD) + finalizerReward + oracleAmount2}(
             lendingId,
             _priceRatioFor(oracleAmount2),
-            type(uint128).max,
-            bytes32(0),
+            type(uint128).max,lendView.getLiquidateParamHash(lendingId),
             0,
             SETTLER_REWARD,
             liquidator,
             finalizerReward,
             _emptyTiming()
         );
+        vm.stopPrank();
 
         uint256 reportId = _latestReportId();
         _disputeNativeBorrowToNonLiquidatingPrice(reportId, disputer);
@@ -1442,6 +1774,48 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
             roundLength: p.roundLength,
             growthRate: p.growthRate,
             maxRounds: p.maxRounds
+        });
+    }
+
+    function _refiAdapterParams(uint256 lendingId)
+        internal
+        view
+        returns (openLendEthUsdcAdapter1.RefiAdapterParams memory params)
+    {
+        params = openLendEthUsdcAdapter1.RefiAdapterParams({
+            lendingId: lendingId,
+            extraDemanded: 0,
+            supplyPulled: 0,
+            newTerm: LOAN_TERM,
+            gasCompensation: 0,
+            interestRateParams: _zeroAdapterInterestParams(),
+            oracleParams: _zeroAdapterOracleParams(),
+            expectedParamHash: lendView.getParamHash(lendingId),
+            expectedMinSupply: 0,
+            expectedMaxPrincipal: type(uint128).max
+        });
+    }
+
+    function _zeroAdapterOracleParams() internal pure returns (IOpenLend.OracleParams memory) {
+        return IOpenLend.OracleParams({
+            settlementTime: 0,
+            disputeDelay: 0,
+            oracleGameFee: 0,
+            escalationFactor: 0,
+            initialLiquidity: 0,
+            multiplier: 0,
+            maxBaseFee: 0,
+            finalizerReward: 0
+        });
+    }
+
+    function _zeroAdapterInterestParams() internal pure returns (IOpenLend.InterestRateParams memory) {
+        return IOpenLend.InterestRateParams({
+            maxRate: 0,
+            startingRate: 0,
+            roundLength: 0,
+            growthRate: 0,
+            maxRounds: 0
         });
     }
 

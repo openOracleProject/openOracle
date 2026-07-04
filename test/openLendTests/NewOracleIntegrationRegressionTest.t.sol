@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "./OpenLendingBase.t.sol";
 import "../../src/libraries/Errors.sol";
-import "../../src/oracleFeeReceiver2.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract BigMintERC20 is ERC20 {
@@ -29,12 +29,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
     uint48 internal constant LOAN_TERM = 30 days;
     uint96 internal constant SETTLER_REWARD = 1e15;
 
-    event OracleGameFeesGrabbed(
-        uint256 indexed lendingId,
-        address indexed feeRecipient,
-        uint256 feesSupply,
-        uint256 feesBorrow
-    );
+    event FeesDistributed(uint256 indexed lendingId, uint256 fees1, uint256 fees2);
 
     function setUp() public {
         _deployCore("Supply Token", "SUP", "Borrow Token", "BOR");
@@ -63,9 +58,9 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
     function testLiquidate_ForwardsValidTimingAndStoresExactOracleGameFields() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = oracle.nextReportId();
-        address feeRecipient = _predictFeeReceiver(reportId);
+        address feeRecipient = _predictFeeReceiver(reportId, lendingId, liquidator);
         IOpenOracle2.TimingBoundaries memory timing = _currentTiming();
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
@@ -116,8 +111,8 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
     function testLiquidate_StaleTimingRevertsAndRollsBackAllLocalState() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = oracle.nextReportId();
-        address feeRecipient = _predictFeeReceiver(reportId);
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        address feeRecipient = _predictFeeReceiver(reportId, lendingId, liquidator);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         IOpenOracle2.TimingBoundaries memory stale = IOpenOracle2.TimingBoundaries({
             blockNumber: block.number,
             blockNumberBound: 60,
@@ -158,8 +153,8 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
     function testLiquidate_StaleBlockNumberTimingRevertsAndRollsBackAllLocalState() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = oracle.nextReportId();
-        address feeRecipient = _predictFeeReceiver(reportId);
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        address feeRecipient = _predictFeeReceiver(reportId, lendingId, liquidator);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         IOpenOracle2.TimingBoundaries memory stale = IOpenOracle2.TimingBoundaries({
             blockNumber: block.number + 1,
             blockNumberBound: 0,
@@ -204,7 +199,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 reportId = oracle.nextReportId();
         address predicted = _predictFeeReceiver(reportId);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
@@ -231,39 +226,41 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
 
     function testLiquidate_InitialReportEligibilityExactBoundary() public {
         uint256 equalId = _setupThresholdLoan();
-        vm.prank(liquidator);
+        bytes32 paramHashExpected12 = lendView.getLiquidateParamHash(equalId);
+        vm.startPrank(liquidator);
         vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             equalId,
             _priceRatioFor(10 ether),
-            type(uint128).max,
-            bytes32(0),
+            type(uint128).max,paramHashExpected12,
             0,
             SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
+        vm.stopPrank();
 
         uint256 healthyId = _setupThresholdLoan();
-        vm.prank(liquidator);
+        bytes32 paramHashExpected13 = lendView.getLiquidateParamHash(healthyId);
+        vm.startPrank(liquidator);
         vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             healthyId,
             _priceRatioFor(10 ether + 10),
-            type(uint128).max,
-            bytes32(0),
+            type(uint128).max,paramHashExpected13,
             0,
             SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
+        vm.stopPrank();
 
         uint256 underwaterId = _setupThresholdLoan();
-        vm.prank(liquidator);
+        vm.startPrank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
             underwaterId,
             _priceRatioFor(10 ether - 10),
-            type(uint128).max,
-            bytes32(0),
+            type(uint128).max,lendView.getLiquidateParamHash(underwaterId),
             0,
             SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
+        vm.stopPrank();
         assertTrue(lendView.getLending(underwaterId).inLiquidation, "one tick underwater should pass");
     }
 
@@ -273,19 +270,20 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.topUpCollateral(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
 
-        vm.prank(liquidator);
+        bytes32 paramHashExpected14 = lendView.getLiquidateParamHash(lendingId);
+        vm.startPrank(liquidator);
         vm.expectRevert(LendErrors.InitialReportNotLiquidationEligible.selector);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
             _priceRatioFor(10 ether - 10),
-            type(uint128).max,
-            bytes32(0),
+            type(uint128).max,paramHashExpected14,
             0,
             SETTLER_REWARD, liquidator, 0, _emptyTiming()
         );
+        vm.stopPrank();
     }
 
-    function testGrabOracleGameFeesAny_SweepsSupplyAndBorrowFeesInOneCollect() public {
+    function testFeeReceiver_DistributeSweepsSupplyAndBorrowFeesInOneCall() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = _liquidate(lendingId, 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -308,9 +306,9 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lenderBorrowBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(borrowToken));
         uint256 liquidatorBorrowBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(borrowToken));
 
-        vm.expectEmit(true, true, false, true, address(lending));
-        emit OracleGameFeesGrabbed(lendingId, feeRecipient, feesSupply, feesBorrow);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        vm.expectEmit(true, false, false, true, feeRecipient);
+        emit FeesDistributed(lendingId, feesSupply, feesBorrow);
+        oracleFeeReceiver(feeRecipient).distribute();
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), 1, "supply fee receiver dust");
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(borrowToken)), 1, "borrow fee receiver dust");
@@ -318,7 +316,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         _assertFeeSplit(address(borrowToken), feesBorrow, borrowerBorrowBefore, lenderBorrowBefore, liquidatorBorrowBefore);
     }
 
-    function testOracleFeeReceiver_DirectCollectRevertsAndPermissionlessGrabStillDistributes() public {
+    function testOracleFeeReceiver_ImplementationDistributeRevertsAndCloneDistributesPermissionlessly() public {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = _liquidate(lendingId, 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -329,9 +327,10 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 feesSupply = 10 ether * 100_000 / 1e7;
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), feesSupply + 1, "supply fees accrued");
 
-        vm.expectRevert();
+        address implementation = lending.feeReceiverImpl();
         vm.prank(address(0xBEEF));
-        oracleFeeReceiver(feeRecipient).collect();
+        vm.expectRevert(oracleFeeReceiver.NotClone.selector);
+        oracleFeeReceiver(implementation).distribute();
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), feesSupply + 1, "fees remain in receiver");
 
@@ -340,7 +339,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 liquidatorSupplyBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(supplyToken));
 
         vm.prank(address(0xCA11));
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        oracleFeeReceiver(feeRecipient).distribute();
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), 1, "fee receiver dust");
         _assertFeeSplit(address(supplyToken), feesSupply, borrowerSupplyBefore, lenderSupplyBefore, liquidatorSupplyBefore);
@@ -428,9 +427,9 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(bigSupply));
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(bigSupply));
 
-        vm.expectEmit(true, true, false, true, address(lending));
-        emit OracleGameFeesGrabbed(lendingId, feeRecipient, max, 0);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        vm.expectEmit(true, false, false, true, feeRecipient);
+        emit FeesDistributed(lendingId, max, 0);
+        oracleFeeReceiver(feeRecipient).distribute();
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(bigSupply)), 1 + max, "first capped collect leaves remainder");
         _assertFeeSplit(address(bigSupply), max, borrowerBefore, lenderBefore, liquidatorBefore);
@@ -439,9 +438,9 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(bigSupply));
         liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(bigSupply));
 
-        vm.expectEmit(true, true, false, true, address(lending));
-        emit OracleGameFeesGrabbed(lendingId, feeRecipient, max, 0);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        vm.expectEmit(true, false, false, true, feeRecipient);
+        emit FeesDistributed(lendingId, max, 0);
+        oracleFeeReceiver(feeRecipient).distribute();
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(bigSupply)), 1, "second collect drains remainder");
         _assertFeeSplit(address(bigSupply), max, borrowerBefore, lenderBefore, liquidatorBefore);
@@ -498,13 +497,15 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
             100,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             oracleParams,
             _standardInterestRateParams()
         );
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
@@ -517,7 +518,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         address,
         uint256 oracleAmount2Target
     ) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,

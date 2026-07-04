@@ -33,8 +33,9 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
     function _setup(uint24 commitmentFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrowFlex(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM, commitmentFraction, 0);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     /// @dev Compute interest for a given elapsed-equivalent (effectiveElapsed) under the contract's formula.
@@ -58,7 +59,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 1 days);
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedInterest,
@@ -77,7 +78,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 10 days);
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedInterest,
@@ -99,7 +100,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         vm.warp(block.timestamp + 15 days);
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
 
         // At the boundary committed == accrued, both formulas yield the same result.
         assertEq(
@@ -124,7 +125,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         uint256 expectedAt20 = _interest(BORROW_AMOUNT, rate, 20 days);
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId1, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId1, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedAt20,
@@ -136,7 +137,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         uint256 expectedAt25 = _interest(BORROW_AMOUNT, rate, 25 days);
         borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId2, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId2, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedAt25,
@@ -162,7 +163,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
         uint256 borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId50, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId50, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedInterest,
@@ -171,7 +172,7 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
 
         borrowerBefore = borrowToken.balanceOf(borrower);
         vm.prank(borrower);
-        lending.repayDebt(lendingId90, type(uint128).max, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId90, type(uint128).max, bytes32(0), 0, type(uint128).max, false);
         assertEq(
             borrowerBefore - borrowToken.balanceOf(borrower),
             uint256(BORROW_AMOUNT) + expectedInterest,
@@ -196,8 +197,9 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 lenderBefore = borrowToken.balanceOf(lender);
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(
             borrowToken.balanceOf(lender) - lenderBefore,
@@ -224,8 +226,9 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
         uint256 lenderBefore = borrowToken.balanceOf(lender);
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(
             borrowToken.balanceOf(lender) - lenderBefore,
@@ -251,7 +254,8 @@ contract CommitmentFractionTest is OpenLendingBaseTest {
             100,
             uint24(1e7 + 1),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );

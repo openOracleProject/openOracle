@@ -47,12 +47,13 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
 
     function _setupActiveLoan(uint24 liquidatorFraction) internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, liquidatorFraction, lender, address(0));
+        vm.stopPrank();
     }
 
     function _liquidateAt(address by, uint256 lendingId, uint256 priceRatio18) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(by);
         lending.liquidate{value: SETTLER_REWARD}(
             lendingId,
@@ -147,8 +148,9 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         // Warp 1 round (300s) + 5s past settleableAt -> exactly 1 virtual round elapsed at lend time.
         vm.warp(uint256(settleableAt) + 300 + 5);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertFalse(loan.inLiquidation, "liq cleared by auto-settle");
@@ -180,8 +182,9 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         // 5 roundLengths (5 * 300 = 1500s) past settleableAt -> 5 virtual rounds elapsed.
         vm.warp(uint256(settleableAt) + 5 * 300 + 5);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         // 1e8 * (10500/10000)^5, with floor at each round:
@@ -214,7 +217,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         assertTrue(paramHash != bytes32(0), "projected hash non-zero");
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
 
         assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 accepted refi using projected hash");
     }
@@ -245,7 +248,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         uint256 lenderStakePiece = tokenStake / 2;
 
         vm.prank(lender2);
-        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId, paramHash, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.lender, lender2, "lender2 accepted refi using projected hash");
@@ -363,7 +366,7 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
             "lender receives half stake on near-grace failed-liq finalize"
         );
         // Grace formula uses settleableAt - liquidationStart = ORACLE_SETTLEMENT_TIME (no dispute).
-        assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "grace from settleable-time formula");
+        assertEq(loan.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME), "grace from settleable-time formula");
     }
 
     // -------------------------------------------------------------------------
@@ -429,9 +432,11 @@ contract VirtualTimeAndStakeSplitTest is OpenLendingBaseTest {
         assertEq(settleTsBefore, 0, "oracle not settled pre-call");
 
         // lend() auto-settles -> underwater -> loan finished -> body reverts on `finished` check -> whole tx unwinds.
-        vm.prank(lender2);
+        bytes32 paramHashExpected22 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.Finished.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected22, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         // EVM rollback should leave both openLend and the oracle in their pre-call state.
         openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);

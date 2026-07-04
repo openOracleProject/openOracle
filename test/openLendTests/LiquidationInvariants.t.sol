@@ -4,21 +4,20 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 
-import "../../src/openLend.sol";
-import "../../src/openLendParamHashHelper.sol";
+import "../../src/lend/openLend.sol";
+import "../../src/lend/openLendDataProvider.sol";
 import "../../src/OpenOracleSlim.sol";
-import "../../src/oracleFeeReceiver2.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /// @notice Invariant handler that exercises the lend -> liquidate -> finalize path. Bounded action set:
 ///         createLoan / lendLoan / liquidate / settleOracleOnly / finalizeLatest / advanceTime. No disputes (settle resolves to whatever
 ///         price the liquidator initially submitted) — keeps the state machine focused on lending lifecycle, not oracle internals.
 contract LiquidationInvariantHandler is Test {
     openLend public immutable lending;
-    openLendParamHashHelper public immutable lendView;
+    openLendDataProvider public immutable lendView;
     OpenOracle public immutable oracle;
     MockERC20 public immutable supplyToken;
     MockERC20 public immutable borrowToken;
@@ -42,7 +41,7 @@ contract LiquidationInvariantHandler is Test {
 
     constructor(
         openLend _lending,
-        openLendParamHashHelper _lendView,
+        openLendDataProvider _lendView,
         OpenOracle _oracle,
         MockERC20 _supplyToken,
         MockERC20 _borrowToken
@@ -129,7 +128,8 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -157,7 +157,8 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -185,7 +186,8 @@ contract LiquidationInvariantHandler is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _oracleParams(maxBaseFeeSeed),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -203,10 +205,10 @@ contract LiquidationInvariantHandler is Test {
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
         if (loan.borrowToken == ETH) {
-            try lending.lend{value: loan.principal}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, caller) {}
+            try lending.lend{value: loan.principal}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, caller, address(0)) {}
             catch {}
         } else {
-            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, caller) {} catch {}
+            try lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, caller, address(0)) {} catch {}
         }
         vm.stopPrank();
     }
@@ -221,7 +223,7 @@ contract LiquidationInvariantHandler is Test {
 
         // priceRatio in 1e18 fixed-point; bound between 0.5e18 and 2e18 for sane oracle states
         uint256 priceRatio = bound(uint256(priceSeed), 5e17, 2e18);
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint256 initialLiquidity = uint256(loan.supplyAmount) * loan.oracleParams.initialLiquidity / 100;
         uint256 oracleAmount2 = initialLiquidity * priceRatio / 1e18;
         uint256 tokenStake = uint256(loan.supplyAmount) * loan.stake / 10000;
@@ -361,7 +363,10 @@ contract LiquidationInvariantHandler is Test {
         if (reportId == 0 && seenReportIds.length > 0) reportId = seenReportIds[loanSeed % seenReportIds.length];
         if (reportId == 0) return;
 
-        try lending.grabOracleGameFeesAny(lendingId, reportId) {
+        address feeRecipient = IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient;
+        if (feeRecipient == address(0) || feeRecipient.code.length == 0) return;
+
+        try oracleFeeReceiver(feeRecipient).distribute() {
             reportFeesSwept[reportId] = true;
         } catch {}
     }
@@ -376,10 +381,10 @@ contract LiquidationInvariantHandler is Test {
         vm.startPrank(borrower);
         if ((loanSeed & 1) == 0) {
             if (loan.borrowToken == ETH) {
-                try lending.repayDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max) {}
+                try lending.repayDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {}
                 catch {}
             } else {
-                try lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
+                try lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {} catch {}
             }
         } else {
             if (loan.supplyToken == ETH) {
@@ -458,7 +463,7 @@ contract LiquidationInvariantHandler is Test {
 
 contract LiquidationInvariantsTest is StdInvariant, Test {
     openLend internal lending;
-    openLendParamHashHelper internal lendView;
+    openLendDataProvider internal lendView;
     OpenOracle internal oracle;
     MockERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -468,7 +473,7 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
+        lendView = new openLendDataProvider(lending, IOpenOracle2(address(oracle)));
         supplyToken = new MockERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
@@ -512,9 +517,8 @@ contract LiquidationInvariantsTest is StdInvariant, Test {
             if (handler.reportIsOpen(reportId)) continue;
             if (!handler.reportFeesSwept(reportId)) continue;
 
-            address predicted = Clones.predictDeterministicAddress(
-                lending.feeReceiverImpl(), bytes32(reportId), address(lending)
-            );
+            address predicted = IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient;
+            if (predicted == address(0)) continue;
             if (predicted.code.length == 0) continue;
 
             oracleFeeReceiver feeReceiver = oracleFeeReceiver(predicted);

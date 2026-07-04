@@ -139,8 +139,9 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
         assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "zero sentinel preserves maxBaseFee");
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
         assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "accepting sentinel refi preserves");
 
         openLend.OracleParams memory updated = _oracleParamsWithMaxBaseFee(uint48(123 gwei));
@@ -160,8 +161,9 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
         assertEq(lendView.getOracleParams(lendingId).maxBaseFee, BASE_CAP, "staged params not applied before lend");
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
         assertEq(lendView.getOracleParams(lendingId).maxBaseFee, 123 gwei, "refi acceptance updates maxBaseFee");
     }
 
@@ -177,7 +179,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
     function testLiquidate_RevertsWhenFinalizerRewardNotFunded() public {
         uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD + 1)));
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         vm.expectRevert(LendErrors.MsgValue.selector);
@@ -193,7 +195,7 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
     function testLiquidate_RevertsWhenExpectedFinalizerRewardIsStale() public {
         uint256 lendingId = _openLoanWithOracleParams(_oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD + 1)));
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         vm.expectRevert(LendErrors.FinalizerRewardMismatch.selector);
@@ -234,8 +236,9 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
         assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "zero sentinel preserves min");
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
         assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "accepting sentinel preserves min");
 
         openLend.OracleParams memory updated = _oracleParamsWithFinalizerReward(uint64(SETTLER_REWARD * 2));
@@ -255,8 +258,9 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
         assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD, "staged min not applied before lend");
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
         assertEq(lendView.getOracleParams(lendingId).finalizerReward, SETTLER_REWARD * 2, "refi acceptance updates min");
     }
 
@@ -272,14 +276,16 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
 
     function _openLoanWithMaxBaseFee(uint48 maxBaseFee) internal returns (uint256 lendingId) {
         lendingId = _requestLoanWithMaxBaseFee(maxBaseFee);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     function _openLoanWithOracleParams(openLend.OracleParams memory oracleParams) internal returns (uint256 lendingId) {
         lendingId = _requestLoanWithOracleParams(oracleParams);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     function _requestLoanWithMaxBaseFee(uint48 maxBaseFee) internal returns (uint256 lendingId) {
@@ -298,14 +304,15 @@ contract MaxBaseFeeTest is OpenLendingBaseTest {
             STAKE,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             oracleParams,
             _standardInterestRateParams()
         );
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint64 finalizerReward = lendView.getOracleParams(lendingId).finalizerReward;
         vm.prank(liquidator);
         lending.liquidate{value: SETTLER_REWARD + finalizerReward}(

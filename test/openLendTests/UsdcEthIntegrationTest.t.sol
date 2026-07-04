@@ -3,8 +3,8 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "../../src/openLend.sol";
-import "../../src/openLendParamHashHelper.sol";
+import "../../src/lend/openLend.sol";
+import "../../src/lend/openLendDataProvider.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockWETH.sol";
@@ -23,7 +23,7 @@ contract Usdc6Token is ERC20 {
 
 contract UsdcEthIntegrationTest is Test {
     openLend internal lending;
-    openLendParamHashHelper internal lendView;
+    openLendDataProvider internal lendView;
     OpenOracle internal oracle;
     MockWETH internal weth;
     Usdc6Token internal usdc;
@@ -46,7 +46,7 @@ contract UsdcEthIntegrationTest is Test {
         oracle = new OpenOracle();
         weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
+        lendView = new openLendDataProvider(lending, IOpenOracle2(address(oracle)));
         usdc = new Usdc6Token();
 
         usdc.mint(borrower, 10_000_000e6);
@@ -83,8 +83,9 @@ contract UsdcEthIntegrationTest is Test {
 
         uint256 lendingId = _requestUsdcEthLoan(USDC_SUPPLY, ETH_BORROW);
 
-        vm.prank(lender);
-        lending.lend{value: ETH_BORROW}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: ETH_BORROW}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory live = lendView.getLending(lendingId);
         assertEq(usdc.decimals(), 6);
@@ -103,7 +104,8 @@ contract UsdcEthIntegrationTest is Test {
             bytes32(0),
             0,
             type(uint128).max
-        );
+        ,
+            false);
 
         openLend.LendingArrangement memory closed = lendView.getLending(lendingId);
         assertTrue(closed.finished);
@@ -118,8 +120,9 @@ contract UsdcEthIntegrationTest is Test {
         uint128 extraDemanded = 1 ether;
         uint256 lendingId = _requestUsdcEthLoan(USDC_SUPPLY, ETH_BORROW);
 
-        vm.prank(lender);
-        lending.lend{value: ETH_BORROW}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: ETH_BORROW}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         vm.prank(borrower);
         lending.topUpCollateral(lendingId, topUp, bytes32(0), 0, type(uint128).max);
@@ -156,7 +159,8 @@ contract UsdcEthIntegrationTest is Test {
             0,
             0,
             lender2
-        );
+        ,
+            address(0));
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.supplyAmount, expectedPostPullSupply);
@@ -253,8 +257,9 @@ contract UsdcEthIntegrationTest is Test {
 
         uint256 lendingId = _requestEthUsdcLoan(ETH_COLLATERAL, USDC_DEBT);
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory live = lendView.getLending(lendingId);
         assertEq(live.supplyToken, address(0));
@@ -267,7 +272,7 @@ contract UsdcEthIntegrationTest is Test {
         assertEq(usdc.balanceOf(lender), lenderUsdcBefore - USDC_DEBT);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, USDC_DEBT, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, USDC_DEBT, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory closed = lendView.getLending(lendingId);
         assertTrue(closed.finished);
@@ -329,7 +334,8 @@ contract UsdcEthIntegrationTest is Test {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -347,7 +353,8 @@ contract UsdcEthIntegrationTest is Test {
             100,
             0,
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
@@ -359,21 +366,23 @@ contract UsdcEthIntegrationTest is Test {
 
     function _originateUsdcEthLoan(uint128 supplyAmount, uint128 borrowAmount) internal returns (uint256 lendingId) {
         lendingId = _requestUsdcEthLoan(supplyAmount, borrowAmount);
-        vm.prank(lender);
-        lending.lend{value: borrowAmount}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend{value: borrowAmount}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     function _originateEthUsdcLoan() internal returns (uint256 lendingId) {
         lendingId = _requestEthUsdcLoan(ETH_COLLATERAL, USDC_DEBT);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2) internal returns (uint256 reportId) {
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         uint256 initialLiquidity = uint256(loan.supplyAmount) * loan.oracleParams.initialLiquidity / 100;
         uint256 priceRatio = oracleAmount2 * 1e18 / initialLiquidity;
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: oracleAmount2 + SETTLER_REWARD}(
@@ -395,7 +404,7 @@ contract UsdcEthIntegrationTest is Test {
         uint256 initialLiquidity = uint256(loan.supplyAmount) * loan.oracleParams.initialLiquidity / 100;
         uint256 tokenStake = uint256(loan.supplyAmount) * loan.stake / 10000;
         uint256 priceRatio = oracleAmount2 * 1e18 / initialLiquidity;
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
 
         vm.prank(liquidator);
         lending.liquidate{value: initialLiquidity + tokenStake + SETTLER_REWARD}(

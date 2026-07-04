@@ -57,8 +57,9 @@ contract FinalizeTest is OpenLendingBaseTest {
     /// @dev Originate with liquidatorFraction = true so liquidator can act.
     function _setupLoan() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
     }
 
     function _priceRatioFor(uint256 oracleAmount2Target) internal pure returns (uint256) {
@@ -66,7 +67,7 @@ contract FinalizeTest is OpenLendingBaseTest {
     }
 
     function _liquidate(uint256 lendingId, uint256 oracleAmount2Target) internal returns (uint256 reportId) {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -234,7 +235,7 @@ contract FinalizeTest is OpenLendingBaseTest {
         vm.prank(randomCaller);
         lending.finalize(lendingId);
 
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         // Single token1 dispute (oldAmount1 = 10 ether, protocolFee = 100_000 / 1e7 = 1%) → 0.1 ether fee in supply.
         // Split 50/25/25 (borrower / lender / liquidator) via integer division: 0.05 / 0.025 / 0.025.
@@ -371,7 +372,7 @@ contract FinalizeTest is OpenLendingBaseTest {
 
         vm.prank(randomCaller);
         lending.finalize(lendingId);
-        lending.grabOracleGameFeesAny(lendingId, firstReportId);
+        _distributeOracleGameFees(firstReportId);
 
         openLend.LendingArrangement memory loanAfterFinalize = lendView.getLending(lendingId);
         assertTrue(loanAfterFinalize.finished, "loan finishes underwater via finalize");

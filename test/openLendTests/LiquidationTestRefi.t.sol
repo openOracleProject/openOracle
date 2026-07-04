@@ -7,7 +7,6 @@ import "./OpenLendingBase.t.sol";
 /// @notice Liquidation paths interacting with refinance flows.
 /// @dev Coverage: liquidation on a freshly-refi'd loan, refi opened during liquidation, failure paths.
 contract LiquidationTestRefi is OpenLendingBaseTest {
-    event LoanLiquidationUnderway(uint256 indexed lendingId, uint256 reportId, address feeRecipient);
     event LiqFinishedUnderwater(uint256 indexed lendingId);
     event LiqUnsuccessful(uint256 indexed lendingId);
 
@@ -64,8 +63,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
     /// @dev Originate a loan with liquidatorFraction = true so any liquidator can run a liq.
     function _setupActiveLoanAllowAnyLiq() internal returns (uint256 lendingId) {
         lendingId = _requestBorrow(borrower, SUPPLY_AMOUNT, BORROW_AMOUNT, LOAN_TERM);
-        vm.prank(lender1);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender1);
+        vm.startPrank(lender1);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender1, address(0));
+        vm.stopPrank();
     }
 
     /// @dev Originate, then refi to lender2 with liquidatorFraction on the refi acceptance.
@@ -75,12 +75,13 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.prank(borrower);
         lending.refinance(lendingId, 0, 0, 0, 0, _standardInterestRateParams(), _zeroOracleParams(), bytes32(0), 0, type(uint128).max);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
     }
 
     function _liquidate(address who, uint256 lendingId, uint256 oracleAmount2Target) internal {
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         uint128 supplyAmount = lendView.getLending(lendingId).supplyAmount;
         vm.prank(who);
         lending.liquidate{value: 1e15}(
@@ -115,7 +116,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         emit LiqFinishedUnderwater(lendingId);
         vm.prank(settler);
         _settleOracle(reportId);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");
@@ -171,7 +172,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.InLiquidation.selector);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         vm.prank(borrower);
         vm.expectRevert(LendErrors.InLiquidation.selector);
@@ -197,9 +198,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertTrue(midLoan.inLiquidation, "loan still inLiquidation");
 
         // A lender attempting to fill the refi curve is blocked by the inLiquidation gate in lend()
-        vm.prank(lender2);
+        bytes32 paramHashExpected5 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.InLiquidation.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected5, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         // Resolve liquidation as failed
         uint256 reportId = oracle.nextReportId() - 1;
@@ -221,8 +224,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertEq(afterLiq.requestStart, settleableAt, "requestStart pinned to settleableAt on failed liq");
 
         // Now lender2 can accept the refi
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 should be the new lender");
     }
@@ -250,15 +254,17 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertTrue(lendView.getLending(lendingId).curveOpen, "refi curve should open past maturity during liq");
 
         // lend() blocked by inLiquidation
-        vm.prank(lender2);
+        bytes32 paramHashExpected6 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.InLiquidation.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected6, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
         (,,, uint48 finalReportTs,,,) = _reportStatus(reportId);
         uint48 expectedGrace =
-            uint48(1800 + (uint256(finalReportTs) + ORACLE_SETTLEMENT_TIME - beforeRefi.liquidationStart) * 2);
+            uint48(1800 + (uint256(finalReportTs) + ORACLE_SETTLEMENT_TIME - beforeRefi.liquidationStart));
         vm.warp(uint256(finalReportTs) + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
         _settleOracle(reportId);
@@ -273,8 +279,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertLt(block.timestamp, graceEnd, "still inside gracePeriod");
 
         // Lender2 accepts the refi within grace
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory finalLoan = lendView.getLending(lendingId);
         assertEq(finalLoan.lender, lender2, "lender2 should be new lender");
@@ -299,9 +306,11 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 6 ether);
 
         // lend() blocked while inLiquidation
-        vm.prank(lender2);
+        bytes32 paramHashExpected7 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.InLiquidation.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected7, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         uint256 reportId = oracle.nextReportId() - 1;
         _disputeToNonLiquidatingPrice(reportId, address(supplyToken), disputer);
@@ -320,8 +329,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertEq(afterLiq.requestStart, settleableAt, "requestStart pinned to settleableAt on failed liq");
 
         // Lender2 can still accept the (re-anchored) refi
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
         assertEq(lendView.getLending(lendingId).lender, lender2, "lender2 accepted post-settle refi");
     }
 
@@ -385,13 +395,13 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         openLend.LendingArrangement memory afterLiq = lendView.getLending(lendingId);
         assertFalse(afterLiq.curveOpen, "curve still closed after failed liq with cancel-during-liq");
-        assertEq(afterLiq.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME) * 2, "exact gracePeriod from near-maturity failed liq");
+        assertEq(afterLiq.gracePeriod, 1800 + (ORACLE_DISPUTE_DELAY + ORACLE_SETTLEMENT_TIME), "exact gracePeriod from near-maturity failed liq");
 
         // Borrower can repay during grace
         uint128 totalOwed = _calculateOwedAtMaturity(afterLiq.principal, afterLiq.rate, afterLiq.term);
         vm.warp(uint256(afterLiq.start) + afterLiq.term + (afterLiq.gracePeriod / 2));
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed + 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed + 1 ether, bytes32(0), 0, type(uint128).max, false);
         assertTrue(lendView.getLending(lendingId).finished, "repay during grace should finish loan");
     }
 
@@ -405,7 +415,7 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
 
         uint128 partialAmt = 7 ether;
         vm.prank(borrower);
-        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, partialAmt, bytes32(0), 0, type(uint128).max, false);
 
         // Now open refi with extra demand
         uint128 extra = 3 ether;
@@ -424,8 +434,9 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         uint256 lender2BorrowBefore = borrowToken.balanceOf(lender2);
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
 
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertEq(loan.principal, expectedNewBorrow,
@@ -471,8 +482,10 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         assertFalse(loan.curveOpen, "successful liq should clear orphan refi curve");
 
         // Even if curveOpen had stayed true, `finished` blocks lend(); double-check
-        vm.prank(lender2);
+        bytes32 paramHashExpected8 = lendView.getParamHash(lendingId);
+        vm.startPrank(lender2);
         vm.expectRevert(LendErrors.Finished.selector);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender2);
+        lending.lend(lendingId,paramHashExpected8, 0, type(uint128).max, 0, 0, 0, lender2, address(0));
+        vm.stopPrank();
     }
 }

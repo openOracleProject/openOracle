@@ -3,13 +3,13 @@ pragma solidity ^0.8.26;
 
 import {LendErrors} from "../../src/libraries/LendErrors.sol";
 import "forge-std/Test.sol";
-import "../../src/openLend.sol";
-import "../../src/openLendParamHashHelper.sol";
+import "../../src/lend/openLend.sol";
+import "../../src/lend/openLendDataProvider.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 import "../../src/OpenOracleSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "../utils/MockWETH.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 contract MintableERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
@@ -52,7 +52,7 @@ contract BlacklistableMintableERC20 is ERC20 {
 /// @notice Coverage for the helper / view / fallback paths in V3 that aren't naturally exercised by lifecycle tests.
 contract HelperCoverageTest is Test {
     openLend internal lending;
-    openLendParamHashHelper internal lendView;
+    openLendDataProvider internal lendView;
     OpenOracle internal oracle;
     MintableERC20 internal supplyToken;
     MintableERC20 internal borrowToken;
@@ -76,7 +76,7 @@ contract HelperCoverageTest is Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
+        lendView = new openLendDataProvider(lending, IOpenOracle2(address(oracle)));
 
         supplyToken = new MintableERC20("Supply Token", "SUP");
         borrowToken = new MintableERC20("Borrow Token", "BOR");
@@ -119,7 +119,7 @@ contract HelperCoverageTest is Test {
         blacklistedBorrowToken.blacklist(lender);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(
             lending.tempHolding(lender, address(blacklistedBorrowToken)),
@@ -164,7 +164,7 @@ contract HelperCoverageTest is Test {
         blacklistedBorrowToken.blacklist(lender);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, repayAmount, bytes32(0), 0, type(uint128).max, false);
 
         assertEq(blacklistedBorrowToken.balanceOf(borrower), borrowerBorrowBefore - repayAmount, "borrower paid");
         assertEq(blacklistedBorrowToken.balanceOf(lender), lenderBorrowBefore, "lender direct transfer blocked");
@@ -195,7 +195,7 @@ contract HelperCoverageTest is Test {
         bSupply.blacklist(borrower);
 
         vm.prank(borrower);
-        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, totalOwed, bytes32(0), 0, type(uint128).max, false);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan should finish even when borrower cannot receive collateral");
@@ -343,8 +343,9 @@ contract HelperCoverageTest is Test {
         assertTrue(loan.curveOpen, "curve should be open after refinance");
 
         // Lender2 accepts the refi
-        vm.prank(lender2);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender2);
+        vm.startPrank(lender2);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender2, address(0));
+        vm.stopPrank();
 
         openLend.LendingArrangement memory loanAfter = lendView.getLending(lendingId);
         openLend.RefiParams memory rpAfter = lendView.getRefiParams(lendingId);
@@ -362,7 +363,7 @@ contract HelperCoverageTest is Test {
 
         vm.warp(block.timestamp + 1 days);
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         vm.warp(block.timestamp + 1 days);
         vm.prank(borrower);
@@ -401,7 +402,7 @@ contract HelperCoverageTest is Test {
 
         // Borrower partial repay (changes repaidDebt but loose hash zeros it; bound 0 satisfied)
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 1 ether, bytes32(0), 0, type(uint128).max, false);
 
         // Stale hash + expectedMinSupply = supplySnapshot still satisfied (top-up only goes UP)
         vm.prank(topper);
@@ -432,22 +433,20 @@ contract HelperCoverageTest is Test {
     }
 
     // -------------------------------------------------------------------------
-    // grabOracleGameFeesAny — clean behavior before fees accrue
+    // Fee receiver distribution — clean behavior before fees accrue
     // -------------------------------------------------------------------------
 
-    /// @dev Calling grabOracleGameFeesAny on a feeRecipient that has accrued no fees yet should be a clean no-op.
-    function testGrabOracleGameFeesAny_NoOpBeforeAnyFeesAccrue() public {
+    /// @dev Calling distribute() on a feeRecipient that has accrued no fees yet should be a clean no-op.
+    function testFeeReceiverDistribute_NoOpBeforeAnyFeesAccrue() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
         // Liquidate (deploys feeRecipient) but don't dispute or settle yet — no fees can have accrued
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(lender);
         lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
         uint256 reportId = oracle.nextReportId() - 1;
-        address feeRecipient = Clones.predictDeterministicAddress(
-            lending.feeReceiverImpl(), bytes32(reportId), address(lending)
-        );
+        address feeRecipient = _predictFeeReceiver(reportId);
         assertTrue(feeRecipient.code.length > 0, "fee receiver deployed by liquidate");
 
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
@@ -456,7 +455,7 @@ contract HelperCoverageTest is Test {
         uint256 lenderBorrowBefore = borrowToken.balanceOf(lender);
 
         // No revert, no balance change
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         assertEq(supplyToken.balanceOf(borrower), borrowerSupplyBefore, "borrower supply unchanged");
         assertEq(borrowToken.balanceOf(borrower), borrowerBorrowBefore, "borrower borrow unchanged");
@@ -490,7 +489,7 @@ contract HelperCoverageTest is Test {
 
         // Borrower partial repay — lender's streaming payout lands in tempHolding (blacklisted)
         vm.prank(borrower);
-        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max);
+        lending.repayDebt(lendingId, 5 ether, bytes32(0), 0, type(uint128).max, false);
 
         // Borrower's funds still moved; loan accounting still progresses
         assertEq(blacklistedBorrowToken.balanceOf(borrower), borrowerBorrowBefore - 5 ether, "borrower paid");
@@ -557,17 +556,19 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + 10 days);
 
         // Liquidate at oracleAmount2=6 then dispute to underwater 20/10
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -592,7 +593,7 @@ contract HelperCoverageTest is Test {
         uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
         vm.prank(settler);
         _settleOracle(reportId);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         // Loan finished, inLiquidation cleared
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -644,17 +645,19 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + 10 days);
 
         // Liquidate then dispute to a buffer-region ratio (20/12 → debt-in-supply > LT but < supplyAmount)
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -680,7 +683,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         // Loan finished underwater
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -735,16 +738,18 @@ contract HelperCoverageTest is Test {
             STAKE,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         );
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 5e6, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 5e6, lender, address(0));
+        vm.stopPrank();
 
         vm.warp(block.timestamp + 10 days);
 
-        bytes32 paramHash = lendView.getParamHash(lendingId);
+        bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(liquidator);
         lending.liquidate{value: 1e15}(
             lendingId,
@@ -768,7 +773,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
-        lending.grabOracleGameFeesAny(lendingId, reportId);
+        _distributeOracleGameFees(reportId);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished even when both parties blacklisted");
@@ -868,13 +873,15 @@ contract HelperCoverageTest is Test {
             stake,
             uint24(1e7),
             0,
-            borrower,
+            borrower,address(0),
+            
             oracleParams,
             _standardInterestRateParams()
         );
 
-        vm.prank(lender);
-        lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, 0, lender);
+        vm.startPrank(lender);
+        lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, 0, lender, address(0));
+        vm.stopPrank();
     }
 
     function _standardOracleParams() internal pure returns (openLend.OracleParams memory) {
@@ -920,6 +927,14 @@ contract HelperCoverageTest is Test {
             if (lending.lendingToReportId(lendingId) == reportId) return lendingId;
         }
         return 0;
+    }
+
+    function _predictFeeReceiver(uint256 reportId) internal view returns (address) {
+        return IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient;
+    }
+
+    function _distributeOracleGameFees(uint256 reportId) internal returns (uint256 fees1, uint256 fees2) {
+        return oracleFeeReceiver(_predictFeeReceiver(reportId)).distribute();
     }
 
     function _helperFor(uint256 reportId) internal view returns (IOpenOracle2.PreimageHelper memory ph) {

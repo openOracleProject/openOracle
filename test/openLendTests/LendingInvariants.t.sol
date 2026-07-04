@@ -4,14 +4,13 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 
-import "../../src/openLend.sol";
-import "../../src/openLendParamHashHelper.sol";
+import "../../src/lend/openLend.sol";
+import "../../src/lend/openLendDataProvider.sol";
 import "../../src/OpenOracleSlim.sol";
-import "../../src/oracleFeeReceiver2.sol";
+import "../../src/lend/openLendFeeReceiver.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../utils/MockERC20.sol";
 import "../utils/MockWETH.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 contract InvariantBlacklistableERC20 is MockERC20 {
     mapping(address => bool) public blacklisted;
@@ -41,7 +40,7 @@ contract InvariantBlacklistableERC20 is MockERC20 {
 
 contract LendingInvariantHandler is Test {
     openLend public immutable lending;
-    openLendParamHashHelper public immutable lendView;
+    openLendDataProvider public immutable lendView;
     InvariantBlacklistableERC20 public immutable supplyToken;
     MockERC20 public immutable borrowToken;
 
@@ -60,7 +59,7 @@ contract LendingInvariantHandler is Test {
 
     constructor(
         openLend _lending,
-        openLendParamHashHelper _lendView,
+        openLendDataProvider _lendView,
         InvariantBlacklistableERC20 _supplyToken,
         MockERC20 _borrowToken
     ) {
@@ -127,7 +126,8 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -159,7 +159,8 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -191,7 +192,8 @@ contract LendingInvariantHandler is Test {
             STAKE,
             commitmentFraction,
             gasComp,
-            borrower,
+            borrower,address(0),
+            
             _standardOracleParams(),
             _standardInterestRateParams()
         ) returns (uint256 lendingId) {
@@ -209,9 +211,9 @@ contract LendingInvariantHandler is Test {
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
         if (loan.borrowToken == ETH) {
-            try lending.lend{value: loan.principal}(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
+            try lending.lend{value: loan.principal}(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, liquidatorFraction, caller, address(0)) {} catch {}
         } else {
-            try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
+            try lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, liquidatorFraction, caller, address(0)) {} catch {}
         }
         vm.stopPrank();
     }
@@ -230,9 +232,9 @@ contract LendingInvariantHandler is Test {
 
         vm.startPrank(borrower);
         if (loan.borrowToken == ETH) {
-            try lending.repayDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
+            try lending.repayDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {} catch {}
         } else {
-            try lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
+            try lending.repayDebt(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {} catch {}
         }
         vm.stopPrank();
     }
@@ -280,7 +282,111 @@ contract LendingInvariantHandler is Test {
 
         address caller = (loanSeed & 1) == 0 ? lender1 : lender2;
         vm.startPrank(caller);
-        try lending.lend(lendingId, bytes32(0), 0, type(uint128).max, 0, 0, liquidatorFraction, caller) {} catch {}
+        try lending.lend(lendingId,lendView.getParamHash(lendingId), 0, type(uint128).max, 0, 0, liquidatorFraction, caller, address(0)) {} catch {}
+        vm.stopPrank();
+    }
+
+    function churnRefiDelegate(uint256 loanSeed, bool clear) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        if (loan.borrower != borrower) return;
+
+        vm.startPrank(borrower);
+        try lending.setRefiDelegate(lendingId, clear ? address(0) : topper) {} catch {}
+        vm.stopPrank();
+    }
+
+    function churnLenderDelegate(uint256 loanSeed, bool clear) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        if (loan.lender == address(0)) return;
+
+        vm.startPrank(loan.lender);
+        try lending.setLenderDelegate(lendingId, clear ? address(0) : topper) {} catch {}
+        vm.stopPrank();
+    }
+
+    function openRefiByDelegate(uint256 loanSeed, uint96 extraSeed, uint96 pullSeed, uint96 gasCompSeed) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        if (!loan.active || loan.finished || loan.cancelled || loan.curveOpen || loan.supplyAmount <= 1) return;
+        if (loan.borrowToken == ETH) return;
+
+        uint128 extraDemanded = uint128(bound(extraSeed, 0, 500 ether));
+        uint128 supplyPulled = uint128(bound(pullSeed, 0, loan.supplyAmount - 1));
+        uint96 gasComp = uint96(bound(gasCompSeed, 0, 0.5 ether));
+
+        vm.startPrank(borrower);
+        try lending.setRefiDelegate(lendingId, topper) {} catch {}
+        vm.stopPrank();
+
+        vm.startPrank(topper);
+        try lending.refinance{value: gasComp}(
+            lendingId,
+            extraDemanded,
+            supplyPulled,
+            0,
+            gasComp,
+            _standardInterestRateParams(),
+            _zeroOracleParams(),
+            bytes32(0),
+            0,
+            type(uint128).max
+        ) {} catch {}
+        vm.stopPrank();
+    }
+
+    function nettedRefi(uint256 loanSeed, uint96 extraSeed, uint96 pullSeed, uint24 liquidatorFraction) external {
+        if (lendingIds.length == 0) return;
+        uint256 lendingId = lendingIds[loanSeed % lendingIds.length];
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        if (!loan.active || loan.finished || loan.cancelled || loan.curveOpen || loan.inLiquidation) return;
+        if (loan.borrowToken == ETH || loan.supplyAmount <= 1 || loan.lender == address(0)) return;
+
+        address currentLender = loan.lender;
+        uint128 extraDemanded = uint128(bound(extraSeed, 0, 500 ether));
+        uint128 supplyPulled = uint128(bound(pullSeed, 0, loan.supplyAmount - 1));
+
+        vm.startPrank(currentLender);
+        try lending.setLenderDelegate(lendingId, topper) {} catch {
+            vm.stopPrank();
+            return;
+        }
+        vm.stopPrank();
+
+        vm.startPrank(borrower);
+        try lending.refinance(
+            lendingId,
+            extraDemanded,
+            supplyPulled,
+            0,
+            0,
+            _standardInterestRateParams(),
+            _zeroOracleParams(),
+            bytes32(0),
+            0,
+            type(uint128).max
+        ) {} catch {
+            vm.stopPrank();
+            return;
+        }
+        vm.stopPrank();
+
+        vm.startPrank(topper);
+        try lending.lend(
+            lendingId,
+            lendView.getParamHash(lendingId),
+            0,
+            type(uint128).max,
+            0,
+            0,
+            liquidatorFraction,
+            currentLender,
+            topper
+        ) {} catch {}
         vm.stopPrank();
     }
 
@@ -315,9 +421,9 @@ contract LendingInvariantHandler is Test {
         // topper acts as the third-party payer
         vm.startPrank(topper);
         if (loan.borrowToken == ETH) {
-            try lending.repayAnyDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
+            try lending.repayAnyDebt{value: amount}(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {} catch {}
         } else {
-            try lending.repayAnyDebt(lendingId, amount, bytes32(0), 0, type(uint128).max) {} catch {}
+            try lending.repayAnyDebt(lendingId, amount, bytes32(0), 0, type(uint128).max, false) {} catch {}
         }
         vm.stopPrank();
     }
@@ -397,7 +503,7 @@ contract LendingInvariantHandler is Test {
 
 contract LendingInvariantsTest is StdInvariant, Test {
     openLend internal lending;
-    openLendParamHashHelper internal lendView;
+    openLendDataProvider internal lendView;
     OpenOracle internal oracle;
     InvariantBlacklistableERC20 internal supplyToken;
     MockERC20 internal borrowToken;
@@ -412,7 +518,7 @@ contract LendingInvariantsTest is StdInvariant, Test {
         oracle = new OpenOracle();
         MockWETH weth = new MockWETH();
         lending = new openLend(IOpenOracle2(address(oracle)), address(weth));
-        lendView = new openLendParamHashHelper(lending, IOpenOracle2(address(oracle)));
+        lendView = new openLendDataProvider(lending, IOpenOracle2(address(oracle)));
         supplyToken = new InvariantBlacklistableERC20("Supply Token", "SUP");
         borrowToken = new MockERC20("Borrow Token", "BOR");
 
@@ -576,12 +682,11 @@ contract LendingInvariantsTest is StdInvariant, Test {
             uint256 reportId = lending.lendingToReportId(lendingId);
             if (reportId == 0) continue;
 
-            address predicted = Clones.predictDeterministicAddress(
-                lending.feeReceiverImpl(), bytes32(reportId), address(lending)
-            );
+            address predicted = IOpenOracle2(address(oracle)).storedGame(reportId).protocolFeeRecipient;
+            if (predicted == address(0)) continue;
             if (predicted.code.length == 0) continue;
 
-            assertEq(oracleFeeReceiver(predicted).gameId(), lendingId, "fee receiver gameId mismatch");
+            assertEq(oracleFeeReceiver(predicted).lendingId(), lendingId, "fee receiver lendingId mismatch");
         }
     }
 }
