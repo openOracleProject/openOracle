@@ -52,4 +52,5 @@ library LendErrors {
     error Params();
 
     error ZeroAmount();
+    error MustClose();
 }
