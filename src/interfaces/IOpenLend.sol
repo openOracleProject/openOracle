@@ -77,11 +77,6 @@ interface IOpenLend {
         uint64 finalizerReward;
     }
 
-    struct Beneficiaries {
-        address lender;
-        address liquidator;
-    }
-
     // -------------------------------------------------------------------------
     //                                  Events
     // -------------------------------------------------------------------------
@@ -124,9 +119,17 @@ interface IOpenLend {
         uint128 extraDemanded,
         uint128 supplyPulled,
         uint96 gasCompensation,
-        uint24 liquidatorFraction
+        uint24 liquidatorFraction,
+        bool netted
     );
-    event LoanLiquidationUnderway(uint256 indexed lendingId, uint256 reportId, address feeRecipient);
+    event LoanLiquidationUnderway(
+        uint256 indexed lendingId,
+        address indexed lender,
+        address indexed liquidator,
+        uint256 reportId,
+        address feeRecipient,
+        address borrower
+    );
     event DebtRepaid(uint256 indexed lendingId, address indexed payer, uint256 amount, bool fullyRepaid);
     event CollateralToppedOff(uint256 indexed lendingId, address indexed payer, uint256 amount);
     event CollateralClaimedByLender(uint256 indexed lendingId, uint256 supplyTokenClaimed);
@@ -153,10 +156,9 @@ interface IOpenLend {
     event LiqFinishedWithBuffer(uint256 indexed lendingId);
     event LiqUnsuccessful(uint256 indexed lendingId);
     event BountyPaid(uint256 indexed lendingId, address indexed finalizer, uint256 bounty);
-    event OracleGameFeesGrabbed(
-        uint256 indexed lendingId, address indexed feeRecipient, uint256 feesSupply, uint256 feesBorrow
-    );
     event TempHoldingWithdrawn(address indexed user, address indexed token, uint256 amount);
+    event RefiDelegateSet(uint256 indexed lendingId, address delegate);
+    event LenderDelegateSet(uint256 indexed lendingId, address delegate);
 
     // -------------------------------------------------------------------------
     //                          Public state (auto-getters)
@@ -167,12 +169,10 @@ interface IOpenLend {
     function WETH() external view returns (address);
     function nextLendingId() external view returns (uint256);
     function lendingArrangements(uint256 lendingId) external view returns (LendingArrangement memory);
-    function lendingBeneficiaries(uint256 lendingId, address feeRecipient)
-        external
-        view
-        returns (address lender, address liquidator);
     function lendingToReportId(uint256 lendingId) external view returns (uint256);
     function tempHolding(address user, address token) external view returns (uint256);
+    function refiDelegation(uint256 lendingId) external view returns (address);
+    function lenderDelegation(uint256 lendingId) external view returns (address);
 
     // -------------------------------------------------------------------------
     //                              State-changing
@@ -189,9 +189,12 @@ interface IOpenLend {
         uint24 commitmentFraction,
         uint96 gasCompensation,
         address borrower,
+        address refiDelegate,
         OracleParams calldata oracleParams,
         InterestRateParams calldata interestRateParams
     ) external payable returns (uint256 lendingId);
+
+    function setRefiDelegate(uint256 lendingId, address delegate) external;
 
     function cancelBorrowRequest(uint256 lendingId) external;
 
@@ -203,15 +206,19 @@ interface IOpenLend {
         uint128 expectedMinSupply,
         uint32 minRate,
         uint24 liquidatorFraction,
-        address lender
+        address lender,
+        address lenderDelegate
     ) external payable;
+
+    function setLenderDelegate(uint256 lendingId, address delegate) external;
 
     function repayDebt(
         uint256 lendingId,
         uint128 amount,
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
-        uint128 expectedMaxPrincipal
+        uint128 expectedMaxPrincipal,
+        bool mustClose
     ) external payable;
 
     function repayAnyDebt(
@@ -219,7 +226,8 @@ interface IOpenLend {
         uint128 amount,
         bytes32 expectedParamHash,
         uint128 expectedMinSupply,
-        uint128 expectedMaxPrincipal
+        uint128 expectedMaxPrincipal,
+        bool mustClose
     ) external payable;
 
     function topUpCollateral(
@@ -268,8 +276,6 @@ interface IOpenLend {
     ) external payable;
 
     function finalize(uint256 lendingId) external;
-
-    function grabOracleGameFeesAny(uint256 lendingId, uint256 reportId) external;
 
     function getTempHolding(address tokenToGet) external;
 }
