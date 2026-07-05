@@ -278,4 +278,14 @@ interface IOpenLend {
     function finalize(uint256 lendingId) external;
 
     function getTempHolding(address tokenToGet) external;
+
+    function deployAndDistributeFeeReceiver(
+        uint256 reportId,
+        uint256 lendingId,
+        address supplyToken,
+        address borrowToken,
+        address borrower,
+        address lender,
+        address liquidator
+    ) external returns (address feeReceiver, uint256 fees1, uint256 fees2);
 }
