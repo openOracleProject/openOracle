@@ -837,7 +837,7 @@ contract UpgradeFeatureTest is OpenLendingBaseTest {
         openLendDataProvider.FeeReceiverState memory state = lendView.getFeeReceiver(lendingId);
         assertEq(state.feeReceiver, feeRecipient);
         assertEq(state.reportId, reportId);
-        assertTrue(state.deployed);
+        assertFalse(state.deployed);
         assertEq(state.fees1Pending, 0);
         assertEq(state.fees2Pending, 0);
 
@@ -858,10 +858,12 @@ contract UpgradeFeatureTest is OpenLendingBaseTest {
         assertEq(states[0].reportId, 0);
         assertFalse(states[0].deployed);
         assertEq(states[1].feeReceiver, feeRecipient);
+        assertFalse(states[1].deployed);
         assertEq(states[1].fees1Pending, expectedFee);
 
         _distributeOracleGameFees(reportId);
         state = lendView.getFeeReceiver(lendingId);
+        assertTrue(state.deployed);
         assertEq(state.fees1Pending, 0);
         assertEq(state.fees2Pending, 0);
     }

@@ -242,7 +242,29 @@ abstract contract OpenLendingBaseTest is Test {
     }
 
     function _distributeOracleGameFees(uint256 reportId) internal returns (uint256 fees1, uint256 fees2) {
-        return oracleFeeReceiver(_predictFeeReceiver(reportId)).distribute();
+        uint256 lendingId = _lendingIdForReportId(reportId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        (, fees1, fees2) =
+            _deployAndDistributeOracleGameFees(reportId, lendingId, loan.borrower, loan.lender, loan.liquidator);
+    }
+
+    function _deployAndDistributeOracleGameFees(
+        uint256 reportId,
+        uint256 lendingId,
+        address borrower_,
+        address lender_,
+        address liquidator_
+    ) internal returns (address feeReceiver, uint256 fees1, uint256 fees2) {
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        return lending.deployAndDistributeFeeReceiver(
+            reportId,
+            lendingId,
+            game.token1,
+            game.token2,
+            borrower_,
+            lender_,
+            liquidator_
+        );
     }
 
     function _emptyTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory timing) {}

@@ -440,14 +440,14 @@ contract HelperCoverageTest is Test {
     function testFeeReceiverDistribute_NoOpBeforeAnyFeesAccrue() public {
         uint256 lendingId = _setupActiveLoan(address(supplyToken), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT, STAKE);
 
-        // Liquidate (deploys feeRecipient) but don't dispute or settle yet — no fees can have accrued
+        // Liquidate (sets deterministic feeRecipient) but don't dispute or settle yet — no fees can have accrued
         bytes32 paramHash = lendView.getLiquidateParamHash(lendingId);
         vm.prank(lender);
         lending.liquidate{value: 1e15}(lendingId, 6 ether * 1e18 / 10 ether, type(uint128).max, paramHash, 0, 1e15, liquidator, 0, _emptyTiming());
 
         uint256 reportId = oracle.nextReportId() - 1;
         address feeRecipient = _predictFeeReceiver(reportId);
-        assertTrue(feeRecipient.code.length > 0, "fee receiver deployed by liquidate");
+        assertEq(feeRecipient.code.length, 0, "fee receiver deploys lazily");
 
         uint256 borrowerSupplyBefore = supplyToken.balanceOf(borrower);
         uint256 borrowerBorrowBefore = borrowToken.balanceOf(borrower);
@@ -593,7 +593,7 @@ contract HelperCoverageTest is Test {
         uint256 lenderSupplyBefore = bSupply.balanceOf(lender);
         vm.prank(settler);
         _settleOracle(reportId);
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(reportId, lendingId, borrower, lender, liquidator);
 
         // Loan finished, inLiquidation cleared
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -683,7 +683,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(reportId, lendingId, borrower, lender, liquidator);
 
         // Loan finished underwater
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
@@ -773,7 +773,7 @@ contract HelperCoverageTest is Test {
         vm.warp(uint256(disputeTs) + 301);
         vm.prank(settler);
         _settleOracle(reportId);
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(reportId, lendingId, borrower, lender, liquidator);
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "loan finished even when both parties blacklisted");
@@ -934,7 +934,37 @@ contract HelperCoverageTest is Test {
     }
 
     function _distributeOracleGameFees(uint256 reportId) internal returns (uint256 fees1, uint256 fees2) {
-        return oracleFeeReceiver(_predictFeeReceiver(reportId)).distribute();
+        uint256 lendingId = _lendingIdForReportId(reportId);
+        openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        (, fees1, fees2) = lending.deployAndDistributeFeeReceiver(
+            reportId,
+            lendingId,
+            game.token1,
+            game.token2,
+            loan.borrower,
+            loan.lender,
+            loan.liquidator
+        );
+    }
+
+    function _deployAndDistributeOracleGameFees(
+        uint256 reportId,
+        uint256 lendingId,
+        address borrower_,
+        address lender_,
+        address liquidator_
+    ) internal returns (address feeReceiver, uint256 fees1, uint256 fees2) {
+        IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
+        return lending.deployAndDistributeFeeReceiver(
+            reportId,
+            lendingId,
+            game.token1,
+            game.token2,
+            borrower_,
+            lender_,
+            liquidator_
+        );
     }
 
     function _helperFor(uint256 reportId) internal view returns (IOpenOracle2.PreimageHelper memory ph) {

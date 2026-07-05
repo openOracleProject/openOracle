@@ -114,9 +114,16 @@ contract LiquidationTestRefi is OpenLendingBaseTest {
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.expectEmit(true, false, false, true, address(lending));
         emit LiqFinishedUnderwater(lendingId);
+        openLend.LendingArrangement memory loanBeforeSettle = lendView.getLending(lendingId);
         vm.prank(settler);
         _settleOracle(reportId);
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(
+            reportId,
+            lendingId,
+            loanBeforeSettle.borrower,
+            loanBeforeSettle.lender,
+            loanBeforeSettle.liquidator
+        );
 
         openLend.LendingArrangement memory loan = lendView.getLending(lendingId);
         assertTrue(loan.finished, "Loan should be finished");

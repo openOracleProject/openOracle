@@ -78,7 +78,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         assertEq(oracle.nextReportId(), reportId + 1, "report consumed expected id");
         assertEq(lending.lendingToReportId(lendingId), reportId, "loan mapped to report");
         assertEq(_lendingIdForReportId(reportId), lendingId, "report mapped to loan");
-        assertTrue(feeRecipient.code.length > 0, "fee receiver deployed");
+        assertEq(feeRecipient.code.length, 0, "fee receiver deploys lazily");
 
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
         assertEq(o.currentAmount1, 10 ether, "amount1");
@@ -308,7 +308,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
 
         vm.expectEmit(true, false, false, true, feeRecipient);
         emit FeesDistributed(lendingId, feesSupply, feesBorrow);
-        oracleFeeReceiver(feeRecipient).distribute();
+        _distributeOracleGameFees(reportId);
 
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), 1, "supply fee receiver dust");
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(borrowToken)), 1, "borrow fee receiver dust");
@@ -320,6 +320,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lendingId = _setupActiveLoan(5e6);
         uint256 reportId = _liquidate(lendingId, 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
+        _distributeOracleGameFees(reportId);
 
         vm.warp(uint256(IOpenOracle2(address(oracle)).storedGame(reportId).reportTimestamp) + 61);
         _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 0, bytes32(0));
@@ -414,6 +415,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         uint256 lendingId = _setupCustomLoan(address(bigSupply), address(borrowToken), SUPPLY_AMOUNT, BORROW_AMOUNT);
         uint256 reportId = _liquidateWithTokens(lendingId, address(bigSupply), address(borrowToken), 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
+        _distributeOracleGameFees(reportId);
 
         vm.startPrank(depositor);
         IOpenOracle2(address(oracle)).deposit(address(bigSupply), type(uint128).max, feeRecipient);

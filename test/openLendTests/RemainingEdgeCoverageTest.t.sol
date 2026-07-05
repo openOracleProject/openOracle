@@ -139,7 +139,9 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         );
 
         address predicted = _predictFeeReceiver(_latestReportId());
-        assertTrue(predicted.code.length > 0, "liquidation should deploy a fee receiver");
+        assertEq(predicted.code.length, 0, "liquidation stores a lazy fee receiver");
+        _distributeOracleGameFees(_latestReportId());
+        assertTrue(predicted.code.length > 0, "fee receiver deployed on first distribution");
 
         oracleFeeReceiver feeReceiver = oracleFeeReceiver(predicted);
         assertEq(feeReceiver.lendingId(), lendingId, "clone lendingId mismatch");
@@ -388,6 +390,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         uint256 otherLendingId = _setupActiveLoan(5e6);
         assertTrue(otherLendingId != lendingId, "two distinct lending ids");
 
+        _distributeOracleGameFees(reportId);
         assertEq(oracleFeeReceiver(_predictFeeReceiver(reportId)).lendingId(), lendingId, "receiver remains bound to original lendingId");
         openLendDataProvider.Beneficiaries memory wrong = lendView.getBeneficiaries(otherLendingId, _predictFeeReceiver(reportId));
         assertEq(wrong.borrower, address(0), "wrong lendingId borrower");

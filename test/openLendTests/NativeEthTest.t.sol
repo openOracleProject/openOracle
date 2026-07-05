@@ -509,9 +509,16 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, ETH);
         uint256 liquidatorBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, ETH);
 
+        openLend.LendingArrangement memory loanBeforeFinalize = lendView.getLending(lendingId);
         vm.prank(settler);
         lending.finalize(lendingId);
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(
+            reportId,
+            lendingId,
+            loanBeforeFinalize.borrower,
+            loanBeforeFinalize.lender,
+            loanBeforeFinalize.liquidator
+        );
 
         _assertOracleFeeSplit(ETH, fee, borrowerBefore, lenderBefore, liquidatorBefore);
         assertFalse(lendView.getLending(lendingId).inLiquidation, "finalize clears native liquidation");

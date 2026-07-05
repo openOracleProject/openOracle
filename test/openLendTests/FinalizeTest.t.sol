@@ -224,18 +224,25 @@ contract FinalizeTest is OpenLendingBaseTest {
         _disputeAndSwap(reportId, address(supplyToken), 20 ether, 30 ether, disputer, 8 ether, stateHash);
 
         address feeRecipient = _predictFeeReceiver(reportId);
-        assertTrue(feeRecipient.code.length > 0, "fee receiver deployed");
+        assertEq(feeRecipient.code.length, 0, "fee receiver deploys lazily");
 
         _advancePastOracleSettlement();
 
         uint256 borrowerSupplyBefore = IOpenOracle2(address(oracle)).tokenHolder(borrower, address(supplyToken));
         uint256 lenderSupplyBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(supplyToken));
         uint256 liquidatorSupplyBefore = IOpenOracle2(address(oracle)).tokenHolder(liquidator, address(supplyToken));
+        openLend.LendingArrangement memory loanBeforeFinalize = lendView.getLending(lendingId);
 
         vm.prank(randomCaller);
         lending.finalize(lendingId);
 
-        _distributeOracleGameFees(reportId);
+        _deployAndDistributeOracleGameFees(
+            reportId,
+            lendingId,
+            loanBeforeFinalize.borrower,
+            loanBeforeFinalize.lender,
+            loanBeforeFinalize.liquidator
+        );
 
         // Single token1 dispute (oldAmount1 = 10 ether, protocolFee = 100_000 / 1e7 = 1%) → 0.1 ether fee in supply.
         // Split 50/25/25 (borrower / lender / liquidator) via integer division: 0.05 / 0.025 / 0.025.
@@ -369,10 +376,17 @@ contract FinalizeTest is OpenLendingBaseTest {
         _advancePastOracleSettlement();
 
         uint256 lenderSupplyBeforeFinalize = supplyToken.balanceOf(lender);
+        openLend.LendingArrangement memory loanBeforeFinalize = lendView.getLending(lendingId);
 
         vm.prank(randomCaller);
         lending.finalize(lendingId);
-        _distributeOracleGameFees(firstReportId);
+        _deployAndDistributeOracleGameFees(
+            firstReportId,
+            lendingId,
+            loanBeforeFinalize.borrower,
+            loanBeforeFinalize.lender,
+            loanBeforeFinalize.liquidator
+        );
 
         openLend.LendingArrangement memory loanAfterFinalize = lendView.getLending(lendingId);
         assertTrue(loanAfterFinalize.finished, "loan finishes underwater via finalize");

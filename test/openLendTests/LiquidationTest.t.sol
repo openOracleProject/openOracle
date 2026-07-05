@@ -112,7 +112,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         openLend.LendingArrangement memory loanDuring = lendView.getLending(lendingId);
         assertTrue(loanDuring.inLiquidation, "Loan should be in liquidation");
         assertEq(loanDuring.liquidator, liquidator, "Liquidator should be set");
-        assertTrue(_predictFeeReceiver(_latestReportId()).code.length > 0, "fee receiver should be deployed");
+        assertEq(_predictFeeReceiver(_latestReportId()).code.length, 0, "fee receiver deploys lazily");
 
         uint256 reportId = oracle.nextReportId() - 1;
         bytes32 stateHash = bytes32(0);
@@ -649,18 +649,13 @@ contract LiquidationTest is OpenLendingBaseTest {
         // First liquidation — fails (favorable price)
         _liquidate(liquidator, lendingId, 6 ether);
         address feeRecipient1 = _predictFeeReceiver(_latestReportId());
-        assertTrue(feeRecipient1.code.length > 0, "first feeRecipient deployed");
+        assertEq(feeRecipient1.code.length, 0, "first feeRecipient deploys lazily");
 
         // Generate fees on receiver #1 via dispute, then settle to fail
         uint256 reportId1 = oracle.nextReportId() - 1;
         bytes32 stateHash1 = bytes32(0);
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
         _disputeAndSwap(reportId1, address(supplyToken), 20 ether, 30 ether, disputer1, 12 ether, stateHash1);
-
-        // Snapshot beneficiaries and fees BEFORE settle (settle's _grabOracleGameFees would clear them)
-        openLendDataProvider.Beneficiaries memory bens1 = lendView.getBeneficiaries(lendingId, feeRecipient1);
-        assertEq(bens1.lender, lender, "receiver1 lender beneficiary");
-        assertEq(bens1.liquidator, liquidator, "receiver1 liquidator beneficiary");
 
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
         vm.prank(settler);
@@ -677,8 +672,15 @@ contract LiquidationTest is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId2, 6 ether);
         uint256 reportId2 = _latestReportId();
         address feeRecipient2 = _predictFeeReceiver(reportId2);
-        assertTrue(feeRecipient2.code.length > 0, "second feeRecipient deployed");
+        assertEq(feeRecipient2.code.length, 0, "second feeRecipient deploys lazily");
         assertTrue(feeRecipient2 != feeRecipient1, "fee receivers should be distinct clones");
+
+        _deployAndDistributeOracleGameFees(reportId1, lendingId, borrower, lender, liquidator);
+        _distributeOracleGameFees(reportId2);
+
+        openLendDataProvider.Beneficiaries memory bens1 = lendView.getBeneficiaries(lendingId, feeRecipient1);
+        assertEq(bens1.lender, lender, "receiver1 lender beneficiary");
+        assertEq(bens1.liquidator, liquidator, "receiver1 liquidator beneficiary");
 
         // Beneficiaries on receiver #2 are independent
         openLendDataProvider.Beneficiaries memory bens2 = lendView.getBeneficiaries(lendingId2, feeRecipient2);
@@ -690,9 +692,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         assertEq(lendView.getBeneficiaries(lendingId2, feeRecipient1).borrower, address(0), "receiver1 wrong-id borrower");
         assertEq(lendView.getBeneficiaries(lendingId, feeRecipient2).borrower, address(0), "receiver2 wrong-id borrower");
 
-        // Each receiver is callable directly.
-        _distributeOracleGameFees(reportId1);
-        // (lendingId2's liq #2 is still in flight; skip the no-op grab)
+        // (Both receivers were deployed and distributed above.)
     }
 
     function testFeeReceivers_RemainReportBoundAcrossRefiAndLaterLiquidation() public {
@@ -702,7 +702,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         _liquidate(liquidator, lendingId, 6 ether);
         uint256 reportId1 = _latestReportId();
         address feeRecipient1 = _predictFeeReceiver(reportId1);
-        assertTrue(feeRecipient1.code.length > 0, "first receiver deployed");
+        assertEq(feeRecipient1.code.length, 0, "first receiver deploys lazily");
 
         _disputeToNonLiquidatingPrice(reportId1, address(supplyToken), disputer1);
         vm.warp(block.timestamp + ORACLE_SETTLEMENT_TIME + 1);
@@ -737,8 +737,11 @@ contract LiquidationTest is OpenLendingBaseTest {
         uint256 reportId2 = _latestReportId();
         address feeRecipient2 = _predictFeeReceiver(reportId2);
 
-        assertTrue(feeRecipient2.code.length > 0, "second receiver deployed");
+        assertEq(feeRecipient2.code.length, 0, "second receiver deploys lazily");
         assertTrue(feeRecipient2 != feeRecipient1, "later liquidation gets fresh receiver");
+
+        _deployAndDistributeOracleGameFees(reportId1, lendingId, borrower, lender, liquidator);
+        _distributeOracleGameFees(reportId2);
 
         openLendDataProvider.Beneficiaries memory oldBens = lendView.getBeneficiaries(lendingId, feeRecipient1);
         openLendDataProvider.Beneficiaries memory newBens = lendView.getBeneficiaries(lendingId, feeRecipient2);
@@ -750,9 +753,7 @@ contract LiquidationTest is OpenLendingBaseTest {
         assertEq(lendView.getBeneficiaries(otherLendingId, feeRecipient1).borrower, address(0), "old receiver wrong-id borrower");
         assertEq(lendView.getBeneficiaries(otherLendingId, feeRecipient2).borrower, address(0), "new receiver wrong-id borrower");
 
-        // But both deterministic receivers are still directly callable.
-        _distributeOracleGameFees(reportId1);
-        _distributeOracleGameFees(reportId2);
+        // But both deterministic receivers are deployed and independently bound.
     }
 
     // ---------------- payout liveness with failing token recipients ----------------
