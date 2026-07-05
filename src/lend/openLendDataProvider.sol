@@ -67,6 +67,7 @@ contract openLendDataProvider {
 
     function getBeneficiaries(uint256 lendingId, address feeRecipient) external view returns (Beneficiaries memory b) {
         oracleFeeReceiver receiver = oracleFeeReceiver(feeRecipient);
+        if (feeRecipient.code.length == 0) return b;
         if (receiver.lendingId() != lendingId) return b;
         b.borrower = receiver.borrower();
         b.lender = receiver.lender();
@@ -125,7 +126,7 @@ contract openLendDataProvider {
     }
 
     /// Fee receiver for a loan's live liquidation, with pending fee balances. Zeroed when the loan is
-    /// not in liquidation; `deployed` is false when no clone exists (oracleGameFee == 0). Clone args
+    /// not in liquidation; `deployed` is false when no clone exists yet (fees can accrue pre-deploy). Clone args
     /// are rebuilt from current storage, which a live liquidation freezes; for past liquidations use
     /// predictFeeReceiverWithArgs with the LoanLiquidationUnderway snapshot.
     function getFeeReceiver(uint256 lendingId) public view returns (FeeReceiverState memory s) {
@@ -139,12 +140,10 @@ contract openLendDataProvider {
         s.feeReceiver = predicted;
         s.reportId = reportId;
         s.deployed = predicted.code.length > 0;
-        if (s.deployed) {
-            uint256 bal1 = oracle.tokenHolder(predicted, l.supplyToken);
-            uint256 bal2 = oracle.tokenHolder(predicted, l.borrowToken);
-            s.fees1Pending = bal1 > 1 ? bal1 - 1 : 0;
-            s.fees2Pending = bal2 > 1 ? bal2 - 1 : 0;
-        }
+        uint256 bal1 = oracle.tokenHolder(predicted, l.supplyToken);
+        uint256 bal2 = oracle.tokenHolder(predicted, l.borrowToken);
+        s.fees1Pending = bal1 > 1 ? bal1 - 1 : 0;
+        s.fees2Pending = bal2 > 1 ? bal2 - 1 : 0;
     }
 
     function getFeeReceivers(uint256[] calldata lendingIds)

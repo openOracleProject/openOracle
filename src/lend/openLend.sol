@@ -927,7 +927,7 @@ contract openLend is ReentrancyGuard {
 
         if (oracleParams.oracleGameFee > 0) {
             feeRecipient =
-                _deployFeeReceiver(lendingId, reportId, supplyToken, borrowToken, lending.borrower, lender, liquidator);
+                _predictFeeReceiver(lendingId, reportId, supplyToken, borrowToken, lending.borrower, lender, liquidator);
         }
 
         if (!isEth1) {
@@ -976,6 +976,37 @@ contract openLend is ReentrancyGuard {
             _transferTokens(tokenToGet, address(this), msg.sender, amount);
             emit TempHoldingWithdrawn(msg.sender, tokenToGet, amount);
         }
+    }
+
+    /**
+     * @notice Deploys a liquidation's fee receiver clone if needed, then distributes accrued oracle fees.
+     * @dev    `liquidate` only stores the deterministic receiver address in the oracle game. This function
+     *         rebuilds the liquidation-time snapshot, verifies it predicts the oracle game's fee recipient,
+     *         deploys the clone if absent, and calls the clone's permissionless `distribute`.
+     *         Indexer note: any oracle game can point its fee recipient at a clone built from arbitrary args,
+     *         so match the clone address to `LoanLiquidationUnderway.feeRecipient`; don't trust `lendingId()` alone.
+     */
+    function deployAndDistributeFeeReceiver(
+        uint256 reportId,
+        uint256 lendingId,
+        address supplyToken,
+        address borrowToken,
+        address borrower,
+        address lender,
+        address liquidator
+    ) external nonReentrant returns (address feeReceiver, uint256 fees1, uint256 fees2) {
+        bytes memory args = _feeReceiverArgs(lendingId, supplyToken, borrowToken, borrower, lender, liquidator);
+        feeReceiver = LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(reportId), address(this));
+
+        if (oracle.storedGame(reportId).protocolFeeRecipient != feeReceiver) {
+            revert LendErrors.FeeRecipientNotForLendingId();
+        }
+
+        if (feeReceiver.code.length == 0) {
+            feeReceiver = LibClone.cloneDeterministic(feeReceiverImpl, args, bytes32(reportId));
+        }
+
+        (fees1, fees2) = oracleFeeReceiver(feeReceiver).distribute();
     }
 
     /**
@@ -1168,13 +1199,11 @@ contract openLend is ReentrancyGuard {
         }
     }
 
-    /// @dev Deploys a per-liquidation fee receiver clone with the liquidation-time snapshot baked into
-    ///      its bytecode as immutable args. The oracle pays its protocol fees to the clone, and anyone
-    ///      may later call `distribute()` on it to split them across borrower, lender, and liquidator.
+    /// @dev Computes the per-liquidation fee receiver clone address. The clone is deployed lazily by
+    ///      `deployAndDistributeFeeReceiver`; the oracle can still credit this address before code exists.
     ///      Salt is the oracle's globally-unique, strictly-increasing report id, so re-liquidations of
-    ///      the same lendingId always get fresh clones; addresses are deployer-bound and an
-    ///      occupied-address deploy reverts.
-    function _deployFeeReceiver(
+    ///      the same lendingId always get fresh clones; addresses are deployer-bound.
+    function _predictFeeReceiver(
         uint256 lendingId,
         uint256 reportId,
         address supplyToken,
@@ -1183,8 +1212,19 @@ contract openLend is ReentrancyGuard {
         address lender,
         address liquidator
     ) internal returns (address feeReceiver) {
-        bytes memory args = abi.encodePacked(lendingId, supplyToken, borrowToken, borrower, lender, liquidator);
-        feeReceiver = LibClone.cloneDeterministic(feeReceiverImpl, args, bytes32(reportId));
+        bytes memory args = _feeReceiverArgs(lendingId, supplyToken, borrowToken, borrower, lender, liquidator);
+        feeReceiver = LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(reportId), address(this));
+    }
+
+    function _feeReceiverArgs(
+        uint256 lendingId,
+        address supplyToken,
+        address borrowToken,
+        address borrower,
+        address lender,
+        address liquidator
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(lendingId, supplyToken, borrowToken, borrower, lender, liquidator);
     }
 
     function _oracleGame(
