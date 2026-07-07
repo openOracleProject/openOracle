@@ -307,7 +307,6 @@ abstract contract OpenLendingBaseTest is Test {
         vm.prank(disputer);
         IOpenOracle2(address(oracle)).dispute(
             reportId,
-            tokenToSwap,
             newAmount1,
             newAmount2,
             disputer,

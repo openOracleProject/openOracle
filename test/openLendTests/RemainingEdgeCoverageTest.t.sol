@@ -252,7 +252,7 @@ contract RemainingEdgeCoverageTest is OpenLendingBaseTest {
         bytes32 stateHash = bytes32(0);
 
         vm.warp(block.timestamp + 120);
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 8 ether, stateHash);
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 16 ether, disputer, 8 ether, stateHash);
 
         uint256 feeAccrued = IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken));
         assertGt(feeAccrued, 0, "supply-side fee should accrue");

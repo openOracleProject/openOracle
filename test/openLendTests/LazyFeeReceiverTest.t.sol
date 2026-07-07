@@ -180,7 +180,7 @@ contract LazyFeeReceiverTest is OpenLendingBaseTest {
 
         IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
         vm.warp(uint256(game.reportTimestamp) + game.disputeDelay + 1);
-        _disputeAndSwap(reportId, address(supplyToken), 40 ether, 40 ether, disputer2, 0, bytes32(0));
+        _disputeAndSwap(reportId, address(supplyToken), 40 ether, 32 ether, disputer2, 0, bytes32(0));
 
         uint256 fee = 20 ether * 100_000 / 1e7;
         address feeRecipient = _predictFeeReceiver(reportId);
@@ -240,7 +240,7 @@ contract LazyFeeReceiverTest is OpenLendingBaseTest {
     function _disputeSupplyFee(uint256 reportId) internal {
         IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
         vm.warp(uint256(game.reportTimestamp) + game.disputeDelay + 1);
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 0, bytes32(0));
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 16 ether, disputer, 0, bytes32(0));
     }
 
     function _directOracleReport(address feeRecipient) internal returns (uint256 reportId) {

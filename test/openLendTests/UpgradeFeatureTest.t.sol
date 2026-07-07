@@ -844,7 +844,7 @@ contract UpgradeFeatureTest is OpenLendingBaseTest {
         IOpenOracle2.OracleGame memory game = IOpenOracle2(address(oracle)).storedGame(reportId);
         vm.warp(uint256(game.reportTimestamp) + game.disputeDelay + 1);
         uint256 expectedFee = uint256(game.currentAmount1) * game.protocolFee / 1e7;
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 0, bytes32(0));
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 12 ether, disputer, 0, bytes32(0));
 
         state = lendView.getFeeReceiver(lendingId);
         assertEq(state.fees1Pending, expectedFee);

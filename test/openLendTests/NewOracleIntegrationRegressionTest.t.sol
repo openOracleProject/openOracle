@@ -289,13 +289,13 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         address feeRecipient = _predictFeeReceiver(reportId);
 
         vm.warp(uint256(IOpenOracle2(address(oracle)).storedGame(reportId).reportTimestamp) + 61);
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 0, bytes32(0));
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 16 ether, disputer, 0, bytes32(0));
 
         vm.warp(uint256(IOpenOracle2(address(oracle)).storedGame(reportId).reportTimestamp) + 61);
         _disputeAndSwap(reportId, address(borrowToken), 40 ether, 40 ether, disputer2, 0, bytes32(0));
 
         uint256 feesSupply = 10 ether * 100_000 / 1e7;
-        uint256 feesBorrow = 20 ether * 100_000 / 1e7;
+        uint256 feesBorrow = 16 ether * 100_000 / 1e7;
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), feesSupply + 1, "supply fees accrued");
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(borrowToken)), feesBorrow + 1, "borrow fees accrued");
 
@@ -323,7 +323,7 @@ contract NewOracleIntegrationRegressionTest is OpenLendingBaseTest {
         _distributeOracleGameFees(reportId);
 
         vm.warp(uint256(IOpenOracle2(address(oracle)).storedGame(reportId).reportTimestamp) + 61);
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 20 ether, disputer, 0, bytes32(0));
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 16 ether, disputer, 0, bytes32(0));
 
         uint256 feesSupply = 10 ether * 100_000 / 1e7;
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, address(supplyToken)), feesSupply + 1, "supply fees accrued");

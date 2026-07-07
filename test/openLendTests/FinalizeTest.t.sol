@@ -221,7 +221,7 @@ contract FinalizeTest is OpenLendingBaseTest {
         // Need a feeRecipient and accrued fees: dispute once so the swap charges protocolFee.
         bytes32 stateHash = bytes32(0);
         vm.warp(block.timestamp + ORACLE_DISPUTE_DELAY + 1);
-        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 30 ether, disputer, 8 ether, stateHash);
+        _disputeAndSwap(reportId, address(supplyToken), 20 ether, 16 ether, disputer, 8 ether, stateHash);
 
         address feeRecipient = _predictFeeReceiver(reportId);
         assertEq(feeRecipient.code.length, 0, "fee receiver deploys lazily");

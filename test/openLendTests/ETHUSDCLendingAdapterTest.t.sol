@@ -1610,13 +1610,14 @@ contract ETHUSDCLendingAdapterTest is OpenLendingBaseTest {
 
         uint128 newAmount1 = uint128(uint256(o.currentAmount1) * o.multiplier / 100);
         uint128 newAmount2 = uint128(uint256(newAmount1) * 3 / 2);
-        uint256 ethRequired = newAmount2 > o.currentAmount2 ? newAmount2 - o.currentAmount2 : 0;
+        uint256 fee = uint256(o.currentAmount2) * o.feePercentage / 1e7;
+        uint256 protocolFee = uint256(o.currentAmount2) * o.protocolFee / 1e7;
+        uint256 ethRequired = uint256(newAmount2) + o.currentAmount2 + fee + protocolFee;
 
         IOpenOracle2.PreimageHelper memory helper = _helperFor(reportId);
         vm.prank(disputeActor);
         IOpenOracle2(address(oracle)).dispute{value: ethRequired}(
             reportId,
-            address(supplyToken),
             newAmount1,
             newAmount2,
             disputeActor,

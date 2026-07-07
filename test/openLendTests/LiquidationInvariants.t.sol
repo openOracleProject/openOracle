@@ -292,7 +292,6 @@ contract LiquidationInvariantHandler is Test {
         vm.startPrank(disputer);
         try IOpenOracle2(address(oracle)).dispute{value: msgValue}(
             reportId,
-            game.token1,
             newAmount1,
             newAmount2,
             disputer,

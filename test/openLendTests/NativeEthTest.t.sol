@@ -499,7 +499,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         vm.stopPrank();
 
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
-        _selfDisputeToken1Eth(reportId, 20 ether, 20 ether);
+        _selfDisputeToken1Eth(reportId, 20 ether, 16 ether);
 
         IOpenOracle2.OracleGame memory o = IOpenOracle2(address(oracle)).storedGame(reportId);
         vm.warp(uint256(o.reportTimestamp) + o.settlementTime + 1);
@@ -560,7 +560,7 @@ contract NativeEthTest is OpenLendingBaseTest {
         uint256 reportId = _liquidateNativeSupply(lendingId, 8 ether);
         address feeRecipient = _predictFeeReceiver(reportId);
 
-        _selfDisputeToken1Eth(reportId, 20 ether, 20 ether);
+        _selfDisputeToken1Eth(reportId, 20 ether, 16 ether);
 
         uint256 fee = 10 ether * 100_000 / 1e7;
         assertEq(IOpenOracle2(address(oracle)).tokenHolder(feeRecipient, ETH), fee + 1, "native supply fee accrued");
@@ -843,7 +843,6 @@ contract NativeEthTest is OpenLendingBaseTest {
         vm.prank(liquidator);
         IOpenOracle2(address(oracle)).dispute{value: ethContribution}(
             reportId,
-            ETH,
             newAmount1,
             newAmount2,
             liquidator,
@@ -864,7 +863,6 @@ contract NativeEthTest is OpenLendingBaseTest {
         vm.prank(liquidator);
         IOpenOracle2(address(oracle)).dispute{value: ethContribution}(
             reportId,
-            ETH,
             newAmount1,
             newAmount2,
             liquidator,

@@ -450,7 +450,6 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         vm.expectRevert(Errors.DisputeTooLate.selector);
         IOpenOracle2(address(oracle)).dispute(
             reportIdAt,
-            address(supplyToken),
             uint128(uint256(atGame.currentAmount1) * atGame.multiplier / 100),
             uint128(uint256(atGame.currentAmount2) * 2),
             disputer,
@@ -1052,7 +1051,7 @@ contract SettleAndBusyLockTest is OpenLendingBaseTest {
         bytes32 stateHash = bytes32(0);
         (,,, uint48 reportTs,,,) = _reportStatus(reportId);
         vm.warp(uint256(reportTs) + 61);
-        _disputeAndSwap(reportId, address(evil), 20 ether, 30 ether, disputer, 12 ether, stateHash);
+        _disputeAndSwap(reportId, address(evil), 20 ether, 12 ether, disputer, 12 ether, stateHash);
 
         uint256 borrowerBefore = IOpenOracle2(address(oracle)).tokenHolder(borrower, address(evil));
         uint256 lenderBefore = IOpenOracle2(address(oracle)).tokenHolder(lender, address(evil));

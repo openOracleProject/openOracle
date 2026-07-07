@@ -428,13 +428,14 @@ contract UsdcEthIntegrationTest is Test {
 
         uint128 newAmount1 = uint128(uint256(game.currentAmount1) * game.multiplier / 100);
         uint128 newAmount2 = 30 ether;
-        uint256 ethRequired = uint256(newAmount2) - game.currentAmount2;
+        uint256 fee = uint256(game.currentAmount2) * game.feePercentage / 1e7;
+        uint256 protocolFee = uint256(game.currentAmount2) * game.protocolFee / 1e7;
+        uint256 ethRequired = uint256(newAmount2) + game.currentAmount2 + fee + protocolFee;
         IOpenOracle2.PreimageHelper memory helper = _helperFor(reportId);
 
         vm.prank(disputer);
         IOpenOracle2(address(oracle)).dispute{value: ethRequired}(
             reportId,
-            address(usdc),
             newAmount1,
             newAmount2,
             disputer,
