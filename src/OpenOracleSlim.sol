@@ -253,7 +253,6 @@ contract OpenOracle {
      *      true when the disputer is intended to fund via approveInternal; any false flag makes
      *      that token's required contribution come from msg.sender externally.
      * @param reportId The report instance to dispute
-     * @param tokenToSwap Either token1 or token2; disputer is selling chosen token to previous reporter at the previously quoted exchange rate
      * @param newAmount1 New token1 amount; must equal oldAmount1 * multiplier / 100 unless at escalationHalt where it must equal oldAmount1 + 1
      * @param newAmount2 New token2 amount proposed by the disputer. Ratio of newAmount1 and newAmount2 is the new price disputer is quoting.
      * @param disputer Address recorded as the new currentReporter, credited for any ETH excess. Also receives tokens back when the round completes.
@@ -265,7 +264,6 @@ contract OpenOracle {
      */
     function dispute(
         uint256 reportId,
-        address tokenToSwap,
         uint128 newAmount1,
         uint128 newAmount2,
         address disputer,
@@ -324,12 +322,13 @@ contract OpenOracle {
             if (previousReporter == address(0)) revert Errors.NoReportToDispute();
             if (currentTime >= prevReportTimestamp + oracle.settlementTime) revert Errors.DisputeTooLate();
             if (oracle.settlementTimestamp != 0) revert Errors.AlreadySettled();
-            if (tokenToSwap != token1 && tokenToSwap != token2) revert Errors.InvalidTokenToSwap();
             if (currentTime < prevReportTimestamp + oracle.disputeDelay) revert Errors.DisputeTooEarly();
             if (disputer == address(0)) revert Errors.AddressCannotBeZero();
             if (timing.blockTimestamp > 0) _validateTiming(timing);
             if (msg.value > 0 && token1 != ETH_SENTINEL && token2 != ETH_SENTINEL) revert Errors.NeitherTokenIsETH();
         }
+
+        bool swapToken2 = uint256(newAmount2) * oldAmount1 > uint256(oldAmount2) * newAmount1;
 
         {
             oracle.currentAmount1 = newAmount1;
@@ -344,7 +343,7 @@ contract OpenOracle {
                 record.amount1 = newAmount1;
                 record.amount2 = newAmount2;
                 record.reportTimestamp = currentTime;
-                record.tokenToSwap = tokenToSwap;
+                record.tokenToSwap = swapToken2 ? token2 : token1;
                 if (nextIndex < type(uint24).max) oracle.numReports = nextIndex + 1;
             }
 
@@ -372,7 +371,7 @@ contract OpenOracle {
 
         uint256 ethRequired = 0;
 
-        if (tokenToSwap == token1) {
+        if (!swapToken2) {
             uint256 fee = (oldAmount1 * oracle.feePercentage) / PERCENTAGE_PRECISION;
             uint256 protocolFee = (oldAmount1 * oracle.protocolFee) / PERCENTAGE_PRECISION;
             uint256 netToken2Contribution = newAmount2 >= oldAmount2 ? newAmount2 - oldAmount2 : 0;
@@ -400,7 +399,7 @@ contract OpenOracle {
 
                 tokenHolder[previousReporter][token1] += 2 * oldAmount1 + fee;
             }
-        } else if (tokenToSwap == token2) {
+        } else {
             uint256 fee = (oldAmount2 * oracle.feePercentage) / PERCENTAGE_PRECISION;
             uint256 protocolFee = (oldAmount2 * oracle.protocolFee) / PERCENTAGE_PRECISION;
             uint256 netToken1Contribution = newAmount1 > (oldAmount1) ? newAmount1 - oldAmount1 : 0;
