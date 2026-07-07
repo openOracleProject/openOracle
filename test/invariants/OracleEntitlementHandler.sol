@@ -163,14 +163,25 @@ contract OracleEntitlementHandler is Test {
         OpenOracle.OracleGame memory g = r.game;
         address disputer = _pickActor(actorSeed);
         address prev = g.currentReporter;
-        address tokenToSwap = swapT1 ? g.token1 : g.token2;
 
         uint128 oldA1 = g.currentAmount1;
         uint128 oldA2 = g.currentAmount2;
         uint256 nextA1Raw = (uint256(oldA1) * MULT) / 100;
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 newA1 = uint128(nextA1Raw);
-        uint128 newA2 = uint128(bound(uint256(newA2Seed), 1, 1e20));
+        uint256 thresholdA2 = uint256(newA1) * oldA2 / oldA1;
+        if (thresholdA2 == 0) return;
+        uint256 maxA2 = 1e20;
+        uint256 newA2Raw;
+        if (swapT1) {
+            uint256 upper = thresholdA2 > maxA2 ? maxA2 : thresholdA2;
+            newA2Raw = bound(uint256(newA2Seed), 1, upper);
+        } else {
+            if (thresholdA2 >= maxA2) return;
+            newA2Raw = bound(uint256(newA2Seed), thresholdA2 + 1, maxA2);
+        }
+        uint128 newA2 = uint128(newA2Raw);
+        address tokenToSwap = swapT1 ? g.token1 : g.token2;
 
         if (block.timestamp >= uint256(g.reportTimestamp) + g.settlementTime) return;
         if (block.timestamp < uint256(g.reportTimestamp) + g.disputeDelay) {
@@ -191,7 +202,7 @@ contract OracleEntitlementHandler is Test {
 
         vm.prank(disputer);
         try oracle.dispute{value: ethValue}(
-            r.id, tokenToSwap, newA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
+            r.id, newA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
         ) {
             _mirrorDispute(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA2, disputer, prev, isSelf);
             if (extra > 0) entitled[disputer][ETH] += extra;

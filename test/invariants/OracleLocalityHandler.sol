@@ -186,14 +186,26 @@ contract OracleLocalityHandler is Test {
         OpenOracle.OracleGame memory g = r.game;
         address disputer = _pickActor(actorSeed);
         address previousReporter = g.currentReporter;
-        address tokenToSwap = (sideSeed & 1) == 0 ? g.token1 : g.token2;
 
         uint128 oldA1 = g.currentAmount1;
+        uint128 oldA2 = g.currentAmount2;
         uint256 nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
         if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 nextA1 = uint128(nextA1Raw);
-        uint128 newA2 = uint128(bound(uint256(newA2Seed), 1, 1e21));
+        uint256 thresholdA2 = uint256(nextA1) * oldA2 / oldA1;
+        if (thresholdA2 == 0) return;
+        bool token2Side = (sideSeed & 1) != 0;
+        uint256 maxA2 = 1e21;
+        uint256 newA2Raw;
+        if (token2Side) {
+            if (thresholdA2 >= maxA2) return;
+            newA2Raw = bound(uint256(newA2Seed), thresholdA2 + 1, maxA2);
+        } else {
+            uint256 upper = thresholdA2 > maxA2 ? maxA2 : thresholdA2;
+            newA2Raw = bound(uint256(newA2Seed), 1, upper);
+        }
+        uint128 newA2 = uint128(newA2Raw);
 
         // Move into the dispute window, then read the resulting time on its own line.
         if (block.timestamp >= uint256(g.reportTimestamp) + g.settlementTime) return;
@@ -213,7 +225,7 @@ contract OracleLocalityHandler is Test {
 
         vm.prank(disputer);
         try oracle.dispute{value: disputeValue}(
-            r.id, tokenToSwap, nextA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
+            r.id, nextA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
         ) {
             _check("dispute");
             uint48 oppo = uint48(block.number);

@@ -206,7 +206,6 @@ contract OracleSystemHandler is Test {
         if (g.settlementTimestamp != 0) return;
 
         address disputer = _pickActor(actorSeed);
-        address tokenToSwap = (sideSeed & 1) == 0 ? g.token1 : g.token2;
         uint128 oldA1 = g.currentAmount1;
         uint128 oldA2 = g.currentAmount2;
 
@@ -220,7 +219,20 @@ contract OracleSystemHandler is Test {
         if (nextA1Raw > type(uint128).max) return;
 
         uint128 nextA1 = uint128(nextA1Raw);
-        uint128 newA2 = uint128(bound(uint256(newAmt2Seed), 1, type(uint128).max - 1));
+        uint256 thresholdA2 = uint256(nextA1) * oldA2 / oldA1;
+        if (thresholdA2 == 0) return;
+        bool token2Side = (sideSeed & 1) != 0;
+        uint256 maxA2 = type(uint128).max - 1;
+        uint256 newA2Raw;
+        if (token2Side) {
+            if (thresholdA2 >= maxA2) return;
+            newA2Raw = bound(uint256(newAmt2Seed), thresholdA2 + 1, maxA2);
+        } else {
+            uint256 upper = thresholdA2 > maxA2 ? maxA2 : thresholdA2;
+            newA2Raw = bound(uint256(newAmt2Seed), 1, upper);
+        }
+        uint128 newA2 = uint128(newA2Raw);
+        address tokenToSwap = token2Side ? g.token2 : g.token1;
 
         // Time-window for dispute: must be >= disputeDelay since report and < settlementTime.
         bool timeType = (g.flags & FLAG_TIME_TYPE) != 0;
@@ -240,14 +252,13 @@ contract OracleSystemHandler is Test {
         if (ethSide) vm.deal(disputer, disputer.balance + 10 ether);
 
         // Precompute protocol fee burn (if applicable).
-        uint256 oldSideAmt = (sideSeed & 1) == 0 ? oldA1 : oldA2;
+        uint256 oldSideAmt = token2Side ? oldA2 : oldA1;
         uint256 protocolFee = (oldSideAmt * g.protocolFee) / 1e7;
         bool burns = protocolFee > 0 && g.protocolFeeRecipient == address(0);
 
         vm.prank(disputer);
         try oracle.dispute{value: disputeValue}(
             r.id,
-            tokenToSwap,
             nextA1,
             newA2,
             disputer,

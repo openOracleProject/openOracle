@@ -119,10 +119,9 @@ contract OracleArmedReentrancyHandler is Test {
                 armToken.disarm();
                 return;
             }
-            address swapTok = (seed & 0x20) == 0 ? dg.token1 : dg.token2;
             payload = abi.encodeCall(
                 oracle.dispute,
-                (r.id, swapTok, uint128(nA1), uint128(1e18), actor, true, true, dg, r.helper, _emptyTiming())
+                (r.id, uint128(nA1), uint128(1e18), actor, true, true, dg, r.helper, _emptyTiming())
             );
         } else if (kind == 7) {
             payload = abi.encodeCall(oracle.report, (_reentrantReportGame(actor), true, true, _emptyTiming()));
@@ -243,14 +242,26 @@ contract OracleArmedReentrancyHandler is Test {
 
         OpenOracle.OracleGame memory g = r.game;
         address disputer = _pickActor(actorSeed);
-        address tokenToSwap = (sideSeed & 1) == 0 ? g.token1 : g.token2;
 
         uint128 oldA1 = g.currentAmount1;
+        uint128 oldA2 = g.currentAmount2;
         uint256 nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
         if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 nextA1 = uint128(nextA1Raw);
-        uint128 newA2 = uint128(bound(uint256(newA2Seed), 1, 1e21));
+        uint256 thresholdA2 = uint256(nextA1) * oldA2 / oldA1;
+        if (thresholdA2 == 0) return;
+        bool token2Side = (sideSeed & 1) != 0;
+        uint256 maxA2 = 1e21;
+        uint256 newA2Raw;
+        if (token2Side) {
+            if (thresholdA2 >= maxA2) return;
+            newA2Raw = bound(uint256(newA2Seed), thresholdA2 + 1, maxA2);
+        } else {
+            uint256 upper = thresholdA2 > maxA2 ? maxA2 : thresholdA2;
+            newA2Raw = bound(uint256(newA2Seed), 1, upper);
+        }
+        uint128 newA2 = uint128(newA2Raw);
 
         if (block.timestamp >= uint256(g.reportTimestamp) + g.settlementTime) return;
         if (block.timestamp < uint256(g.reportTimestamp) + g.disputeDelay) {
@@ -265,7 +276,7 @@ contract OracleArmedReentrancyHandler is Test {
         _arm(armSeed);
         vm.prank(disputer);
         try oracle.dispute{value: disputeValue}(
-            r.id, tokenToSwap, nextA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
+            r.id, nextA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
         ) {
             g.currentAmount1 = nextA1;
             g.currentAmount2 = newA2;
@@ -358,10 +369,10 @@ contract OracleArmedReentrancyHandler is Test {
             OpenOracle.PreimageHelper memory h = _helper(reportId, reporter, ts, bn);
 
             // Arm a dispute against the just-created report (fresh hash, in-window, disputeDelay 0).
-            address swapTok = swapArmSide ? g.token1 : g.token2;
             uint128 nA1 = uint128((uint256(g.currentAmount1) * g.multiplier) / 100);
+            uint128 nA2 = swapArmSide ? uint128(1e18) : uint128(2e18);
             bytes memory payload = abi.encodeCall(
-                oracle.dispute, (reportId, swapTok, nA1, uint128(1e18), disputer, true, true, g, h, _emptyTiming())
+                oracle.dispute, (reportId, nA1, nA2, disputer, true, true, g, h, _emptyTiming())
             );
             armToken.arm(address(oracle), payload, false);
             lastArmKind = 6;
