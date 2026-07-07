@@ -258,7 +258,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint128 newAmount2 = 2000e18; // unchanged → no token2 swap
         vm.prank(disputer);
         IOpenOracle2(address(oracle)).dispute(
-            reportId, address(sellToken), newAmount1, newAmount2, disputer,
+            reportId, newAmount1, newAmount2, disputer,
             true, true, og, ph, IOpenOracle2.TimingBoundaries(0, 0, 0, 0)
         );
 
