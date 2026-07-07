@@ -160,7 +160,7 @@ contract OpenOraclePackedRoundTripTest is BaseGGTest {
         vm.recordLogs();
         vm.prank(bob);
         oracle.dispute(
-            reportId, address(token1), newAmount1, newAmount2, bob, false, false, preGame, helper, _emptyTiming()
+            reportId, newAmount1, newAmount2, bob, false, false, preGame, helper, _emptyTiming()
         );
         Vm.Log[] memory logs = vm.getRecordedLogs();
 

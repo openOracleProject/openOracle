@@ -10,7 +10,7 @@ import "./BaseGGTest.sol";
 ///         by the per-field boundary tests below.
 ///
 ///         The post-state hash is the interesting case: the top-level free-choice args
-///         (tokenToSwap, newAmount1, newAmount2, disputer) feed into in-place mutations
+///         (newAmount1, newAmount2, disputer) feed into in-place mutations
 ///         on the staged buffer (`oracle.currentAmount1 = newAmount1;` etc.), and that
 ///         buffer gets re-keccak'd. If any dirty high bits in those args escape Solidity's
 ///         calldata mask, they end up in the second hash. The fuzz at the bottom asserts
@@ -18,9 +18,9 @@ import "./BaseGGTest.sol";
 ///         calldata, the resulting on-chain state hash must either be unchanged (revert)
 ///         or match the hash a clean dispute would produce.
 contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
-    uint256 internal constant ORACLE_GAME_OFFSET = 0x0E0;
-    uint256 internal constant PREIMAGE_HELPER_OFFSET = 0x360;
-    uint256 internal constant TIMING_OFFSET = 0x3E0;
+    uint256 internal constant ORACLE_GAME_OFFSET = 0x0C0;
+    uint256 internal constant PREIMAGE_HELPER_OFFSET = 0x340;
+    uint256 internal constant TIMING_OFFSET = 0x3C0;
 
     uint128 internal constant DISPUTE_NEW_AMOUNT1 = uint128(1.1e18);
     uint128 internal constant DISPUTE_NEW_AMOUNT2 = uint128(2100e18);
@@ -40,7 +40,6 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
             oracle.dispute,
             (
                 ctx.reportId,
-                address(token1),
                 DISPUTE_NEW_AMOUNT1,
                 DISPUTE_NEW_AMOUNT2,
                 bob,
@@ -89,38 +88,33 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
 
     // ─── dispute() top-level args ──────────────────────────────────────────────
     // 0x000 reportId              uint256
-    // 0x020 tokenToSwap           address
-    // 0x040 newAmount1            uint128
-    // 0x060 newAmount2            uint128
-    // 0x080 disputer              address
-    // 0x0A0 tryInternalBalance1   bool
-    // 0x0C0 tryInternalBalance2   bool
-
-    function testDirtyCalldata_DisputeRevertsDirtyTokenToSwap() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x020, 20), "tokenToSwap");
-    }
+    // 0x020 newAmount1            uint128
+    // 0x040 newAmount2            uint128
+    // 0x060 disputer              address
+    // 0x080 tryInternalBalance1   bool
+    // 0x0A0 tryInternalBalance2   bool
 
     function testDirtyCalldata_DisputeRevertsDirtyNewAmount1() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x040, 16), "newAmount1");
+        _assertDirtyReverts(_dirtyPaddingByte(0x020, 16), "newAmount1");
     }
 
     function testDirtyCalldata_DisputeRevertsDirtyNewAmount2() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x060, 16), "newAmount2");
+        _assertDirtyReverts(_dirtyPaddingByte(0x040, 16), "newAmount2");
     }
 
     function testDirtyCalldata_DisputeRevertsDirtyDisputer() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x080, 20), "disputer");
+        _assertDirtyReverts(_dirtyPaddingByte(0x060, 20), "disputer");
     }
 
     function testDirtyCalldata_DisputeRevertsDirtyTryInternalBalance1() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x0A0, 1), "tryInternalBalance1");
+        _assertDirtyReverts(_dirtyPaddingByte(0x080, 1), "tryInternalBalance1");
     }
 
     function testDirtyCalldata_DisputeRevertsDirtyTryInternalBalance2() public {
-        _assertDirtyReverts(_dirtyPaddingByte(0x0C0, 1), "tryInternalBalance2");
+        _assertDirtyReverts(_dirtyPaddingByte(0x0A0, 1), "tryInternalBalance2");
     }
 
-    // ─── OracleGame struct (at 0x0E0) ─────────────────────────────────────────
+    // ─── OracleGame struct (at 0x0C0) ─────────────────────────────────────────
     // Same layout as report() — the pre-state hash check catches any dirty padding
     // bit because it builds the hash buffer via calldatacopy(params, 0x280).
 
@@ -204,7 +198,7 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
         _assertDirtyReverts(ORACLE_GAME_OFFSET + _dirtyPaddingByte(0x260, 1), "flags");
     }
 
-    // ─── PreimageHelper struct (at 0x360) ─────────────────────────────────────
+    // ─── PreimageHelper struct (at 0x340) ─────────────────────────────────────
     // reportId / blockTimestamp / blockNumber are all uint256 → no padding bytes.
     // Only creator (address) has a 12-byte padding zone.
 
@@ -226,12 +220,12 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
     // what off-chain observers / disputers / settlers reconstructed.
     //
     // Padding bytes covered (per dispute calldata):
-    //   top-level:     tokenToSwap(12) + newAmount1(16) + newAmount2(16)
-    //                + disputer(12) + tib1(31) + tib2(31)                 = 118
+    //   top-level:     newAmount1(16) + newAmount2(16)
+    //                + disputer(12) + tib1(31) + tib2(31)                 = 106
     //   OracleGame:    sum of (32 - W) for 20 fields                       = 437
     //   PreimageHelper: only creator has padding                           = 12
     //   TimingBoundaries: all uint256, no padding                          = 0
-    //                                                                  Total = 567 byte positions
+    //                                                                  Total = 555 byte positions
     function testFuzzAllPaddingBytes_Dispute_StateHashInvariant() public {
         // Build the full padding-byte index list once (deterministic order).
         uint256[] memory padBytes = _allPaddingByteOffsets();
@@ -302,15 +296,14 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
         // Field table: (slotOffset, valueBytes). Order matches the calldata layout.
         // reportId / TimingBoundaries fields / helper.reportId / helper.blockTimestamp /
         // helper.blockNumber are all uint256 → no padding, omitted.
-        uint256[2][27] memory fields = [
+        uint256[2][26] memory fields = [
             // top-level args
-            [uint256(0x020), uint256(20)], // tokenToSwap
-            [uint256(0x040), uint256(16)], // newAmount1
-            [uint256(0x060), uint256(16)], // newAmount2
-            [uint256(0x080), uint256(20)], // disputer
-            [uint256(0x0A0), uint256(1)],  // tib1
-            [uint256(0x0C0), uint256(1)],  // tib2
-            // OracleGame at 0x0E0 (offsets below are absolute, already including base)
+            [uint256(0x020), uint256(16)], // newAmount1
+            [uint256(0x040), uint256(16)], // newAmount2
+            [uint256(0x060), uint256(20)], // disputer
+            [uint256(0x080), uint256(1)],  // tib1
+            [uint256(0x0A0), uint256(1)],  // tib2
+            // OracleGame at 0x0C0 (offsets below are absolute, already including base)
             [uint256(ORACLE_GAME_OFFSET + 0x000), uint256(16)], // currentAmount1
             [uint256(ORACLE_GAME_OFFSET + 0x020), uint256(16)], // currentAmount2
             [uint256(ORACLE_GAME_OFFSET + 0x040), uint256(20)], // currentReporter
@@ -331,7 +324,7 @@ contract OpenOracleDisputeDirtyCalldataTest is BaseGGTest {
             [uint256(ORACLE_GAME_OFFSET + 0x220), uint256(4)],  // callbackGasLimit
             [uint256(ORACLE_GAME_OFFSET + 0x240), uint256(3)],  // protocolFee
             [uint256(ORACLE_GAME_OFFSET + 0x260), uint256(1)],  // flags
-            // PreimageHelper at 0x360 — only creator has padding
+            // PreimageHelper at 0x340 — only creator has padding
             [uint256(PREIMAGE_HELPER_OFFSET + 0x020), uint256(20)] // helper.creator
         ];
 

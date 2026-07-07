@@ -150,13 +150,13 @@ contract OpenOracleGGBlacklistTest is Test {
     }
 
     // Alice disputes ctx.game; updates ctx.game in place.
-    function _aliceDisputes(Ctx memory ctx, address tokenToSwap, uint128 newA1, uint128 newA2)
+    function _aliceDisputes(Ctx memory ctx, address, uint128 newA1, uint128 newA2)
         internal
         returns (Ctx memory)
     {
         vm.prank(alice);
         oracle.dispute(
-            ctx.reportId, tokenToSwap, newA1, newA2, alice, false, false, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, newA1, newA2, alice, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
         ctx.game.currentAmount1 = newA1;
         ctx.game.currentAmount2 = newA2;
@@ -221,7 +221,7 @@ contract OpenOracleGGBlacklistTest is Test {
 
         token2.blacklist(bob);
 
-        ctx = _aliceDisputes(ctx, address(token2), 1.1e18, 2100e18);
+        ctx = _aliceDisputes(ctx, address(token2), 1.1e18, 2300e18);
 
         uint256 fee = (2000e18 * 3000) / 1e7;
         uint256 expectedBobInternal = 1 + 2 * 2000e18 + fee;

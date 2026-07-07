@@ -68,7 +68,7 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
         vm.prank(charlie);
         vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 2100e18, charlie, false, false, tampered, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2100e18, charlie, false, false, tampered, ctx.helper, _emptyTiming()
         );
     }
 
@@ -195,7 +195,6 @@ contract OpenOracleGGEdgeCasesTest is BaseGGTest {
         vm.expectRevert(Errors.DisputeTooEarly.selector);
         oracle.dispute(
             ctx.reportId,
-            address(token1),
             1.1e18,
             2100e18,
             charlie,

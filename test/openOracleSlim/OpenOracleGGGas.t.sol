@@ -94,7 +94,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(bob);
         uint256 g0 = gasleft();
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
         emit log_named_uint("dispute (token1 swap)", g0 - gasleft());
     }
@@ -111,7 +111,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(bob);
         uint256 g0 = gasleft();
         oracle.dispute(
-            ctx.reportId, address(token2), 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2300e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
         );
         emit log_named_uint("dispute (token2 swap)", g0 - gasleft());
     }
@@ -136,7 +136,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(bob);
         uint256 g0 = gasleft();
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 2100e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2100e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
         );
         emit log_named_uint("dispute (token1 swap, internal balance)", g0 - gasleft());
     }
@@ -159,7 +159,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         vm.prank(bob);
         uint256 g0 = gasleft();
         oracle.dispute(
-            ctx.reportId, address(token2), 1.1e18, 2100e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2300e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
         );
         emit log_named_uint("dispute (token2 swap, internal balance)", g0 - gasleft());
     }
@@ -186,7 +186,7 @@ contract OpenOracleGGGasTest is BaseGGTest {
         uint256 g0 = gasleft();
         // Self-dispute: bob disputing his own report. newA2 < oldA2 → refund credited.
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 1900e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 1900e18, bob, true, true, ctx.game, ctx.helper, _emptyTiming()
         );
         emit log_named_uint("dispute (self-dispute, internal balance)", g0 - gasleft());
     }

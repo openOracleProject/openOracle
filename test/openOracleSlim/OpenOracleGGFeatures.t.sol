@@ -360,10 +360,10 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         uint256 bobInternal2Before = _heldTokens(bob, address(token2));
 
         vm.prank(bob);
-        _dispute(ctx, address(token2), 1.1e18, 2100e18, false, false);
+        _dispute(ctx, address(token2), 1.1e18, 2300e18, false, false);
 
         uint256 protoFee = (2000e18 * 1000) / 1e7; // 2e18
-        uint256 token2Needed = 2100e18 + protoFee;
+        uint256 token2Needed = 2300e18 + protoFee;
         uint256 token2ExternalPay = token2Needed - 2000e18;
 
         assertEq(
@@ -562,7 +562,7 @@ contract OpenOracleGGFeaturesTest is BaseGGTest {
         vm.prank(charlie);
         vm.expectRevert(Errors.InvalidTiming.selector);
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 2100e18, charlie, false, false, ctx.game, ctx.helper, timing
+            ctx.reportId, 1.1e18, 2100e18, charlie, false, false, ctx.game, ctx.helper, timing
         );
     }
 

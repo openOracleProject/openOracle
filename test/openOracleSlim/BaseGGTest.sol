@@ -275,7 +275,7 @@ abstract contract BaseGGTest is Test {
     // Wrapper: call dispute(), update ctx.game in place to reflect new state.
     function _dispute(
         ReportContext memory ctx,
-        address tokenToSwap,
+        address,
         uint128 newAmount1,
         uint128 newAmount2,
         address disputer,
@@ -287,7 +287,6 @@ abstract contract BaseGGTest is Test {
 
         oracle.dispute{value: ethValue}(
             ctx.reportId,
-            tokenToSwap,
             newAmount1,
             newAmount2,
             disputer,
@@ -305,13 +304,13 @@ abstract contract BaseGGTest is Test {
     // Convenience: disputer = _oracleCaller(), value = 0 (ERC20 pair).
     function _dispute(
         ReportContext memory ctx,
-        address tokenToSwap,
+        address,
         uint128 newAmount1,
         uint128 newAmount2,
         bool tib1,
         bool tib2
     ) internal returns (ReportContext memory) {
-        return _dispute(ctx, tokenToSwap, newAmount1, newAmount2, _oracleCaller(), tib1, tib2, 0);
+        return _dispute(ctx, address(0), newAmount1, newAmount2, _oracleCaller(), tib1, tib2, 0);
     }
 
     // Wrapper: call settle(), update ctx.game.

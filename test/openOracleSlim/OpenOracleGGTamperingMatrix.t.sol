@@ -27,7 +27,7 @@ contract OpenOracleGGTamperingMatrixTest is BaseGGTest {
         vm.prank(bob);
         vm.expectRevert(Errors.InvalidStateHash.selector);
         oracle.dispute(
-            ctx.reportId, address(token1), 1.1e18, 2100e18, bob, false, false, game, helper, _emptyTiming()
+            ctx.reportId, 1.1e18, 2100e18, bob, false, false, game, helper, _emptyTiming()
         );
     }
 

@@ -129,7 +129,7 @@ contract OpenOracleArmedReentrancyTest is BaseGGTest {
         uint128 expectedA1 = uint128((uint256(amount1) * p.multiplier) / 100);
         bytes memory disputePayload = abi.encodeCall(
             oracle.dispute,
-            (reportId, address(armToken), expectedA1, uint128(2100e18), alice, false, false, g, h, _emptyTiming())
+            (reportId, expectedA1, uint128(2100e18), alice, false, false, g, h, _emptyTiming())
         );
         armToken.arm(address(oracle), disputePayload, false);
 
@@ -255,7 +255,7 @@ contract OpenOracleArmedReentrancyTest is BaseGGTest {
         uint256 fee = (uint256(oldA1) * p.feePercentage) / 1e7; // oldA1 * 0.0003
         bytes memory disputePayload = abi.encodeCall(
             oracle.dispute,
-            (ctx.reportId, address(token1), newA1, oldA2, bob, true, true, ctx.game, ctx.helper, _emptyTiming())
+            (ctx.reportId, newA1, oldA2, bob, true, true, ctx.game, ctx.helper, _emptyTiming())
         );
         armToken.arm(address(oracle), disputePayload, false);
 

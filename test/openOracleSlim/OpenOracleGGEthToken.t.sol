@@ -298,7 +298,6 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.dispute{value: expectedEthPay}(
             ctx.reportId,
-            address(0), // tokenToSwap = ETH (token1)
             1.1 ether,
             2100e18,
             bob,
@@ -328,7 +327,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
 
         uint256 fee = (2 ether * 3000) / 1e7;
         uint256 protoFee = (2 ether * 1000) / 1e7;
-        uint256 expectedEthPay = 2.1 ether + 2 ether + fee + protoFee; // ~4.008 ether
+        uint256 expectedEthPay = 2.3 ether + 2 ether + fee + protoFee; // ~4.308 ether
         uint256 expectedToken1Pay = 0.1e18; // newA1 - oldA1
 
         uint256 bobEthBefore = bob.balance;
@@ -337,9 +336,8 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.dispute{value: expectedEthPay}(
             ctx.reportId,
-            address(0), // tokenToSwap = ETH (token2)
             1.1e18,
-            2.1 ether,
+            2.3 ether,
             bob,
             false,
             false,
@@ -378,7 +376,6 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.dispute{value: expectedEthPay}(
             ctx.reportId,
-            address(token1),
             1.1e18,
             2.1 ether,
             bob,
@@ -427,7 +424,6 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.dispute{value: 0}(
             ctx.reportId,
-            address(token1),
             1.1e18,
             1.5 ether,
             bob,
@@ -491,7 +487,7 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         uint256 expectedEthPay = 0.1 ether;
         uint256 fee = (2000e18 * 3000) / 1e7;
         uint256 protoFee = (2000e18 * 1000) / 1e7;
-        uint256 expectedToken2Pay = 2100e18 + 2000e18 + fee + protoFee;
+        uint256 expectedToken2Pay = 2300e18 + 2000e18 + fee + protoFee;
 
         uint256 bobEthBefore = bob.balance;
         uint256 bobToken2Before = token2.balanceOf(bob);
@@ -499,9 +495,8 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.prank(bob);
         oracle.dispute{value: expectedEthPay}(
             ctx.reportId,
-            address(token2),
             1.1 ether,
-            2100e18,
+            2300e18,
             bob,
             false,
             false,
@@ -564,7 +559,6 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.expectRevert(Errors.MsgValueTooLow.selector);
         oracle.dispute{value: 1 ether}(
             ctx.reportId,
-            address(0), // tokenToSwap = ETH (token1)
             1.1 ether,
             2100e18,
             bob,
@@ -586,7 +580,6 @@ contract OpenOracleGGEthTokenTest is BaseGGTest {
         vm.expectRevert(Errors.NeitherTokenIsETH.selector);
         oracle.dispute{value: 1 wei}(
             ctx.reportId,
-            address(token1),
             1.1e18,
             2100e18,
             bob,

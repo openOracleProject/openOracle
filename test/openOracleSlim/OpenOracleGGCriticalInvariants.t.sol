@@ -178,7 +178,6 @@ contract InvariantHandler {
 
         try oracle.dispute(
             reportId,
-            address(token1),
             uint128(nextA1),
             uint128(newA2),
             address(this),
