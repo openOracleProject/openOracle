@@ -114,11 +114,11 @@ interface IOpenOracle2 {
     /**
      * @notice Disputes an open report by escalating amount1 according to the multiplier rule.
      *         Caller supplies the current OracleGame + PreimageHelper as calldata; the contract
-     *         verifies the hash against stored state.
+     *         verifies the hash against stored state. The swap side is derived from the price
+     *         revision: a higher reported price of token1 sells token2; ties default to token1.
      */
     function dispute(
         uint256 reportId,
-        address tokenToSwap,
         uint128 newAmount1,
         uint128 newAmount2,
         address disputer,
