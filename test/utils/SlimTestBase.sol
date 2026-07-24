@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
 import "../../src/OpenOracleSlim.sol";
-import "../../src/OpenSwapSlim.sol";
+import "../../src/swap/OpenSwapSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../../src/interfaces/ISignatureTransfer.sol";
 import "./MockERC20.sol";

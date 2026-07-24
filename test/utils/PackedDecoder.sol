@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {OpenOracle as Slim} from "../../src/OpenOracleSlim.sol";
-import {openSwapV2} from "../../src/OpenSwapSlim.sol";
+import {openSwapV2} from "../../src/swap/OpenSwapSlim.sol";
 import {IOpenOracle2} from "../../src/interfaces/IOpenOracle2.sol";
 
 /// @notice Fixed-offset decoders for the packed-event payloads emitted by
