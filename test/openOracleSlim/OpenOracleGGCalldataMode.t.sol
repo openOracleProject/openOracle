@@ -85,7 +85,7 @@ contract OpenOracleGGCalldataModeTest is BaseGGTest {
     function _readDispute(uint256 reportId, uint256 index)
         internal
         view
-        returns (uint128 amount1, uint128 amount2, address tokenToSwap, uint48 reportTimestamp)
+        returns (uint128 amount1, uint128 amount2, uint128 baseFee, uint48 reportTimestamp)
     {
         return oracle.disputeHistory(reportId, index);
     }
@@ -94,14 +94,15 @@ contract OpenOracleGGCalldataModeTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         p.flags |= FLAG_TRACK_DISPUTES;
 
+        vm.fee(3 gwei);
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, false, false);
 
-        // Index 0 = initial report; tokenToSwap is unset on the initial entry.
-        (uint128 a1_0, uint128 a2_0, address tok_0, uint48 ts_0) = _readDispute(ctx.reportId, 0);
+        // Index 0 = initial report; baseFee records the report block's basefee.
+        (uint128 a1_0, uint128 a2_0, uint128 bf_0, uint48 ts_0) = _readDispute(ctx.reportId, 0);
         assertEq(a1_0, 1e18, "init record amount1");
         assertEq(a2_0, 2000e18, "init record amount2");
-        assertEq(tok_0, address(0), "init record tokenToSwap unset");
+        assertEq(bf_0, uint128(3 gwei), "init record baseFee");
         assertEq(ts_0, uint48(block.timestamp), "init record reportTimestamp");
 
         // Hash committed; numReports == 1 in the game struct.
@@ -110,16 +111,17 @@ contract OpenOracleGGCalldataModeTest is BaseGGTest {
 
         // Dispute.
         vm.warp(block.timestamp + 6);
+        vm.fee(5 gwei);
         uint256 disputeTimestamp = block.timestamp;
 
         vm.prank(bob);
         ctx = _dispute(ctx, address(token1), 1.1e18, 2100e18, false, false);
 
         // Index 1 = first dispute.
-        (uint128 a1_1, uint128 a2_1, address tok_1, uint48 ts_1) = _readDispute(ctx.reportId, 1);
+        (uint128 a1_1, uint128 a2_1, uint128 bf_1, uint48 ts_1) = _readDispute(ctx.reportId, 1);
         assertEq(a1_1, 1.1e18, "dispute record amount1");
         assertEq(a2_1, 2100e18, "dispute record amount2");
-        assertEq(tok_1, address(token1), "dispute record tokenToSwap");
+        assertEq(bf_1, uint128(5 gwei), "dispute record baseFee");
         assertEq(uint256(ts_1), disputeTimestamp, "dispute record reportTimestamp");
 
         assertEq(ctx.game.numReports, 2, "numReports after dispute");
