@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {openSwapV2} from "../../src/OpenSwapSlim.sol";
+import {openSwapV2} from "../../src/swap/OpenSwapSlim.sol";
 
 // Pre-hash-refactor convenience layer for openSwap tests. The new openSwap.propose() takes
 // (ProposedSwap, MatcherPreimage, Permit2Params, minOut); the original took 13 flat args

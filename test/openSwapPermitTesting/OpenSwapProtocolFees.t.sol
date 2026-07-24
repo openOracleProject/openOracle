@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
-import "../../src/oracleFeeReceiver.sol";
+import "../../src/swap/oracleFeeReceiver.sol";
 
 contract OpenSwapProtocolFeesTest is SlimTestBase {
     uint24 constant PROTO_FEE = 1000; // 0.01%
