@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import "forge-std/Test.sol";
 import "forge-std/StdInvariant.sol";
 import {OpenOracle} from "../../src/OpenOracleSlim.sol";
-import {openSwapV2} from "../../src/OpenSwapSlim.sol";
+import {openSwapV2} from "../../src/swap/OpenSwapSlim.sol";
 import {IOpenOracle2} from "../../src/interfaces/IOpenOracle2.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
 import {NoReturnToken} from "./AdversarialMocks.sol";
