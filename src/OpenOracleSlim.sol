@@ -61,7 +61,7 @@ contract OpenOracle {
     struct DisputeRecord {
         uint128 amount1;
         uint128 amount2;
-        address tokenToSwap;
+        uint128 baseFee;
         uint48 reportTimestamp;
     }
 
@@ -172,10 +172,10 @@ contract OpenOracle {
 
         bool trackDisputes = _hasFlag(params.flags, FLAG_TRACK_DISPUTES);
         if (trackDisputes) {
-            // Index 0 records the initial report, not a dispute; tokenToSwap is intentionally unset.
             DisputeRecord storage initialRecord = disputeHistory[reportId][0];
             initialRecord.amount1 = amount1;
             initialRecord.amount2 = amount2;
+            initialRecord.baseFee = uint128(block.basefee);
             initialRecord.reportTimestamp = reportTimestamp;
         }
 
@@ -343,7 +343,7 @@ contract OpenOracle {
                 record.amount1 = newAmount1;
                 record.amount2 = newAmount2;
                 record.reportTimestamp = currentTime;
-                record.tokenToSwap = swapToken2 ? token2 : token1;
+                record.baseFee = uint128(block.basefee);
                 if (nextIndex < type(uint24).max) oracle.numReports = nextIndex + 1;
             }
 
