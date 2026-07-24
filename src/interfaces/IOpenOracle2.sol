@@ -15,7 +15,7 @@ interface IOpenOracle2 {
     struct DisputeRecord {
         uint128 amount1;
         uint128 amount2;
-        address tokenToSwap;
+        uint128 baseFee;
         uint48 reportTimestamp;
     }
 
@@ -83,7 +83,7 @@ interface IOpenOracle2 {
     function disputeHistory(uint256 reportId, uint256 index)
         external
         view
-        returns (uint128 amount1, uint128 amount2, address tokenToSwap, uint48 reportTimestamp);
+        returns (uint128 amount1, uint128 amount2, uint128 baseFee, uint48 reportTimestamp);
     function storedGame(uint256 reportId) external view returns (OracleGame memory);
     function storedHelper(uint256 reportId) external view returns (StoredHelper memory);
     function internalAllowance(address owner, address spender, address token)
