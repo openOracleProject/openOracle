@@ -673,7 +673,7 @@ contract OpenPuntHandler {
         Pos storage q = pos[id];
 
         vm.prank(outsider);
-        try punt.bailOut(id, q.matched) {
+        try punt.bailOutOpen(id, q.matched) {
             expectedCollat -= q.marginPool;
             modelSwapperPlusReporterCollat += int256(uint256(q.matched.initialMarginSwapper));
             modelMatcherCollat += int256(uint256(q.matched.initialMarginMatcher));
