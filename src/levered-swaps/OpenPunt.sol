@@ -20,8 +20,7 @@ import {PuntErrors as Errors} from "../libraries/PuntErrors.sol";
  *         When the block window ends without a dispute, the price is settled. Any dispute resets the window.
  *
  *         OpenPunt is intended for L2 deployment. Its block-cadence bailout and recovery logic assumes
- *         regular L2 block production and is not calibrated for Ethereum L1, where missed slots advance
- *         wall-clock time without producing corresponding execution blocks.
+ *         regular L2 block production and is not calibrated for Ethereum L1.
  *
  *         Supported token types: vanilla ERC20 and USDT-style tokens that omit a return value on transfer/transferFrom.
  *         Not supported: fee-on-transfer, rebasing, ERC777 / tokens with transfer hooks, or any token whose
@@ -35,9 +34,6 @@ contract openPunt is OpenPuntStorage {
     address public immutable feeReceiverImpl;
     address public immutable lifecycleModule;
 
-    /// @dev Binds the core to a lifecycle module using the same oracle and a deployed fee-receiver implementation.
-    /// @param oracle_ OpenOracle contract used for custody, reports, and settlement.
-    /// @param lifecycleModule_ Module delegatecalled for report, execute, and fee-receiver operations.
     constructor(address oracle_, address lifecycleModule_) OpenPuntStorage(oracle_) {
         OpenPuntLifecycle module = OpenPuntLifecycle(lifecycleModule_);
         if (lifecycleModule_.code.length == 0 || address(module.oracle()) != oracle_) {
@@ -51,8 +47,8 @@ contract openPunt is OpenPuntStorage {
 
     /// @notice Routes supported lifecycle calls to the immutable module.
     /// @dev Executes by delegatecall against the core's storage and bubbles returndata unchanged.
-    ///      Every selector outside report, execute, and deployAndDistributeFeeReceiver is rejected.
     fallback() external {
+        // only allow report(), execute(), and deployAndDistributeFeeReceiver()
         if (
             msg.sig != OpenPuntLifecycle.report.selector && msg.sig != OpenPuntLifecycle.execute.selector
                 && msg.sig != OpenPuntLifecycle.deployAndDistributeFeeReceiver.selector
@@ -61,6 +57,7 @@ contract openPunt is OpenPuntStorage {
         }
 
         address module = lifecycleModule;
+
         assembly ("memory-safe") {
             let ptr := mload(0x40)
             let inputSize := calldatasize()
@@ -82,7 +79,7 @@ contract openPunt is OpenPuntStorage {
     /**
      * @notice Proposes a leveraged position and escrows the swapper's collateral through OpenOracle.
      * @dev Only the swap hash is stored on-chain. All future callers (matchSwap, cancelSwap, execute,
-     *      bailOut) must supply the exact ProposedSwap / MatcherPreimage / MatchedSwap that
+     *      bailOutOpen) must supply the exact ProposedSwap / MatcherPreimage / MatchedSwap that
      *      reconstructs the current swap hash; off-chain indexing is the caller's responsibility.
      * @param s ProposedSwap parameters; s.swapper is set to msg.sender and s.expiration is converted to an absolute timestamp by the contract
      * @param m MatcherPreimage parameters; settlementTime and disputeDelay are block counts, and
@@ -233,6 +230,7 @@ contract openPunt is OpenPuntStorage {
 
         MatchedSwap memory s;
 
+        // start building the MatchedSwap struct:
         s.initialMarginSwapper = _swap.initialMarginSwapper;
         s.initialMarginMatcher = _swap.initialMarginMatcher;
         s.maintenanceMarginSwapper = _swap.maintenanceMarginSwapper;
@@ -252,6 +250,7 @@ contract openPunt is OpenPuntStorage {
         s.toleranceRange = _swap.toleranceRange;
         s.collatToken = _swap.collatToken;
         s.swapperIsLong = _swap.isLong;
+        // used to authenticate oracle amounts in report() later
         s.matcherPreimageHash = keccak256(abi.encode(preimage));
 
         address oracleToken2 = s.oracleToken2;
@@ -301,15 +300,22 @@ contract openPunt is OpenPuntStorage {
         uint128 reportId = uint128(oracle.nextReportId());
 
         _setReportId(swapId, reportId);
+        // MatchedSwap is finished. Committing only its hash prevents future matches on the same swapId
         swaps[swapId] = keccak256(abi.encode(s));
 
+        // ensures the oracle report() step is fully funded by msg.sender if not the matcher
+        // necessary to support adapter contracts. adapter transfers oracle amounts to designated matcher, then
+        // after the oracle can spend from matcher's balances if the matcher has approved openPunt
         if (matcherFunder != matcher) {
             oracle.internalTransferFrom(matcherFunder, matcher, oracleToken1, preimage.initialLiquidity);
             oracle.internalTransferFrom(matcherFunder, matcher, oracleToken2, amount2);
         }
 
+        // call report() on oracle contract, spend from matcher balances
         uint256 createdReportId = oracleGame(s, preimage, timing, amount2, matcher, settlerReward, 0);
         if (createdReportId != reportId) revert Errors.InvalidReportId(); // sanity check
+
+        // pull collateral from msg.sender
         oracle.internalTransferFrom(matcherFunder, address(this), collatToken, initialMarginMatcher);
         emit SwapMatched(swapId, reportId, s);
     }
@@ -323,14 +329,19 @@ contract openPunt is OpenPuntStorage {
      * @param swapState Current MatchedSwap preimage committed in swaps[swapId].
      */
     function liquidationHeartbeat(uint256 swapId, MatchedSwap calldata swapState) external {
+        // Force-included tx have 0 gasprice on OP stack chains, so we can reject them
+        // Does not work on Arbitrum stack.
         if (tx.gasprice == 0) revert Errors.ForcedTransaction();
+
         if (keccak256(abi.encode(swapState)) != swaps[swapId]) revert Errors.WrongHash();
         if (!swapState.active) revert Errors.NotActive();
         if (swapState.liquidationHeartbeatMax == 0) revert Errors.InvalidLiquidationHeartbeat();
 
         LiquidationHeartbeat memory current = liquidationHeartbeats[swapId];
         uint128 reportId = uint128(swapIdToReportId(swapId));
+        // if the heartbeat is already bound to the current report, you cannot set a new heartbeat
         bool boundToCurrentReport = current.reportId != 0 && current.reportId == reportId;
+        // if there is a current timestamp, no reportId, and the heartbeat hasn't aged out, you cannot set a new heartbeat
         bool unboundWindowLive = current.timestamp != 0 && current.reportId == 0
             && block.timestamp <= uint256(current.timestamp) + swapState.liquidationHeartbeatMax;
         if (boundToCurrentReport || unboundWindowLive) revert Errors.LiquidationHeartbeatLive();
@@ -370,23 +381,25 @@ contract openPunt is OpenPuntStorage {
         if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
         if (msg.sender != s.swapper) revert Errors.NotSwapper();
         if (!s.active) revert Errors.NotActive();
+
+        // cannot submit a second close() while a close request remains live
         if (closeRequestBlock(swapId) != 0) revert Errors.CloseIntentLive();
 
         uint256 reportId = swapIdToReportId(swapId);
         if (reportId != 0) {
-            // A live report needs no Dutch reward. execute() decides whether this request preceded
+            // a live report doesn't need a Dutch reward. execute() decides whether this request preceded
             // that report's final settlement eligibility; otherwise it remains for a future report.
             uint256 expected = useInternalBalances ? 0 : ethToReserve;
             if (msg.value != expected) revert Errors.InvalidMsgValue();
 
+            // record the current L2 block number as the time of close request
             _setCloseRequest(swapId);
             _addExecutionGasComp(reportId, altGasCompExec);
 
             if (useInternalBalances) {
                 oracle.internalTransferFrom(msg.sender, address(this), address(0), altGasCompExec);
             } else {
-                // Deposit the caller's full race-safe ETH amount, then return the unused Dutch
-                // maximum when collateral is ETH and a live report made the auction unnecessary.
+                // handle sent eth when swapper didn't expect a report to already be live
                 oracle.deposit{value: ethToReserve}(address(0), ethToReserve, address(this));
                 if (isEth && maxReward != 0) oracle.pushOrCredit(address(0), s.swapper, maxReward);
             }
@@ -400,14 +413,18 @@ contract openPunt is OpenPuntStorage {
         bool needsPermit2 = !isEth && !useInternalBalances;
 
         if (msg.value != expectedMsgValue) revert Errors.InvalidMsgValue();
+
+        // ensure overwritten fields are zero when passed in:
         if (
             d.swapper != address(0) || d.collatToken != address(0) || d.useInternalBalances || d.start != 0
                 || d.swapId != 0
         ) revert Errors.MustBeZero();
+
         // expiration sanity checks:
         if (d.expiration < block.timestamp || d.expiration > block.timestamp + 1 hours) {
             revert Errors.InvalidExpiration();
         }
+
         // reward curve sanity checks:
         if (
             maxReward == 0 || d.startingReward == 0 || d.growthRate < 10000 || d.maxRounds == 0 || d.maxRounds > 100 // 100 is ok for geometric growth
@@ -432,8 +449,8 @@ contract openPunt is OpenPuntStorage {
             if (!isEth) oracle.internalTransferFrom(msg.sender, address(this), collatToken, maxReward);
         } else {
             oracle.deposit{value: ethToReserve}(address(0), ethToReserve, address(this));
+            // hook tokens can exit here:
             if (!isEth) {
-                // a hook token can re-enter here:
                 oracle.depositFromPermit2(
                     maxReward,
                     address(this),
@@ -467,6 +484,8 @@ contract openPunt is OpenPuntStorage {
             maxRounds: uint8(d.maxRounds),
             useInternalBalances: useInternalBalances
         });
+
+        // records the current block number at time of close request
         _setCloseRequest(swapId);
 
         emit CloseAuctionStarted(swapId, dutchHash, d, altGasCompExec);
@@ -488,6 +507,7 @@ contract openPunt is OpenPuntStorage {
 
         StoredDutch memory stored = closeAuctions[swapId];
         delete closeAuctions[swapId];
+        // sets recorded close request block to zero
         _clearCloseRequest(swapId);
 
         if (stored.maxReward != 0) {
@@ -527,8 +547,6 @@ contract openPunt is OpenPuntStorage {
         bytes32 passedHash = keccak256(abi.encode(_swap, preimage));
         if (passedHash != swaps[swapId]) revert Errors.WrongHash();
         ProposedSwap memory s = _swap;
-
-        if (s.swapper == address(0)) revert Errors.NotActive();
 
         address caller;
         uint256 callerPiece;
@@ -578,7 +596,7 @@ contract openPunt is OpenPuntStorage {
      * @param swapId Position identifier.
      * @param _swap Current pre-opening MatchedSwap preimage committed in swaps[swapId].
      */
-    function bailOut(uint256 swapId, MatchedSwap calldata _swap) external nonReentrant {
+    function bailOutOpen(uint256 swapId, MatchedSwap calldata _swap) external nonReentrant {
         bytes32 passedHash = keccak256(abi.encode(_swap));
         if (passedHash != swaps[swapId]) revert Errors.WrongHash();
 

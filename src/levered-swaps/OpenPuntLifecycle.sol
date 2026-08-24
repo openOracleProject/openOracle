@@ -26,8 +26,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
     /**
      * @notice Starts a new oracle report for an active position.
      * @dev The designated `reporter` must approve OpenPunt in OpenOracle for both oracle-token
-     *      amounts and the ETH execution compensation. If `msg.sender != reporter`, the funder must
-     *      separately approve OpenPunt for the amounts transferred from the funder to the reporter.
+     *      amounts. The caller funds the ETH execution compensation directly. If `msg.sender != reporter`,
+     *      the caller must also approve the oracle-token amounts transferred to the reporter.
      * @param swapId Position identifier.
      * @param expectedDutchHash Exact current auction hash required by the reporter, or zero to accept
      *                          and claim whatever auction is present.
@@ -61,7 +61,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         if (swapIdToReportId(swapId) != 0) revert Errors.OracleGameInProgress();
         if (!s.active) revert Errors.NotActive();
 
-        // Higher-liquidity reports are allowed only when the game has no dispute delay.
+        // since openOracle already allows atomic looped escalation when disputeDelay is 0,
+        // and larger starting amounts may be useful sometimes, we allow the game to start larger in this case
         uint128 minAmount1 = preimage.initialLiquidity;
         uint128 escalationHalt = preimage.escalationHalt;
         uint128 reportCeiling = 10 * uint256(minAmount1) > escalationHalt ? escalationHalt : 10 * minAmount1;
@@ -74,6 +75,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         address oracleToken1 = s.oracleToken1;
         address oracleToken2 = s.oracleToken2;
 
+        // try to earn swapper's dutch auction if desired, then
+        // record execution compensation, dutch leftover, and internal balance preference in memory
         DutchResolution memory dutchResolution = _consumeDutch(swapId, s, expectedDutchHash, reporter, collatToken);
 
         uint128 reportId = uint128(oracle.nextReportId());
@@ -85,16 +88,19 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 && block.timestamp <= uint256(heartbeatState.timestamp) + s.liquidationHeartbeatMax
         ) heartbeatState.reportId = reportId;
 
+        // the caller can include execution gas compensation for this report if desired
+        // also include swapper's paid execution gas compensation if it exists
         _addExecutionGasComp(reportId, altGasCompExec);
         _addExecutionGasComp(reportId, dutchResolution.inheritedExecutionComp);
 
+        // adapters transfer the oracle amounts to the designated reporter so OpenOracle can spend from
+        // the reporter's approved balances; execution compensation moves directly from caller to OpenPunt
         if (reporterFunder != reporter) {
-            oracle.internalTransferFrom(reporterFunder, reporter, address(0), altGasCompExec);
             oracle.internalTransferFrom(reporterFunder, reporter, oracleToken1, amount1);
             oracle.internalTransferFrom(reporterFunder, reporter, oracleToken2, amount2);
         }
 
-        oracle.internalTransferFrom(reporter, address(this), address(0), altGasCompExec);
+        oracle.internalTransferFrom(reporterFunder, address(this), address(0), altGasCompExec);
         uint256 createdReportId = oracleGame(s, preimage, timing, amount2, reporter, 0, amount1);
         if (createdReportId != reportId) revert Errors.InvalidReportId(); // sanity check
         emit PositionReportStarted(swapId, reportId, reporter, s);
@@ -202,6 +208,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         }
 
         uint48 requestedCloseAt = closeRequestBlock(swapId);
+
+        // if the swapper's close request was too late, it doesn't apply to this oracle game
         bool closeRequestApplies = requestedCloseAt != 0
             && uint256(requestedCloseAt) < uint256(oracleState.reportTimestamp) + oracleState.settlementTime;
 
@@ -217,6 +225,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         }
 
         if (oracleState.settlementTimestamp == 0 && !alreadySettled) {
+            // oracle.settle is an external call, but all oracle games created by openPunt
+            // have no callback, so there should be no reentrancy risk for this call
             oracle.settle(reportId, oracleState, oracleHelper);
             if (settlerReward > 0) {
                 oracle.internalTransferFrom(address(this), msg.sender, address(0), settlerReward); // forward reward to executor
@@ -233,28 +243,45 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         uint128 oracleAmount1 = oracleState.currentAmount1;
         uint128 oracleAmount2 = oracleState.currentAmount2;
         bool useInternalBalances = s.useInternalBalances;
+
+        // convert block numbers to wall clock using the passed expected block cadence
         uint48 settlementDurationSeconds = uint48(uint256(oracleState.settlementTime) * millisecondsPerBlock / 1000);
         uint48 settlementEligibilityTimestamp = oracleState.lastReportOppoTime + settlementDurationSeconds;
 
+        // validates slippage only for position opening
         uint256 price = Math.mulDiv(oracleAmount1, 1e30, oracleAmount2);
-
         bool slippageOk = toleranceCheck(price, s.priceTolerated, s.toleranceRange);
+
+        // if cadence changes cause active position execution bailouts (e.g. for close or liquidation),
+        // can recover after a week post-maturity
         uint256 cadenceRecoveryStart = uint256(s.maturity) + 1 weeks;
+
+        // true if past recovery start and the oracle game's last report was inside the recovery window
         bool cadenceRecovery =
             active && block.timestamp >= cadenceRecoveryStart && oracleState.lastReportOppoTime >= cadenceRecoveryStart;
+
+        // check if the realized blocks per second were within tolerance since last oracle report.
+        // override output if in cadenceRecovery
         bool blockCadenceOk = cadenceRecovery
             || impliedMillisecondsPerBlock(
                 oracleState.lastReportOppoTime, oracleState.reportTimestamp, millisecondsPerBlock
             );
+
+        // as long as we are not in recovery mode, if execution is too late reject the oracle game
         bool executionTooLate = !cadenceRecovery && s.maxExecutionLatency != 0
             && block.timestamp > uint256(settlementEligibilityTimestamp) + s.maxExecutionLatency;
+
         bool slippageBailoutForOpen = !slippageOk && !active;
+        // decide if position-opening oracle games should bail out and refund
         bool shouldRefundOnOpen = slippageBailoutForOpen || !blockCadenceOk || executionTooLate;
+
+        // decide if close or liquidation oracle games should bail out:
         bool shouldBailoutCloseOrLiq = !blockCadenceOk || executionTooLate;
 
         // position being opened
         if (!active) {
             if (shouldRefundOnOpen) {
+                // delete position and refund if position was being opened and it bails out
                 delete swaps[swapId];
                 _deleteReportId(swapId);
                 refund(collatToken, initialMarginSwapper, swapper, initialMarginMatcher, matcher, s.useInternalBalances);
@@ -264,6 +291,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 emit PositionOpeningFailed(swapId, reportId, s);
                 emit SwapRefunded(swapId, swapper, matcher, s);
             } else {
+                // open position normally
                 uint256 openFee = Math.mulDiv(s.notional, fulfillmentFee, 1e7);
                 s.initialMarginSwapper -= uint128(openFee);
                 s.active = true;
@@ -277,18 +305,26 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 emit PositionOpened(swapId, s);
             }
         } else {
-            // position either being closed or liquidated
+            // position is already open: oracle reports can either close, liquidate,
+            // or fail to liquidate if position is healthy and no close request applies
+
+            // record current heartbeat info
             LiquidationHeartbeat memory heartbeatState = liquidationHeartbeats[swapId];
             delete liquidationHeartbeats[swapId];
 
             if (shouldBailoutCloseOrLiq) {
-                // proceed as if nothing happened
+                // sets swapper's close request block to 0
                 if (closeRequestApplies) _clearCloseRequest(swapId);
+
+                // removes oracle game id associated with this swapId
                 _clearReportId(swapId);
+
                 if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
                 if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
                 emit PositionReportBailedOut(swapId, reportId, s);
             } else {
+                // position is already active and the oracle game doesn't trigger bailout conditions
+
                 // amounts in s are the opening oracle game amounts, local variables are the closing oracle game amounts
                 uint256 currentCross = uint256(oracleAmount2) * s.oracleAmount1;
                 uint256 openingCross = uint256(s.oracleAmount2) * oracleAmount1;
@@ -324,7 +360,11 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 netChange -= int256(closeFees);
 
                 int256 swapperEquity = int256(uint256(initialMarginSwapper)) + netChange;
+
+                // does this oracle price imply the swapper is in liquidation range
                 bool isLiq = swapperEquity < int256(uint256(s.maintenanceMarginSwapper));
+
+                // is a liquidation authorized
                 bool liquidationAuthorized = s.liquidationHeartbeatMax == 0
                     || (
                         heartbeatState.reportId == reportId
@@ -333,23 +373,39 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     );
 
                 if (isLiq && !liquidationAuthorized) {
+                    // if swapper is liquidatable but liquidation is not authorized
+
+                    // set the swapper's close request block to 0
                     if (closeRequestApplies) _clearCloseRequest(swapId);
+
+                    // releases the report binding while preserving the original heartbeat timestamp
                     liquidationHeartbeats[swapId] =
                         LiquidationHeartbeat({reportId: 0, timestamp: heartbeatState.timestamp});
+
+                    // removes oracle game id associated with this swapId
                     _clearReportId(swapId);
+
                     emit LiquidationHeartbeatBailout(swapId, uint128(reportId));
                     emit PositionReportBailedOut(swapId, reportId, s);
                 } else if (isLiq) {
+                    // if liquidatable AND liquidation is authorized
+
+                    // end position
                     delete swaps[swapId];
                     _deleteReportId(swapId);
+
+                    // matcher gets all the collateral
                     oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(marginSum));
                     emit PositionLiquidated(swapId, reportId, s);
                 } else if (intendedClose || maturityPassed) {
+                    // if either maturity passed or the swapper wanted to close
+
                     // close position
                     delete swaps[swapId];
                     _deleteReportId(swapId);
                     uint256 owedToSwapper;
 
+                    // clamp swapper's final payout to existing margin
                     if (swapperEquity <= 0) {
                         owedToSwapper = 0;
                     } else {
@@ -367,7 +423,9 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     }
                     emit PositionClosed(swapId, reportId, s, owedToSwapper, owedToMatcher);
                 } else {
-                    // failed liquidation
+                    // effectively a liquidation failure: the report passed cadence and latency checks,
+                    // position is healthy, no applicable close request exists, and
+                    // maturity has not passed.
                     _clearReportId(swapId);
                     emit LiquidationFailed(swapId, reportId, s);
                 }

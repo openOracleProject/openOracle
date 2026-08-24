@@ -107,12 +107,12 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint24 toleranceRange; // 1e7 = 100%; maximum opening-price deviation
         uint16 millisecondsPerBlock; // expected block interval in milliseconds; 2000 means one block per two seconds
         uint24 maxGameTime; // maximum opening-game duration before the parties can be refunded
-        uint16 maxExecutionLatency; // 0 disables; otherwise max seconds from settlement eligibility to execution
+        uint16 maxExecutionLatency; // max active-report execution delay in seconds; 0 disables; post-recovery reports bypass
         uint16 liquidationHeartbeatMin; // seconds of notice required by settlement eligibility before liquidation
         uint16 liquidationHeartbeatMax; // seconds in which a report may bind; not an execution deadline; zero with min zero disables
         // Lifecycle state
         uint48 start; // match timestamp before activation; opening settlement-eligibility time afterward
-        uint48 maturity; // absolute timestamp after which any healthy report closes the position
+        uint48 maturity; // healthy reports close when their settlement eligibility is at or after this timestamp
         uint48 maturityWindow; // duration added to opening settlement eligibility to establish maturity
         bool active; // true after the opening oracle game successfully executes
         // Funding and execution compensation
@@ -141,7 +141,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         // Oracle and timing protections
         uint16 millisecondsPerBlock; // expected block interval in milliseconds; 2000 means one block per two seconds
         uint24 maxGameTime; // maximum opening-game duration before bailout
-        uint16 maxExecutionLatency; // 0 disables; otherwise must be between 1 minute and 1 hour
+        uint16 maxExecutionLatency; // active-report execution delay; 0 disables, otherwise 1 minute to 1 hour; recovery may bypass
         uint16 liquidationHeartbeatMin; // seconds of notice required by settlement eligibility; zero with max zero disables
         uint16 liquidationHeartbeatMax; // seconds in which a report may bind; an existing binding does not expire
         // Lifecycle configuration
@@ -252,7 +252,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     );
 
     /// @dev Returns the chain-specific block clock used by OpenPunt and its block-mode oracle games.
-    ///      Override this single integration point on chains whose protocol block number differs
+    ///      Change this single integration point on chains whose protocol block number differs
     ///      from the EVM `block.number` value.
     /// @return Current protocol block number, narrowed to the oracle's uint48 representation.
     function _getBlockNumber() internal view returns (uint48) {
