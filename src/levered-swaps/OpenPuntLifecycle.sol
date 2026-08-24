@@ -1,0 +1,560 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
+import {PuntErrors as Errors} from "../libraries/PuntErrors.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
+import {OpenPuntFeeReceiver} from "./OpenPuntFeeReceiver.sol";
+import {OpenPuntStorage} from "./OpenPuntStorage.sol";
+
+contract OpenPuntLifecycle is OpenPuntStorage {
+    address public immutable feeReceiverImpl;
+
+    struct DutchResolution {
+        uint128 inheritedExecutionComp;
+        uint128 leftover;
+        bool useInternalBalances;
+    }
+
+    /// @dev Deploys the shared fee-receiver implementation and binds this module to OpenOracle.
+    /// @param oracle_ OpenOracle contract used by the core and lifecycle module.
+    constructor(address oracle_) OpenPuntStorage(oracle_) {
+        feeReceiverImpl = address(new OpenPuntFeeReceiver(IOpenOracle2(oracle_)));
+    }
+
+    /**
+     * @notice Starts a new oracle report for an active position.
+     * @dev The designated `reporter` must approve OpenPunt in OpenOracle for both oracle-token
+     *      amounts and the ETH execution compensation. If `msg.sender != reporter`, the funder must
+     *      separately approve OpenPunt for the amounts transferred from the funder to the reporter.
+     * @param swapId Position identifier.
+     * @param expectedDutchHash Exact current auction hash required by the reporter, or zero to accept
+     *                          and claim whatever auction is present.
+     * @param swapState Current active MatchedSwap preimage committed in swaps[swapId].
+     * @param preimage MatcherPreimage committed when the position was proposed.
+     * @param timing OpenOracle timing bounds for the new report.
+     * @param reporter Account recorded as reporter; may differ from msg.sender, which supplies funding.
+     * @param amount1 Token1 liquidity supplied to the report.
+     * @param amount2 Token2 liquidity supplied to the report.
+     * @param altGasCompExec ETH-denominated compensation contributed for this report's executor.
+     */
+    function report(
+        uint256 swapId,
+        bytes32 expectedDutchHash,
+        MatchedSwap calldata swapState,
+        MatcherPreimage calldata preimage,
+        IOpenOracle2.TimingBoundaries calldata timing,
+        address reporter,
+        uint128 amount1,
+        uint128 amount2,
+        uint128 altGasCompExec
+    ) external {
+        MatchedSwap memory s = swapState;
+        bytes32 passedSwapHash = keccak256(abi.encode(s));
+        bytes32 passedMatcherPreimage = keccak256(abi.encode(preimage));
+        if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
+        if (passedMatcherPreimage != s.matcherPreimageHash) revert Errors.WrongHash();
+        if (amount1 == 0 || amount2 == 0) revert Errors.AmountsCannotBeZero();
+        if (reporter == address(0)) revert Errors.AddressCannotBeZero();
+        if (reporter == address(this)) revert Errors.ContractCannotBeParticipant();
+        if (swapIdToReportId(swapId) != 0) revert Errors.OracleGameInProgress();
+        if (!s.active) revert Errors.NotActive();
+
+        // Higher-liquidity reports are allowed only when the game has no dispute delay.
+        uint128 minAmount1 = preimage.initialLiquidity;
+        uint128 escalationHalt = preimage.escalationHalt;
+        uint128 reportCeiling = 10 * uint256(minAmount1) > escalationHalt ? escalationHalt : 10 * minAmount1;
+        if (amount1 > reportCeiling || amount1 < minAmount1) revert Errors.InvalidAmount1();
+        if (amount1 > minAmount1 && preimage.disputeDelay != 0) revert Errors.InvalidAmount1();
+
+        address swapper = s.swapper;
+        address collatToken = s.collatToken;
+        address reporterFunder = msg.sender;
+        address oracleToken1 = s.oracleToken1;
+        address oracleToken2 = s.oracleToken2;
+
+        DutchResolution memory dutchResolution = _consumeDutch(swapId, s, expectedDutchHash, reporter, collatToken);
+
+        uint128 reportId = uint128(oracle.nextReportId());
+        _setReportId(swapId, reportId);
+
+        LiquidationHeartbeat storage heartbeatState = liquidationHeartbeats[swapId];
+        if (
+            heartbeatState.timestamp != 0 && heartbeatState.reportId == 0
+                && block.timestamp <= uint256(heartbeatState.timestamp) + s.liquidationHeartbeatMax
+        ) heartbeatState.reportId = reportId;
+
+        _addExecutionGasComp(reportId, altGasCompExec);
+        _addExecutionGasComp(reportId, dutchResolution.inheritedExecutionComp);
+
+        if (reporterFunder != reporter) {
+            oracle.internalTransferFrom(reporterFunder, reporter, address(0), altGasCompExec);
+            oracle.internalTransferFrom(reporterFunder, reporter, oracleToken1, amount1);
+            oracle.internalTransferFrom(reporterFunder, reporter, oracleToken2, amount2);
+        }
+
+        oracle.internalTransferFrom(reporter, address(this), address(0), altGasCompExec);
+        uint256 createdReportId = oracleGame(s, preimage, timing, amount2, reporter, 0, amount1);
+        if (createdReportId != reportId) revert Errors.InvalidReportId(); // sanity check
+        emit PositionReportStarted(swapId, reportId, reporter, s);
+
+        if (dutchResolution.leftover > 0) {
+            if (dutchResolution.useInternalBalances) {
+                oracle.internalTransferFrom(address(this), swapper, collatToken, dutchResolution.leftover);
+            } else {
+                oracle.pushOrCredit(collatToken, swapper, dutchResolution.leftover);
+            }
+        }
+    }
+
+    function _consumeDutch(
+        uint256 swapId,
+        MatchedSwap memory s,
+        bytes32 expectedDutchHash,
+        address reporter,
+        address collatToken
+    ) internal returns (DutchResolution memory resolution) {
+        StoredDutch memory stored = closeAuctions[swapId];
+        if (stored.maxReward == 0) {
+            if (expectedDutchHash != bytes32(0)) revert Errors.WrongHash();
+            return resolution;
+        }
+
+        CloseDutch memory dutch = _materializeDutch(swapId, s, stored);
+        if (expectedDutchHash != bytes32(0) && expectedDutchHash != keccak256(abi.encode(dutch))) {
+            revert Errors.WrongHash();
+        }
+
+        delete closeAuctions[swapId];
+        resolution.inheritedExecutionComp = stored.executionComp;
+        resolution.useInternalBalances = stored.useInternalBalances;
+
+        uint128 reward;
+        if (block.timestamp < dutch.expiration) {
+            reward = uint128(
+                calcFee(
+                    dutch.maxReward,
+                    dutch.startingReward,
+                    dutch.growthRate,
+                    dutch.maxRounds,
+                    dutch.start,
+                    dutch.roundLength
+                )
+            );
+        }
+        resolution.leftover = dutch.maxReward - reward;
+        if (reward != 0) oracle.internalTransferFrom(address(this), reporter, collatToken, reward);
+    }
+
+    /**
+     * @notice Settles the oracle report if needed, then opens or refunds a proposed position, or
+     *         evaluates an active position for liquidation, close, or a reusable failed report.
+     * @dev Permissionless. Active-position outcomes are determined at settlement eligibility, not
+     *      transaction time. Liquidation has priority over close intent and maturity. Cadence or
+     *      latency failures refund an opening or reset an active position rather than resolving it.
+     * @param swapId Position identifier.
+     * @param swapState Current MatchedSwap preimage committed in swaps[swapId].
+     * @param oracleState Oracle game state matching the stored oracle hash; in OpenPunt's
+     *                    block-number mode, reportTimestamp and settlementTime are measured in blocks,
+     *                    while lastReportOppoTime supplies the report's wall-clock timestamp
+     * @param oracleHelper Oracle preimage helper matching the stored oracle hash.
+     * @param looseTiming If true, reconstruct a settlement performed earlier in the current block.
+     */
+    function execute(
+        uint256 swapId,
+        MatchedSwap calldata swapState,
+        IOpenOracle2.OracleGame calldata oracleState,
+        IOpenOracle2.PreimageHelper calldata oracleHelper,
+        bool looseTiming
+    ) external {
+        MatchedSwap memory s = swapState;
+        bytes32 passedSwapHash = keccak256(abi.encode(s));
+        if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
+
+        if (s.matcher == address(0)) revert Errors.NotMatched();
+        if (s.swapper == address(0)) revert Errors.NotActive();
+        uint256 reportId = swapIdToReportId(swapId);
+        if (reportId == 0) revert Errors.NoOracleGame();
+        if (oracleHelper.reportId != reportId) revert Errors.InvalidReportId();
+        bytes32 oracleHash = oracle.oracleGame(reportId);
+
+        IOpenOracle2.OracleGame memory oracleStateMem = oracleState;
+        IOpenOracle2.PreimageHelper memory oracleHelperMem = oracleHelper;
+        bytes32 passedHash = keccak256(abi.encode(oracleStateMem, oracleHelperMem));
+
+        bool matches = oracleHash == passedHash;
+        bool alreadySettled;
+        bool active = s.active;
+
+        // loose hash if settle beat you in the same block
+        if (!matches && oracleStateMem.settlementTimestamp == 0 && looseTiming) {
+            oracleStateMem.settlementTimestamp = _getBlockNumber();
+            passedHash = keccak256(abi.encode(oracleStateMem, oracleHelperMem));
+            matches = oracleHash == passedHash;
+            alreadySettled = true;
+        }
+
+        if (!matches) revert Errors.WrongOracleHash();
+
+        if (_getBlockNumber() < oracleState.reportTimestamp + oracleState.settlementTime) {
+            revert Errors.OracleSettlementNotEligible();
+        }
+
+        uint48 requestedCloseAt = closeRequestBlock(swapId);
+        bool closeRequestApplies = requestedCloseAt != 0
+            && uint256(requestedCloseAt) < uint256(oracleState.reportTimestamp) + oracleState.settlementTime;
+
+        uint96 openExecutionComp = s.openExecutionComp;
+        s.openExecutionComp = 0;
+        uint96 settlerReward = oracleState.settlerReward;
+        uint128 altGasCompExec = executionGasComp[reportId];
+        tempHolding[msg.sender] += openExecutionComp;
+
+        if (altGasCompExec > 0) {
+            executionGasComp[reportId] = 0;
+            oracle.internalTransferFrom(address(this), msg.sender, address(0), altGasCompExec);
+        }
+
+        if (oracleState.settlementTimestamp == 0 && !alreadySettled) {
+            oracle.settle(reportId, oracleState, oracleHelper);
+            if (settlerReward > 0) {
+                oracle.internalTransferFrom(address(this), msg.sender, address(0), settlerReward); // forward reward to executor
+            }
+        }
+
+        address swapper = s.swapper;
+        address matcher = s.matcher;
+        address collatToken = s.collatToken;
+        uint128 initialMarginMatcher = s.initialMarginMatcher;
+        uint128 initialMarginSwapper = s.initialMarginSwapper;
+        uint24 fulfillmentFee = s.fulfillmentFee;
+        uint16 millisecondsPerBlock = s.millisecondsPerBlock;
+        uint128 oracleAmount1 = oracleState.currentAmount1;
+        uint128 oracleAmount2 = oracleState.currentAmount2;
+        bool useInternalBalances = s.useInternalBalances;
+        uint48 settlementDurationSeconds = uint48(uint256(oracleState.settlementTime) * millisecondsPerBlock / 1000);
+        uint48 settlementEligibilityTimestamp = oracleState.lastReportOppoTime + settlementDurationSeconds;
+
+        uint256 price = Math.mulDiv(oracleAmount1, 1e30, oracleAmount2);
+
+        bool slippageOk = toleranceCheck(price, s.priceTolerated, s.toleranceRange);
+        uint256 cadenceRecoveryStart = uint256(s.maturity) + 1 weeks;
+        bool cadenceRecovery =
+            active && block.timestamp >= cadenceRecoveryStart && oracleState.lastReportOppoTime >= cadenceRecoveryStart;
+        bool blockCadenceOk = cadenceRecovery
+            || impliedMillisecondsPerBlock(
+                oracleState.lastReportOppoTime, oracleState.reportTimestamp, millisecondsPerBlock
+            );
+        bool executionTooLate = !cadenceRecovery && s.maxExecutionLatency != 0
+            && block.timestamp > uint256(settlementEligibilityTimestamp) + s.maxExecutionLatency;
+        bool slippageBailoutForOpen = !slippageOk && !active;
+        bool shouldRefundOnOpen = slippageBailoutForOpen || !blockCadenceOk || executionTooLate;
+        bool shouldBailoutCloseOrLiq = !blockCadenceOk || executionTooLate;
+
+        // position being opened
+        if (!active) {
+            if (shouldRefundOnOpen) {
+                delete swaps[swapId];
+                _deleteReportId(swapId);
+                refund(collatToken, initialMarginSwapper, swapper, initialMarginMatcher, matcher, s.useInternalBalances);
+                if (slippageBailoutForOpen) emit SlippageBailout(swapId);
+                if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
+                if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
+                emit PositionOpeningFailed(swapId, reportId, s);
+                emit SwapRefunded(swapId, swapper, matcher, s);
+            } else {
+                uint256 openFee = Math.mulDiv(s.notional, fulfillmentFee, 1e7);
+                s.initialMarginSwapper -= uint128(openFee);
+                s.active = true;
+                s.oracleAmount1 = oracleAmount1;
+                s.oracleAmount2 = oracleAmount2;
+                s.maturity = settlementEligibilityTimestamp + s.maturityWindow;
+                s.start = settlementEligibilityTimestamp;
+                _clearReportId(swapId);
+                swaps[swapId] = keccak256(abi.encode(s));
+                oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(openFee));
+                emit PositionOpened(swapId, s);
+            }
+        } else {
+            // position either being closed or liquidated
+            LiquidationHeartbeat memory heartbeatState = liquidationHeartbeats[swapId];
+            delete liquidationHeartbeats[swapId];
+
+            if (shouldBailoutCloseOrLiq) {
+                // proceed as if nothing happened
+                if (closeRequestApplies) _clearCloseRequest(swapId);
+                _clearReportId(swapId);
+                if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
+                if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
+                emit PositionReportBailedOut(swapId, reportId, s);
+            } else {
+                // amounts in s are the opening oracle game amounts, local variables are the closing oracle game amounts
+                uint256 currentCross = uint256(oracleAmount2) * s.oracleAmount1;
+                uint256 openingCross = uint256(s.oracleAmount2) * oracleAmount1;
+
+                bool ratioIncreased = currentCross >= openingCross; // token2 per token1
+                uint256 priceDelta = ratioIncreased ? currentCross - openingCross : openingCross - currentCross;
+                bool swapperProfits = ratioIncreased == s.swapperIsLong;
+                uint256 closeFees = Math.mulDiv(s.notional, s.fulfillmentFee, 1e7);
+
+                uint256 timeElapsed = uint256(settlementEligibilityTimestamp) - s.start;
+                int256 signedRate = int256(s.fundingRate);
+                uint256 absoluteRate = signedRate < 0 ? uint256(-signedRate) : uint256(signedRate);
+                uint256 fundingMagnitude = Math.mulDiv(s.notional, absoluteRate * timeElapsed, 1e7 * 365 days);
+
+                uint256 marginSum = uint256(initialMarginMatcher) + initialMarginSwapper;
+                uint256 pnlCap = marginSum + fundingMagnitude + closeFees + 1;
+                uint256 pricePnl = mulDivCapped(s.notional, priceDelta, openingCross, pnlCap);
+
+                bool intendedClose = closeRequestApplies;
+                bool maturityPassed = settlementEligibilityTimestamp >= s.maturity;
+
+                int256 netChange = swapperProfits ? int256(pricePnl) : -int256(pricePnl);
+
+                if (signedRate > 0) {
+                    // swapper pays matcher
+                    netChange -= int256(fundingMagnitude);
+                } else if (signedRate < 0) {
+                    // matcher pays swapper
+                    netChange += int256(fundingMagnitude);
+                }
+
+                // closing fee is paid by the swapper to the matcher
+                netChange -= int256(closeFees);
+
+                int256 swapperEquity = int256(uint256(initialMarginSwapper)) + netChange;
+                bool isLiq = swapperEquity < int256(uint256(s.maintenanceMarginSwapper));
+                bool liquidationAuthorized = s.liquidationHeartbeatMax == 0
+                    || (
+                        heartbeatState.reportId == reportId
+                            && uint256(settlementEligibilityTimestamp)
+                                >= uint256(heartbeatState.timestamp) + s.liquidationHeartbeatMin
+                    );
+
+                if (isLiq && !liquidationAuthorized) {
+                    if (closeRequestApplies) _clearCloseRequest(swapId);
+                    liquidationHeartbeats[swapId] =
+                        LiquidationHeartbeat({reportId: 0, timestamp: heartbeatState.timestamp});
+                    _clearReportId(swapId);
+                    emit LiquidationHeartbeatBailout(swapId, uint128(reportId));
+                    emit PositionReportBailedOut(swapId, reportId, s);
+                } else if (isLiq) {
+                    delete swaps[swapId];
+                    _deleteReportId(swapId);
+                    oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(marginSum));
+                    emit PositionLiquidated(swapId, reportId, s);
+                } else if (intendedClose || maturityPassed) {
+                    // close position
+                    delete swaps[swapId];
+                    _deleteReportId(swapId);
+                    uint256 owedToSwapper;
+
+                    if (swapperEquity <= 0) {
+                        owedToSwapper = 0;
+                    } else {
+                        owedToSwapper = uint256(swapperEquity);
+                        if (owedToSwapper > marginSum) owedToSwapper = marginSum;
+                    }
+
+                    uint256 owedToMatcher = marginSum - owedToSwapper;
+
+                    oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(owedToMatcher));
+                    if (useInternalBalances) {
+                        oracle.internalTransferFrom(address(this), swapper, collatToken, uint128(owedToSwapper));
+                    } else {
+                        oracle.pushOrCredit(collatToken, swapper, uint128(owedToSwapper));
+                    }
+                    emit PositionClosed(swapId, reportId, s, owedToSwapper, owedToMatcher);
+                } else {
+                    // failed liquidation
+                    _clearReportId(swapId);
+                    emit LiquidationFailed(swapId, reportId, s);
+                }
+            }
+        }
+    }
+
+    /**
+     * @notice Deploys a position's fee receiver if needed, then distributes its accrued oracle fees.
+     * @dev The receiver address is committed into each hash-mode oracle game before the clone exists.
+     *      The current oracle preimage proves both that OpenPunt created the game and that its fee
+     *      recipient is the receiver derived from the supplied position parties and assets. Deployment
+     *      is permissionless and may occur before fees accrue; an empty distribution is a no-op.
+     * @param swapId Position identifier used as the deterministic deployment salt.
+     * @param swapper Swapper encoded into the receiver and used for its token split.
+     * @param matcher Matcher encoded into the receiver and used for its token split.
+     * @param oracleState Oracle-game preimage committing the receiver as protocolFeeRecipient.
+     * @param oracleHelper Oracle helper preimage proving the game was created by OpenPunt.
+     * @return feeReceiver Deployed or previously deployed receiver address.
+     * @return fees1 Amount of token1 distributed in this call.
+     * @return fees2 Amount of token2 distributed in this call.
+     */
+    function deployAndDistributeFeeReceiver(
+        uint256 swapId,
+        address swapper,
+        address matcher,
+        IOpenOracle2.OracleGame calldata oracleState,
+        IOpenOracle2.PreimageHelper calldata oracleHelper
+    ) external nonReentrant returns (address feeReceiver, uint256 fees1, uint256 fees2) {
+        if (oracleHelper.creator != address(this)) revert Errors.InvalidFeeReceiver();
+        if (keccak256(abi.encode(oracleState, oracleHelper)) != oracle.oracleGame(oracleHelper.reportId)) {
+            revert Errors.WrongOracleHash();
+        }
+
+        bytes memory args = abi.encodePacked(swapId, oracleState.token1, oracleState.token2, swapper, matcher);
+        feeReceiver = LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(swapId), address(this));
+        if (oracleState.protocolFeeRecipient != feeReceiver) revert Errors.InvalidFeeReceiver();
+
+        if (feeReceiver.code.length == 0) {
+            feeReceiver = LibClone.cloneDeterministic(feeReceiverImpl, args, bytes32(swapId));
+        }
+
+        (fees1, fees2) = OpenPuntFeeReceiver(feeReceiver).distribute();
+    }
+
+    /// @dev Creates OpenPunt oracle games in block-number mode (`flags == 0`); the preimage's
+    ///      settlementTime and disputeDelay therefore represent block counts.
+    /// @param s Active position supplying tokens and fee-recipient context.
+    /// @param o Committed oracle-game parameters.
+    /// @param timing OpenOracle timing bounds.
+    /// @param amount2 Token2 liquidity supplied to the report.
+    /// @param matcher Designated reporter.
+    /// @param settlerReward ETH-denominated reward forwarded to OpenOracle.
+    /// @param customAmount1 Optional token1 liquidity override; zero selects o.initialLiquidity.
+    /// @return reportId Newly allocated OpenOracle report identifier.
+    function oracleGame(
+        MatchedSwap memory s,
+        MatcherPreimage memory o,
+        IOpenOracle2.TimingBoundaries memory timing,
+        uint128 amount2,
+        address matcher,
+        uint96 settlerReward,
+        uint128 customAmount1
+    ) internal returns (uint256 reportId) {
+        IOpenOracle2.OracleGame memory params = IOpenOracle2.OracleGame({
+            currentAmount1: customAmount1 > 0 ? customAmount1 : o.initialLiquidity,
+            currentAmount2: amount2,
+            currentReporter: matcher,
+            reportTimestamp: 0,
+            settlementTimestamp: 0,
+            token1: s.oracleToken1,
+            lastReportOppoTime: 0,
+            settlementTime: o.settlementTime,
+            escalationHalt: o.escalationHalt,
+            protocolFeeRecipient: s.feeRecipient,
+            settlerReward: settlerReward,
+            token2: s.oracleToken2,
+            numReports: 0,
+            disputeDelay: o.disputeDelay,
+            feePercentage: 0,
+            multiplier: o.multiplier,
+            callbackContract: address(0),
+            callbackGasLimit: 0,
+            protocolFee: o.protocolFee,
+            flags: 0
+        });
+
+        reportId = oracle.report{value: settlerReward}(params, true, true, timing);
+    }
+
+    /// @dev Adds ETH-denominated executor compensation to an existing report allocation.
+    function _addExecutionGasComp(uint256 reportId, uint128 altGasCompExec) internal {
+        executionGasComp[reportId] += altGasCompExec;
+    }
+
+    /// @dev Returns opening margins after a failed opening report. The swapper's delivery channel
+    ///      follows useInternalBalances; matcher collateral always returns internally.
+    function refund(
+        address collatToken,
+        uint128 initialMarginSwapper,
+        address swapper,
+        uint128 initialMarginMatcher,
+        address matcher,
+        bool useInternalBalances
+    ) internal {
+        if (useInternalBalances) {
+            oracle.internalTransferFrom(address(this), swapper, collatToken, initialMarginSwapper);
+        } else {
+            oracle.pushOrCredit(collatToken, swapper, initialMarginSwapper);
+        }
+        oracle.internalTransferFrom(address(this), matcher, collatToken, initialMarginMatcher);
+    }
+
+    /// @dev Returns the current geometrically increasing Dutch reward, capped at maxFee.
+    function calcFee(
+        uint256 maxFee,
+        uint256 startingFee,
+        uint256 growthRate,
+        uint256 maxRounds,
+        uint256 startFulfillFeeIncrease,
+        uint256 roundLength
+    ) internal view returns (uint256) {
+        uint256 timeDelta = block.timestamp - startFulfillFeeIncrease;
+
+        timeDelta = timeDelta / roundLength;
+        if (timeDelta > maxRounds) {
+            timeDelta = maxRounds;
+        }
+
+        uint256 currentFee = startingFee;
+
+        for (uint256 i = 0; i < timeDelta;) {
+            currentFee = (currentFee * growthRate) / 10000;
+            if (currentFee >= maxFee) {
+                return maxFee;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        return currentFee;
+    }
+
+    /// @dev Tests whether price lies inside the multiplicatively symmetric opening tolerance band.
+    function toleranceCheck(uint256 price, uint256 priceTolerated, uint24 toleranceRange)
+        internal
+        pure
+        returns (bool)
+    {
+        uint256 tr = uint256(toleranceRange);
+        uint256 upper = Math.mulDiv(priceTolerated, 1e7 + tr, 1e7);
+        uint256 lower = Math.mulDiv(priceTolerated, 1e7, 1e7 + tr);
+
+        return price >= lower && price <= upper;
+    }
+
+    /// @dev Checks the elapsed wall-clock milliseconds against elapsed block count. In block mode,
+    ///      `reportTimestamp` here is the report's wall-clock `lastReportOppoTime`, while
+    ///      `reportBlockNumber` is the oracle game's `reportTimestamp`.
+    /// @return True when the two elapsed clocks differ by no more than two seconds.
+    function impliedMillisecondsPerBlock(uint48 reportTimestamp, uint48 reportBlockNumber, uint16 millisecondsPerBlock)
+        internal
+        view
+        returns (bool)
+    {
+        uint256 elapsedMilliseconds = (uint256(uint48(block.timestamp)) - reportTimestamp) * 1000;
+        uint256 expectedMilliseconds = (uint256(_getBlockNumber()) - reportBlockNumber) * millisecondsPerBlock;
+
+        return expectedMilliseconds <= elapsedMilliseconds + 2000 && elapsedMilliseconds <= expectedMilliseconds + 2000;
+    }
+
+    /// @dev Computes x * y / denominator without overflowing intermediate cross-products and caps the result.
+    /// @return The floor-divided product, limited to cap.
+    function mulDivCapped(uint256 x, uint256 y, uint256 denominator, uint256 cap) internal pure returns (uint256) {
+        if (x == 0 || y == 0 || cap == 0) return 0;
+
+        uint256 quotient = y / denominator;
+        uint256 remainder = y % denominator;
+
+        if (quotient > cap / x) return cap;
+
+        uint256 whole = quotient * x;
+        if (whole >= cap) return cap;
+
+        uint256 fractional = Math.mulDiv(x, remainder, denominator);
+
+        return fractional >= cap - whole ? cap : whole + fractional;
+    }
+}
