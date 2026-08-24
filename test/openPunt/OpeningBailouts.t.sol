@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import "./OpenPuntBase.t.sol";
 
 /**
- * @notice bailOut() reached naturally, plus the ordering races between bailing out and
+ * @notice bailOutOpen() reached naturally, plus the ordering races between bailing out and
  *         executing the opening.
  */
 contract OpeningBailoutsTest is OpenPuntBase {
@@ -36,7 +36,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
         OpenPuntStorage.MatchedSwap memory empty;
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.bailOut(p.swapId, empty);
+        punt.bailOutOpen(p.swapId, empty);
 
         assertEq(punt.swaps(p.swapId), storedBefore, "proposal phase preserved");
     }
@@ -47,7 +47,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.CantBailOutYet.selector);
-        punt.bailOut(swapId, active);
+        punt.bailOutOpen(swapId, active);
 
         assertEq(punt.swaps(swapId), storedBefore, "active position preserved");
     }
@@ -60,7 +60,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.CantBailOutYet.selector);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         assertEq(punt.swaps(p.swapId), keccak256(abi.encode(mt.swap)), "matched phase preserved");
     }
@@ -76,7 +76,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.CantBailOutYet.selector);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         assertEq(punt.swaps(p.swapId), keccak256(abi.encode(mt.swap)), "matched phase preserved");
         assertEq(collat.balanceOf(swapper), swapperExt0, "no refund at the boundary");
@@ -104,7 +104,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
         // an unrelated third party performs the bailout
         vm.recordLogs();
         vm.prank(outsider);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         _findLog(logs, address(punt), OpenPuntStorage.OpeningBailedOut.selector, p.swapId);
@@ -142,7 +142,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
 
         // the swapper themself bails out this time
         vm.prank(swapper);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         assertEq(punt.tempHolding(swapper), OPEN_EXEC_COMP, "swapper-as-caller receives the comp");
         assertEq(punt.swaps(p.swapId), bytes32(0), "swap hash deleted");
@@ -159,7 +159,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
         vm.warp(vm.getBlockTimestamp() + 1);
 
         vm.prank(outsider);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
         assertEq(punt.swaps(p.swapId), bytes32(0), "terminal");
 
         uint256 swapperExt = collat.balanceOf(swapper);
@@ -191,12 +191,12 @@ contract OpeningBailoutsTest is OpenPuntBase {
         // stale pre-opening state no longer hashes
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         // the current state hashes, but the position is active
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.CantBailOutYet.selector);
-        punt.bailOut(p.swapId, active);
+        punt.bailOutOpen(p.swapId, active);
 
         assertEq(punt.swaps(p.swapId), activeHash, "active phase not overwritten");
         assertEq(punt.tempHolding(outsider), 0, "failed bailout pays nothing");
@@ -212,11 +212,11 @@ contract OpeningBailoutsTest is OpenPuntBase {
         vm.warp(vm.getBlockTimestamp() + 1);
 
         vm.prank(outsider);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         assertEq(collat.balanceOf(swapper), swapperExt0, "swapper refunded exactly once");
         assertEq(_spendable(matcher, address(collat)), matcherCollat0, "matcher refunded exactly once");

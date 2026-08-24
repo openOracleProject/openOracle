@@ -117,10 +117,10 @@ contract ReentrancyCancelSwapOpenTest is ReentrancyBase {
         OpenPuntStorage.MatchedSwap memory empty;
         Ledgers memory before = _ledgers(address(hookToken));
 
-        _armAndCancel(actor, r, abi.encodeCall(punt.bailOut, (r.swapId, empty)));
+        _armAndCancel(actor, r, abi.encodeCall(punt.bailOutOpen, (r.swapId, empty)));
 
-        // bailOut IS guarded, so the guard fires before any hash comparison
-        _assertInnerHookRevertedWith(REENTRANT_CALL, "inner bailOut");
+        // bailOutOpen IS guarded, so the guard fires before any hash comparison
+        _assertInnerHookRevertedWith(REENTRANT_CALL, "inner bailOutOpen");
         _assertDeliveredExactlyOnce(before, r);
     }
 

@@ -184,11 +184,11 @@ contract ReentrancyWithdrawTest is ReentrancyBase {
         OpenPuntStorage.MatchedSwap memory empty;
 
         actor.resetObservations();
-        actor.arm(address(punt), abi.encodeCall(punt.bailOut, (1, empty)), 0);
+        actor.arm(address(punt), abi.encodeCall(punt.bailOutOpen, (1, empty)), 0);
         _withdraw(actor, address(actor), false);
         actor.disarm();
 
-        _assertInnerRevertedWith(actor, REENTRANT_CALL, "inner bailOut");
+        _assertInnerRevertedWith(actor, REENTRANT_CALL, "inner bailOutOpen");
     }
 
     function test_reentrantCancelSwapOpenIsBlockedByTheSharedGuard() public {

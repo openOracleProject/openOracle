@@ -135,10 +135,10 @@ contract OpeningRefundModesTest is AssetModeBase {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Manual bailOut() passes the stored mode through
+    //  Manual bailOutOpen() passes the stored mode through
     // ══════════════════════════════════════════════════════════════════
 
-    /// @dev bailOut() calls the same refund() implementation, so the canonical lifecycle and
+    /// @dev bailOutOpen() calls the same refund() implementation, so the canonical lifecycle and
     ///      race coverage is not repeated four times. This is one non-canonical smoke case
     ///      (ETH collateral, internal delivery) proving the manual entry point reads the mode
     ///      out of the stored position rather than assuming the default.
@@ -156,7 +156,7 @@ contract OpeningRefundModesTest is AssetModeBase {
         vm.roll(vm.getBlockNumber() + target / 2);
 
         vm.prank(outsider);
-        punt.bailOut(p.swapId, mt.swap);
+        punt.bailOutOpen(p.swapId, mt.swap);
 
         assertEq(
             _spendable(swapper, address(0)) - swapperEthInt0, MARGIN_S, "swapper margin returned to the ETH ledger"

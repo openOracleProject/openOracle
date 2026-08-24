@@ -7,10 +7,10 @@ import {Errors as OracleErrors} from "../../src/libraries/Errors.sol";
 /**
  * @notice The reporter-adapter path when one oracle leg is native ETH.
  *
- * @dev The funder pushes the ETH leg AND the execution compensation through the designated
- *      reporter's single address(0) ledger slot, then OpenPunt pulls the compensation back and
- *      the oracle consumes the leg. Both must clear to zero spendable — a residue would mean
- *      one purpose was funded at the other's expense.
+ * @dev The funder transfers the ETH oracle leg to the designated reporter, while execution
+ *      compensation moves directly from the funder to OpenPunt. The oracle then consumes only
+ *      the ETH leg from the reporter. Both paths share the funder's address(0) ledger slot but
+ *      remain separately accounted.
  */
 contract DelegatedReporterEthTest is AssetModeBase {
     address internal designated = address(0x5001);
@@ -92,7 +92,7 @@ contract DelegatedReporterEthTest is AssetModeBase {
         assertEq(punt.executionGasComp(mt.reportId), ADAPTER_COMP, "only the compensation reached the core");
 
         // the pass-through left nothing behind on the designated reporter
-        assertEq(_spendable(designated, address(0)), 0, "no ETH residue: leg consumed, compensation forwarded");
+        assertEq(_spendable(designated, address(0)), 0, "no ETH residue after the oracle consumed the leg");
         assertEq(_spendable(designated, t1), 0, "no leg1 residue");
         assertEq(_spendable(designated, t2), 0, "no leg2 residue");
         assertEq(punt.executionGasComp(0), 0, "no compensation stranded on report id zero");
@@ -282,10 +282,10 @@ contract DelegatedReporterEthTest is AssetModeBase {
     /// @dev Atomicity after the first asset stage has already been consumed.
     ///
     ///      With EthIsToken1 and a designated reporter armed for ETH but not for token2, the
-    ///      transaction gets a long way in before failing: the funder's ETH leg, ERC20 leg and
-    ///      compensation all transfer to the designated reporter, OpenPunt pulls the
-    ///      compensation back, and the oracle successfully consumes the ETH leg from the
-    ///      designated reporter — only then does the token2 pull hit the missing allowance.
+    ///      transaction gets a long way in before failing: the funder's ETH and ERC20 legs transfer
+    ///      to the designated reporter, compensation transfers directly to OpenPunt, and the oracle
+    ///      successfully consumes the ETH leg from the designated reporter — only then does the
+    ///      token2 pull hit the missing allowance.
     ///
     ///      The trace confirms the failure lands inside `oracle.report`, by which point the
     ///      Dutch reward has already been split and paid to both the reporter and the swapper,
@@ -325,8 +325,9 @@ contract DelegatedReporterEthTest is AssetModeBase {
         assertTrue(punt.swapIdToReportId(swapId) != 0, "the retry created a live report in the sidecar");
     }
 
-    /// @dev The oracle pulls the ETH leg from the REPORTER, so the designated reporter's own
-    ///      address(0) allowance is required even though the funder supplies the ETH.
+    /// @dev The oracle pulls the ETH leg from the reporter, so the designated reporter's own
+    ///      address(0) allowance is still required for that leg even though compensation no longer
+    ///      passes through the reporter.
     function test_rollback_designatedReporterLacksEthAllowance() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p,, address t2) =
             _openFor(Legs.EthIsToken1);
@@ -344,7 +345,7 @@ contract DelegatedReporterEthTest is AssetModeBase {
         uint256 adapterEth0 = _spendable(adapter, address(0));
 
         vm.prank(adapter);
-        vm.expectRevert(OracleErrors.InsufficientInternalAllowance.selector);
+        vm.expectRevert(OracleErrors.InsufficientInternalBalance.selector);
         puntLifecycle.report(
             swapId, _expectedDutchHash(dutch), active, p.preimage, _noTiming(), halfArmed, OA1, OA2, ADAPTER_COMP
         );

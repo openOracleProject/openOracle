@@ -516,7 +516,7 @@ abstract contract OpenPuntBase is Test {
         return keccak256(abi.encode(d));
     }
 
-    /// @dev Test-only projection of the old getter shape onto the new state model.
+    /// @dev Test-only projection of the stored auction compensation and close-request state.
     function _closeState(uint256 swapId) internal view returns (uint128, uint48, bool) {
         OpenPuntStorage.StoredDutch memory a = _storedAuctionRaw(swapId);
         uint48 requestedAt = punt.closeRequestBlock(swapId);

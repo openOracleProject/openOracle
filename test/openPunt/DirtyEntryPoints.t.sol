@@ -220,12 +220,12 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  bailOut
+    //  bailOutOpen
     // ══════════════════════════════════════════════════════════════════
 
     function test_bailOut_dirtyStartPadding() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory matched, uint256 maxGameTime) = _matchedAwaitingBailout();
-        bytes memory clean = abi.encodeCall(punt.bailOut, (swapId, matched));
+        bytes memory clean = abi.encodeCall(punt.bailOutOpen, (swapId, matched));
 
         uint256 off = _argOffset(32 + 32 * 23); // MatchedSwap.start, a uint48
         _assertCleanWord(clean, off, bytes32(uint256(matched.start)), "MatchedSwap.start");
@@ -233,7 +233,13 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
         _advanceChain(maxGameTime + 2); // make the clean bailout genuinely eligible
 
         _proveCleanThenDirty(
-            clean, _withByte(clean, off + 25, 0x01), outsider, 0, swapId, matched.collatToken, "bailOut/start padding"
+            clean,
+            _withByte(clean, off + 25, 0x01),
+            outsider,
+            0,
+            swapId,
+            matched.collatToken,
+            "bailOutOpen/start padding"
         );
         assertTrue(punt.swaps(swapId) != bytes32(0), "the position survives the rejected bailout");
     }

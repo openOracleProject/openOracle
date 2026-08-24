@@ -181,7 +181,7 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
         sels[i++] = openPunt.close.selector;
         sels[i++] = openPunt.cancelCloseAuction.selector;
         sels[i++] = openPunt.cancelSwapOpen.selector;
-        sels[i++] = openPunt.bailOut.selector;
+        sels[i++] = openPunt.bailOutOpen.selector;
         sels[i++] = openPunt.dust.selector;
         sels[i++] = openPunt.withdraw.selector;
         sels[i++] = bytes4(keccak256("feeReceiverImpl()"));

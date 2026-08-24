@@ -5,7 +5,7 @@ import "./ReentrancyBase.t.sol";
 
 /**
  * @notice The remaining ERC20 refund and payout callback surfaces: `cancelCloseAuction()`,
- *         a claimed Dutch remainder in `report()`, `bailOut()` and the terminal `execute()` payout.
+ *         a claimed Dutch remainder in `report()`, `bailOutOpen()` and the terminal `execute()` payout.
  *
  * @dev All four deliver collateral through `oracle.pushOrCredit`, whose ERC20 branch forwards all
  *      remaining gas. With the hook token as position collateral these are genuine unbounded
@@ -136,7 +136,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
      *         gate, not by the reentrancy guard.
      *
      * @dev `cancelCloseAuction` carries no `nonReentrant`, so the guard was never entered and
-     *      `bailOut`'s modifier passes. What actually refuses the call is `bailOut`'s hash check
+     *      `bailOutOpen`'s modifier passes. What actually refuses the call is `bailOutOpen`'s hash check
      *      against the still-live position. The exact selector is asserted so this cannot be
      *      misread as guard coverage.
      */
@@ -144,9 +144,9 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         Live memory l = _withAuction(actor);
         OpenPuntStorage.MatchedSwap memory empty;
 
-        _armCancel(actor, l, abi.encodeCall(punt.bailOut, (l.swapId, empty)));
+        _armCancel(actor, l, abi.encodeCall(punt.bailOutOpen, (l.swapId, empty)));
 
-        _assertHookReverted(PuntErrors.WrongHash.selector, "inner bailOut");
+        _assertHookReverted(PuntErrors.WrongHash.selector, "inner bailOutOpen");
         assertTrue(punt.swaps(l.swapId) != bytes32(0), "the position survived");
     }
 
