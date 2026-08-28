@@ -94,8 +94,9 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint128 initialMarginMatcher; // amount of collatToken the matcher must post to match
         uint128 maintenanceMarginSwapper; // swapper equity below this amount is liquidatable
         uint128 notional; // position notional denominated in collatToken
-        bool swapperIsLong; // true when swapper profits from oracleToken2/oracleToken1 increasing
-        uint24 fulfillmentFee; // 1e7 = 100%; opening and closing fee paid to matcher
+        bool swapperIsLong; // true when swapper profits from the selected PnL ratio increasing
+        bool pnlUsesToken1PerToken2; // true uses token1/token2; false uses token2/token1
+        uint24 fulfillmentFee; // 1e7 = 100%; opening fee paid to matcher
         int32 fundingRate; // 1e7 = 100% annual; positive means swapper pays matcher
         // Oracle game state and commitments
         uint128 oracleAmount1; // token1 amount establishing the opening execution price
@@ -118,6 +119,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         // Funding and execution compensation
         uint96 openExecutionComp; // ETH paid to opening executor; zero after opening execution
         bool useInternalBalances; // true routes swapper collateral and refunds through oracle balances
+        bool maturityOnly; // true prevents active-position reports before maturity
     }
 
     struct ProposedSwap {
@@ -131,7 +133,8 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint128 initialMarginMatcher; // amount of collatToken the matcher must put in the contract
         uint128 maintenanceMarginSwapper; // swapper equity below this amount is liquidatable
         uint128 notional; // position notional denominated in collatToken
-        bool isLong; // true when swapper profits from oracleToken2/oracleToken1 increasing
+        bool isLong; // true when swapper profits from the selected PnL ratio increasing
+        bool pnlUsesToken1PerToken2; // true uses token1/token2; false uses token2/token1
         int32 fundingRate; // 1e7 = 100% annual; fixed when fulfillment fee is auctioned
         uint24 fulfillmentFee; // 1e7 = 100%; fixed when funding is auctioned
         bool auctionFunding; // true auctions funding; false auctions fulfillment fee
@@ -152,6 +155,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint96 matcherGasComp; // swapper pays matcher this amount of wei to call match
         uint96 openExecutionComp; // ETH reward offered to the opening OpenPunt executor
         bool useInternalBalances; // true funds swapper collateral from oracle internal balance
+        bool maturityOnly; // true prevents active-position reports before maturity
     }
 
     struct CloseDutch {
@@ -191,6 +195,29 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         });
     }
 
+    /// @dev Deletes and returns an unclaimed close auction on cancellation or terminal execution.
+    function _returnAuction(uint256 swapId, MatchedSwap memory s) internal {
+        StoredDutch memory stored = closeAuctions[swapId];
+        if (stored.maxReward == 0) return;
+
+        delete closeAuctions[swapId];
+
+        bool collatIsEth = s.collatToken == address(0);
+        uint128 expectedEth = stored.executionComp + (collatIsEth ? stored.maxReward : 0);
+
+        if (stored.useInternalBalances) {
+            oracle.internalTransferFrom(address(this), s.swapper, address(0), expectedEth);
+            if (!collatIsEth) {
+                oracle.internalTransferFrom(address(this), s.swapper, s.collatToken, stored.maxReward);
+            }
+        } else {
+            oracle.pushOrCredit(address(0), s.swapper, expectedEth);
+            if (!collatIsEth) oracle.pushOrCredit(s.collatToken, s.swapper, stored.maxReward);
+        }
+
+        emit CloseAuctionCancelled(swapId);
+    }
+
     struct Permit2Params {
         uint256 nonce;
         uint256 deadline;
@@ -217,8 +244,8 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint48 startFulfillFeeIncrease; // override; must be zero and is set to proposal timestamp
     }
 
-    event SwapCancelled(uint256 indexed swapId, ProposedSwap swapState, MatcherPreimage matcherPreimage);
-    event SwapRefunded(uint256 indexed swapId, address indexed swapper, address indexed matcher, MatchedSwap swapState);
+    event SwapCancelled(uint256 indexed swapId);
+    event SwapRefunded(uint256 indexed swapId, address indexed swapper, address indexed matcher);
     event SlippageBailout(uint256 indexed swapId);
     event ImpliedMillisecondsPerBlockBailout(uint256 indexed swapId);
     event MaxExecutionLatencyBailout(uint256 indexed swapId);
@@ -231,24 +258,22 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     );
     event CloseIntentSet(uint256 indexed swapId, uint256 indexed currentReportId, uint128 executionCompAdded);
     event CloseAuctionStarted(
-        uint256 indexed swapId, bytes32 indexed dutchHash, CloseDutch dutch, uint128 executionComp
-    );
-    event CloseAuctionCancelled(
-        uint256 indexed swapId, bytes32 indexed dutchHash, CloseDutch dutch, uint128 executionCompRefunded
-    );
-    event CloseIntentCancelled(uint256 indexed swapId);
-    event OpeningBailedOut(uint256 indexed swapId, MatchedSwap swapState);
-    event PositionOpeningFailed(uint256 indexed swapId, uint256 indexed reportId, MatchedSwap swapState);
-    event PositionOpened(uint256 indexed swapId, MatchedSwap swapState);
-    event PositionReportBailedOut(uint256 indexed swapId, uint256 indexed reportId, MatchedSwap swapState);
-    event LiquidationFailed(uint256 indexed swapId, uint256 indexed reportId, MatchedSwap swapState);
-    event PositionLiquidated(uint256 indexed swapId, uint256 indexed reportId, MatchedSwap finalState);
-    event PositionClosed(
         uint256 indexed swapId,
-        uint256 indexed reportId,
-        MatchedSwap finalState,
-        uint256 owedToSwapper,
-        uint256 owedToMatcher
+        bytes32 indexed dutchHash,
+        MatchedSwap swapState,
+        CloseDutch dutch,
+        uint128 executionComp
+    );
+    event CloseAuctionCancelled(uint256 indexed swapId);
+    event CloseIntentCancelled(uint256 indexed swapId);
+    event OpeningBailedOut(uint256 indexed swapId);
+    event PositionOpeningFailed(uint256 indexed swapId, uint256 indexed reportId);
+    event PositionOpened(uint256 indexed swapId, MatchedSwap swapState);
+    event PositionReportBailedOut(uint256 indexed swapId, uint256 indexed reportId);
+    event LiquidationFailed(uint256 indexed swapId, uint256 indexed reportId);
+    event PositionLiquidated(uint256 indexed swapId, uint256 indexed reportId, uint256 owedToMatcher);
+    event PositionClosed(
+        uint256 indexed swapId, uint256 indexed reportId, uint256 owedToSwapper, uint256 owedToMatcher
     );
 
     /// @dev Returns the chain-specific block clock used by OpenPunt and its block-mode oracle games.
