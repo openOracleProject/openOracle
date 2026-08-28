@@ -72,7 +72,7 @@ contract DirtyRevertClassificationTest is DirtyEntryPointsBase {
         _advanceToSettlementEligibility();
 
         bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, mt.swap, mt.game, mt.helper, false));
-        uint256 off = _argOffset(960 + 32 * 0); // OracleGame.currentAmount1, a uint128
+        uint256 off = _argOffset(1024 + 32 * 0); // OracleGame.currentAmount1, a uint128
         _assertCleanWord(clean, off, bytes32(uint256(mt.game.currentAmount1)), "OracleGame.currentAmount1");
         Book memory before = _book(swapId, active.collatToken);
 
@@ -94,7 +94,7 @@ contract DirtyRevertClassificationTest is DirtyEntryPointsBase {
         _advanceToSettlementEligibility();
 
         bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, mt.swap, mt.game, mt.helper, false));
-        uint256 off = _argOffset(960 + 32 * 0); // OracleGame.currentAmount1 padding
+        uint256 off = _argOffset(1024 + 32 * 0); // OracleGame.currentAmount1 padding
         Book memory before = _book(swapId, active.collatToken);
 
         (bool ok, bytes memory ret) = _rawCallPunt(closeExecutor, 0, _withByte(clean, off + 15, 0x01));

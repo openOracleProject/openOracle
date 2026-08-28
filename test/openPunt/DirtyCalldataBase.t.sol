@@ -63,7 +63,7 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
     // ══════════════════════════════════════════════════════════════════
 
     function _proposedSwapFields() internal pure returns (Field[] memory f) {
-        f = new Field[](25);
+        f = new Field[](27);
         f[0] = Field(20, C_ADDR, "swapper");
         f[1] = Field(20, C_ADDR, "collatToken");
         f[2] = Field(20, C_ADDR, "oracleToken1");
@@ -73,22 +73,24 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
         f[6] = Field(16, C_UINT, "maintenanceMarginSwapper");
         f[7] = Field(16, C_UINT, "notional");
         f[8] = Field(1, C_BOOL, "isLong");
-        f[9] = Field(4, C_INT, "fundingRate");
-        f[10] = Field(3, C_UINT, "fulfillmentFee");
-        f[11] = Field(1, C_BOOL, "auctionFunding");
-        f[12] = Field(29, C_UINT, "priceTolerated");
-        f[13] = Field(3, C_UINT, "toleranceRange");
-        f[14] = Field(2, C_UINT, "millisecondsPerBlock");
-        f[15] = Field(3, C_UINT, "maxGameTime");
-        f[16] = Field(2, C_UINT, "maxExecutionLatency");
-        f[17] = Field(2, C_UINT, "liquidationHeartbeatMin");
-        f[18] = Field(2, C_UINT, "liquidationHeartbeatMax");
-        f[19] = Field(6, C_UINT, "expiration");
-        f[20] = Field(6, C_UINT, "maturityWindow");
-        f[21] = Field(12, C_UINT, "settlerReward");
-        f[22] = Field(12, C_UINT, "matcherGasComp");
-        f[23] = Field(12, C_UINT, "openExecutionComp");
-        f[24] = Field(1, C_BOOL, "useInternalBalances");
+        f[9] = Field(1, C_BOOL, "pnlUsesToken1PerToken2");
+        f[10] = Field(4, C_INT, "fundingRate");
+        f[11] = Field(3, C_UINT, "fulfillmentFee");
+        f[12] = Field(1, C_BOOL, "auctionFunding");
+        f[13] = Field(29, C_UINT, "priceTolerated");
+        f[14] = Field(3, C_UINT, "toleranceRange");
+        f[15] = Field(2, C_UINT, "millisecondsPerBlock");
+        f[16] = Field(3, C_UINT, "maxGameTime");
+        f[17] = Field(2, C_UINT, "maxExecutionLatency");
+        f[18] = Field(2, C_UINT, "liquidationHeartbeatMin");
+        f[19] = Field(2, C_UINT, "liquidationHeartbeatMax");
+        f[20] = Field(6, C_UINT, "expiration");
+        f[21] = Field(6, C_UINT, "maturityWindow");
+        f[22] = Field(12, C_UINT, "settlerReward");
+        f[23] = Field(12, C_UINT, "matcherGasComp");
+        f[24] = Field(12, C_UINT, "openExecutionComp");
+        f[25] = Field(1, C_BOOL, "useInternalBalances");
+        f[26] = Field(1, C_BOOL, "maturityOnly");
     }
 
     function _matcherPreimageFields() internal pure returns (Field[] memory f) {
@@ -108,7 +110,7 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
     }
 
     function _matchedSwapFields() internal pure returns (Field[] memory f) {
-        f = new Field[](29);
+        f = new Field[](31);
         f[0] = Field(20, C_ADDR, "swapper");
         f[1] = Field(20, C_ADDR, "matcher");
         f[2] = Field(20, C_ADDR, "collatToken");
@@ -119,25 +121,27 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
         f[7] = Field(16, C_UINT, "maintenanceMarginSwapper");
         f[8] = Field(16, C_UINT, "notional");
         f[9] = Field(1, C_BOOL, "swapperIsLong");
-        f[10] = Field(3, C_UINT, "fulfillmentFee");
-        f[11] = Field(4, C_INT, "fundingRate");
-        f[12] = Field(16, C_UINT, "oracleAmount1");
-        f[13] = Field(16, C_UINT, "oracleAmount2");
-        f[14] = Field(20, C_ADDR, "feeRecipient");
-        f[15] = Field(32, C_FULL, "matcherPreimageHash");
-        f[16] = Field(29, C_UINT, "priceTolerated");
-        f[17] = Field(3, C_UINT, "toleranceRange");
-        f[18] = Field(2, C_UINT, "millisecondsPerBlock");
-        f[19] = Field(3, C_UINT, "maxGameTime");
-        f[20] = Field(2, C_UINT, "maxExecutionLatency");
-        f[21] = Field(2, C_UINT, "liquidationHeartbeatMin");
-        f[22] = Field(2, C_UINT, "liquidationHeartbeatMax");
-        f[23] = Field(6, C_UINT, "start");
-        f[24] = Field(6, C_UINT, "maturity");
-        f[25] = Field(6, C_UINT, "maturityWindow");
-        f[26] = Field(1, C_BOOL, "active");
-        f[27] = Field(12, C_UINT, "openExecutionComp");
-        f[28] = Field(1, C_BOOL, "useInternalBalances");
+        f[10] = Field(1, C_BOOL, "pnlUsesToken1PerToken2");
+        f[11] = Field(3, C_UINT, "fulfillmentFee");
+        f[12] = Field(4, C_INT, "fundingRate");
+        f[13] = Field(16, C_UINT, "oracleAmount1");
+        f[14] = Field(16, C_UINT, "oracleAmount2");
+        f[15] = Field(20, C_ADDR, "feeRecipient");
+        f[16] = Field(32, C_FULL, "matcherPreimageHash");
+        f[17] = Field(29, C_UINT, "priceTolerated");
+        f[18] = Field(3, C_UINT, "toleranceRange");
+        f[19] = Field(2, C_UINT, "millisecondsPerBlock");
+        f[20] = Field(3, C_UINT, "maxGameTime");
+        f[21] = Field(2, C_UINT, "maxExecutionLatency");
+        f[22] = Field(2, C_UINT, "liquidationHeartbeatMin");
+        f[23] = Field(2, C_UINT, "liquidationHeartbeatMax");
+        f[24] = Field(6, C_UINT, "start");
+        f[25] = Field(6, C_UINT, "maturity");
+        f[26] = Field(6, C_UINT, "maturityWindow");
+        f[27] = Field(1, C_BOOL, "active");
+        f[28] = Field(12, C_UINT, "openExecutionComp");
+        f[29] = Field(1, C_BOOL, "useInternalBalances");
+        f[30] = Field(1, C_BOOL, "maturityOnly");
     }
 
     function _closeDutchFields() internal pure returns (Field[] memory f) {

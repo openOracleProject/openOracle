@@ -45,7 +45,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         bytes memory clean = abi.encodeCall(punt.propose, (s, m, _params()));
 
         uint256 headOff = _argOffset(PROPOSE_PERMIT2_HEAD_OFF);
-        uint256 tailStart = PROPOSE_PERMIT2_HEAD_OFF + 32; // 1216
+        uint256 tailStart = PROPOSE_PERMIT2_HEAD_OFF + 32; // 1280
         _assertCleanWord(clean, headOff, bytes32(tailStart), "Permit2Params head offset");
         _assertCleanWord(clean, _argOffset(tailStart), bytes32(uint256(77)), "nonce");
         _assertCleanWord(clean, _argOffset(tailStart + 32), bytes32(uint256(1_999_999_999)), "deadline");
@@ -54,7 +54,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
 
         // 35 bytes of signature occupy two words, so 29 padding bytes follow
         assertEq(SIG.length, 35, "fixture signature length");
-        assertEq(clean.length, 4 + 1216 + 128 + 64, "total propose calldata length");
+        assertEq(clean.length, 4 + tailStart + 128 + 64, "total propose calldata length");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -111,7 +111,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         (bytes memory clean, uint256 value) = _cleanPropose();
         uint256 headOff = _argOffset(PROPOSE_PERMIT2_HEAD_OFF);
         _rejectAbi(_withWord(clean, headOff, bytes32(uint256(0))), value, "head offset -> ProposedSwap word 0");
-        _rejectAbi(_withWord(clean, headOff, bytes32(uint256(800))), value, "head offset -> MatcherPreimage");
+        _rejectAbi(_withWord(clean, headOff, bytes32(PROPOSE_PREIMAGE_OFF)), value, "head offset -> MatcherPreimage");
     }
 
     /**
@@ -160,9 +160,50 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
     function test_nestedSignatureOffsetBeyondCalldata() public {
         (bytes memory clean, uint256 value) = _cleanPropose();
         uint256 sigOffWord = _argOffset(PROPOSE_PERMIT2_HEAD_OFF + 32 + 64);
-        _rejectAbi(_withWord(clean, sigOffWord, bytes32(type(uint256).max)), value, "signature offset = max");
         _rejectAbi(_withWord(clean, sigOffWord, bytes32(uint256(1 << 128))), value, "signature offset huge");
         _rejectAbi(_withWord(clean, sigOffWord, bytes32(clean.length)), value, "signature offset past the end");
+    }
+
+    /// @dev With this ABI shape, the same signed-offset decoder edge exercised below for close()
+    ///      also forwards an empty signature from propose(). The permissive recorder accepts it;
+    ///      the authentic Permit2 test proves the cryptographic boundary rejects it.
+    function test_proposeMaximumSignatureOffsetYieldsAnEmptySignature() public {
+        (bytes memory clean, uint256 value) = _cleanPropose();
+        uint256 sigOffWord = _argOffset(PROPOSE_PERMIT2_HEAD_OFF + 32 + 64);
+
+        uint256 snap = vm.snapshotState();
+        (bool okClean,) = _rawCallPunt(swapper, value, clean);
+        assertTrue(okClean, "clean control");
+        uint256 cleanSwapId = punt.nextSwapId() - 1;
+        bytes32 cleanHash = punt.swaps(cleanSwapId);
+        bytes32 cleanWitness = _permit2().lastCall().witness;
+        vm.revertToState(snap);
+
+        uint256 calls0 = _permit2().callCount();
+        bytes memory dirty = _withWord(clean, sigOffWord, bytes32(type(uint256).max));
+        (bool ok,) = _rawCallPunt(swapper, value, dirty);
+
+        assertTrue(ok, "signed offset is forwarded as an empty signature");
+        assertEq(_permit2().callCount(), calls0 + 1, "Permit2 reached once");
+        assertEq(_permit2().lastCall().signature.length, 0, "empty signature forwarded");
+        assertEq(punt.nextSwapId() - 1, cleanSwapId, "same swapId issued");
+        assertEq(punt.swaps(cleanSwapId), cleanHash, "proposal commitment is byte-identical");
+        assertEq(_permit2().lastCall().witness, cleanWitness, "Permit2 witness is byte-identical");
+    }
+
+    function test_authenticPermit2RejectsTheEmptyProposeSignature() public {
+        (bytes memory clean, uint256 value) = _cleanPropose();
+        uint256 sigOffWord = _argOffset(PROPOSE_PERMIT2_HEAD_OFF + 32 + 64);
+        bytes memory dirty = _withWord(clean, sigOffWord, bytes32(type(uint256).max));
+
+        new DeployPermit2().deployPermit2();
+        assertGt(PERMIT2.code.length, 0, "authentic Permit2 installed");
+
+        Book memory before = _book(0, address(collat));
+        (bool ok, bytes memory ret) = _rawCallPunt(swapper, value, dirty);
+        assertFalse(ok, "authentic Permit2 refuses the empty signature");
+        assertEq(bytes4(ret), INVALID_SIGNATURE_LENGTH, "InvalidSignatureLength()");
+        _assertStateUnchanged(before, 0, address(collat), "authentic/empty propose signature");
     }
 
     function test_signatureLengthBeyondAvailableCalldata() public {
@@ -266,8 +307,10 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
 
-        bytes memory clean = abi.encodeCall(punt.close, (swapId, input, active, false, _params(), CLOSE_COMP));
-        uint256 tailStart = CLOSE_PERMIT2_HEAD_OFF + 64; // head word + altGasCompExec follow the head
+        bytes memory clean = abi.encodeCall(
+            punt.close, (swapId, input, active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
+        uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
         _assertCleanWord(clean, _argOffset(CLOSE_PERMIT2_HEAD_OFF), bytes32(tailStart), "close Permit2 head offset");
 
         uint256 snap = vm.snapshotState();
@@ -310,8 +353,11 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
      */
     function test_hugeSignatureOffsetYieldsAnEmptySignatureRatherThanReverting() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
-        bytes memory clean = abi.encodeCall(punt.close, (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP));
-        uint256 tailStart = CLOSE_PERMIT2_HEAD_OFF + 64;
+        bytes memory clean = abi.encodeCall(
+            punt.close,
+            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
+        uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
         _assertCleanWord(clean, _argOffset(tailStart + 64), bytes32(uint256(96)), "close signature offset");
 
         // clean baseline
@@ -347,8 +393,11 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
      */
     function test_authenticPermit2RejectsTheEmptySignatureThatTheAbiLayerLetsThrough() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
-        bytes memory clean = abi.encodeCall(punt.close, (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP));
-        uint256 tailStart = CLOSE_PERMIT2_HEAD_OFF + 64;
+        bytes memory clean = abi.encodeCall(
+            punt.close,
+            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
+        uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
 
         // Swap the permissive recorder for the authentic runtime after fixture setup.
         new DeployPermit2().deployPermit2();

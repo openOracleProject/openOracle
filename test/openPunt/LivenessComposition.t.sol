@@ -90,7 +90,7 @@ contract LivenessCompositionTest is LivenessBase {
         );
         assertEq(_countLogs(logs, OpenPuntStorage.PositionReportBailedOut.selector, swapId), 1, "one state transition");
 
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(
             before, mt.reportId, LIVE_COMP, A1, A2_LIQUIDATES, "latency over heartbeat"
         );
@@ -126,21 +126,13 @@ contract LivenessCompositionTest is LivenessBase {
         assertTrue(
             _hasBailoutLog(logs, OpenPuntStorage.MaxExecutionLatencyBailout.selector, swapId), "report one bailed out"
         );
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, first.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, first.reportId, first.swap);
         assertEq(punt.closeRequestBlock(swapId), 0, "request that applied to report one is cleared");
 
         vm.prank(reporter);
         vm.expectRevert(PuntErrors.WrongHash.selector);
         puntLifecycle.report(
-            swapId,
-            _expectedDutchHash(d),
-            reusable,
-            p.preimage,
-            _noTiming(),
-            reporter,
-            A1,
-            A2_HEALTHY,
-            0
+            swapId, _expectedDutchHash(d), reusable, p.preimage, _noTiming(), reporter, A1, A2_HEALTHY, 0
         );
 
         Matched memory second = _reportLive(swapId, _noDutch(), reusable, p.preimage, reporter, 0, A2_HEALTHY);
@@ -164,7 +156,7 @@ contract LivenessCompositionTest is LivenessBase {
         assertTrue(
             _hasBailoutLog(logs, OpenPuntStorage.ImpliedMillisecondsPerBlockBailout.selector, swapId), "cadence bailout"
         );
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, first.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, first.reportId, first.swap);
 
         Matched memory second = _reportLive(swapId, _noDutch(), reusable, p.preimage, reporter, 0, A2_HEALTHY);
         assertTrue(second.reportId != first.reportId, "a genuinely later report");

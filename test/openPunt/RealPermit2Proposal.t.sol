@@ -241,6 +241,18 @@ contract RealPermit2ProposalTest is RealPermit2Base {
         _assertFullyRolledBack(before, wallet.addr, address(collat), z.nonce, "mutated notional");
     }
 
+    function test_witnessBindsThePnlOrientation() public {
+        Signed memory z = _prepare(NONCE, vm.getBlockTimestamp() + 1 days);
+
+        z.s.pnlUsesToken1PerToken2 = !z.s.pnlUsesToken1PerToken2;
+        assertTrue(_proposalIntent(z.s, z.m, wallet.addr) != z.intent, "PnL orientation alters the intent");
+
+        P2Book memory before = _p2Book(wallet.addr, address(collat), z.nonce);
+        vm.expectRevert(InvalidSigner.selector);
+        _submit(z);
+        _assertFullyRolledBack(before, wallet.addr, address(collat), z.nonce, "mutated PnL orientation");
+    }
+
     function test_witnessBindsTheMatcherPreimage() public {
         Signed memory z = _prepare(NONCE, vm.getBlockTimestamp() + 1 days);
 

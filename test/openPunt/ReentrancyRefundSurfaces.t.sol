@@ -52,7 +52,19 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         a.exec(
             address(punt),
             CLOSE_COMP,
-            abi.encodeCall(punt.close, (l.swapId, input, l.active, false, _emptyPermit2(), CLOSE_COMP))
+            abi.encodeCall(
+                punt.close,
+                (
+                    l.swapId,
+                    input,
+                    l.active,
+                    false,
+                    _emptyPermit2(),
+                    CLOSE_COMP,
+                    _emptyOracleGame(),
+                    _emptyOracleHelper()
+                )
+            )
         );
         l.dutch = _canonicalFor(input, l.swapId, address(hookToken), address(a), uint48(vm.getBlockTimestamp()));
         l.dutchHash = keccak256(abi.encode(l.dutch));
@@ -62,7 +74,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
     function _armCancel(ReentrantActor a, Live memory l, bytes memory payload) internal {
         hookToken.resetHook();
         hookToken.armHook(address(a), abi.encodeCall(a.exec, (address(punt), 0, payload)));
-        a.exec(address(punt), 0, abi.encodeCall(punt.cancelCloseAuction, (l.swapId, l.active)));
+        a.exec(address(punt), 0, abi.encodeCall(puntLifecycle.cancelCloseAuction, (l.swapId, l.active)));
         hookToken.disarmHook();
         require(hookToken.hookCount() == 1, "the Dutch refund did not call back");
     }
@@ -78,7 +90,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
 
     function test_callbackCannotReCancelTheDeletedAuction() public {
         Live memory l = _withAuction(actor);
-        _armCancel(actor, l, abi.encodeCall(punt.cancelCloseAuction, (l.swapId, l.active)));
+        _armCancel(actor, l, abi.encodeCall(puntLifecycle.cancelCloseAuction, (l.swapId, l.active)));
 
         _assertHookReverted(PuntErrors.NothingToWithdraw.selector, "inner cancelCloseAuction");
         assertEq(_storedDutchState(l.swapId), bytes32(0), "the auction is deleted exactly once");
@@ -96,7 +108,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         uint256 oracleEthBefore = _spendable(address(actor), address(0));
         uint256 tempBefore = punt.tempHolding(address(actor));
 
-        _armCancel(actor, l, abi.encodeCall(punt.cancelCloseAuction, (l.swapId, l.active)));
+        _armCancel(actor, l, abi.encodeCall(puntLifecycle.cancelCloseAuction, (l.swapId, l.active)));
 
         uint256 collatBack = (hookToken.balanceOf(address(actor)) - extBefore)
             + (_spendable(address(actor), address(hookToken)) - intBefore);
@@ -124,7 +136,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         Live memory theirs = _withAuction(actor2);
         uint256 otherExt = hookToken.balanceOf(address(actor2));
 
-        _armCancel(actor, mine, abi.encodeCall(punt.cancelCloseAuction, (theirs.swapId, theirs.active)));
+        _armCancel(actor, mine, abi.encodeCall(puntLifecycle.cancelCloseAuction, (theirs.swapId, theirs.active)));
 
         _assertHookReverted(PuntErrors.NotSwapper.selector, "inner cancel of another auction");
         assertEq(_storedAuctionHash(theirs.swapId, theirs.active), theirs.dutchHash, "the other auction is intact");
@@ -155,7 +167,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         Live memory a1 = _withAuction(actor);
         Live memory a2 = _withAuction(actor);
 
-        _armCancel(actor, a1, abi.encodeCall(punt.cancelCloseAuction, (a2.swapId, a2.active)));
+        _armCancel(actor, a1, abi.encodeCall(puntLifecycle.cancelCloseAuction, (a2.swapId, a2.active)));
 
         assertTrue(hookToken.lastHookOk(), "the unrelated cancellation succeeded");
         assertEq(_storedDutchState(a1.swapId), bytes32(0), "the outer auction was cancelled");
@@ -255,7 +267,13 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
         OpenPuntStorage.MatchedSwap memory empty;
 
-        _armExecute(t, abi.encodeCall(punt.close, (t.swapId, input, empty, false, _emptyPermit2(), CLOSE_COMP)));
+        _armExecute(
+            t,
+            abi.encodeCall(
+                punt.close,
+                (t.swapId, input, empty, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            )
+        );
 
         _assertHookReverted(PuntErrors.WrongHash.selector, "inner close");
         assertEq(_storedDutchState(t.swapId), bytes32(0), "no auction on a terminal position");

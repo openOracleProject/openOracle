@@ -53,7 +53,9 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         // Intent through the live-report branch, before its fixed cutoff, so no Dutch reward is involved.
         Matched memory mt = _reportWithDutch(swapId, _noDutch(), active, p.preimage, reporter, REPORTER_COMP);
         vm.prank(swapper);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         before = _ledger();
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
@@ -111,7 +113,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
 
         uint256 swapperExt0 = collat.balanceOf(swapper);
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
         assertEq(collat.balanceOf(swapper) - swapperExt0, DUTCH_MAX, "reward returned before any report");
 
         // the auction no longer exists, so the reporter cannot claim anything
@@ -122,7 +124,9 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         assertEq(punt.executionGasComp(mt.reportId), REPORTER_COMP, "only the reporter's own compensation");
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
-        assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationFailed.selector, swapId), "cancelled intent does not survive");
+        assertTrue(
+            _hasLog(logs, OpenPuntStorage.LiquidationFailed.selector, swapId), "cancelled intent does not survive"
+        );
         assertTrue(punt.swaps(swapId) != bytes32(0), "position remains active");
     }
 
@@ -132,7 +136,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         OpenPuntStorage.CloseDutch memory d = _startDefaultAuction(swapId, active);
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         vm.prank(reporter);
         vm.expectRevert(PuntErrors.WrongHash.selector);
@@ -156,7 +160,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.OracleGameInProgress.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         assertEq(punt.executionGasComp(mt.reportId), owed, "compensation stays with the report");
 
@@ -177,7 +181,9 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         // the report sidecar is live, so no second report can start at all
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.OracleGameInProgress.selector);
-        puntLifecycle.report(swapId, _expectedDutchHash(d), first.swap, p.preimage, _noTiming(), outsider, A1, A2_OPEN, 0);
+        puntLifecycle.report(
+            swapId, _expectedDutchHash(d), first.swap, p.preimage, _noTiming(), outsider, A1, A2_OPEN, 0
+        );
 
         // The active preimage is stable, but the live report sidecar still blocks another report.
         vm.prank(outsider);
@@ -213,7 +219,9 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         // stale close
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         // stale execute
         vm.prank(executor);
@@ -223,7 +231,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         // Stale cancellation: the auction was claimed, so its hash is gone.
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         assertEq(collat.balanceOf(swapper), swapperExt, "swapper payout not duplicated");
         assertEq(_spendable(matcher, address(collat)), matcherInt, "matcher payout not duplicated");
@@ -245,7 +253,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         assertEq(collat.balanceOf(swapper), swapperAfterTerminal, "nothing paid twice");
         assertEq(_spendable(address(punt), address(collat)), 0, "core fully drained");

@@ -29,7 +29,9 @@ contract CloseValidationTest is CloseBase {
 
         vm.prank(who);
         vm.expectRevert(err);
-        punt.close{value: value}(swapId, d, active, false, _emptyPermit2(), comp);
+        punt.close{value: value}(
+            swapId, d, active, false, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         _assertUnchanged(before, swapId, active.collatToken, what);
     }
@@ -64,7 +66,9 @@ contract CloseValidationTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        punt.close{value: CLOSE_COMP}(ghost, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            ghost, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         assertEq(_storedDutchState(ghost), bytes32(0), "ghost auction slot empty");
         assertTrue(punt.swaps(swapId) != bytes32(0), "real position untouched");
@@ -281,7 +285,9 @@ contract CloseValidationTest is CloseBase {
         Snap memory before = _snap(swapId, active.collatToken);
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.MustBeZero.selector);
-        punt.close{value: 0}(swapId, d, active, true, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: 0}(
+            swapId, d, active, true, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         _assertUnchanged(before, swapId, active.collatToken, "agreeing flag still rejected");
     }
 

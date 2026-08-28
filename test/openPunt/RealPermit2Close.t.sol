@@ -59,7 +59,14 @@ contract RealPermit2CloseTest is RealPermit2Base {
     function _submitClose(Vm.Wallet memory w, SignedClose memory z) internal {
         vm.prank(w.addr);
         punt.close{value: CLOSE_COMP}(
-            z.swapId, z.input, z.active, false, _permitParams(z.nonce, z.deadline, z.sig), CLOSE_COMP
+            z.swapId,
+            z.input,
+            z.active,
+            false,
+            _permitParams(z.nonce, z.deadline, z.sig),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
         );
     }
 
@@ -245,7 +252,14 @@ contract RealPermit2CloseTest is RealPermit2Base {
         vm.prank(otherWallet.addr);
         vm.expectRevert(PuntErrors.NotSwapper.selector);
         punt.close{value: CLOSE_COMP}(
-            z.swapId, z.input, z.active, false, _permitParams(z.nonce, z.deadline, strangerSig), CLOSE_COMP
+            z.swapId,
+            z.input,
+            z.active,
+            false,
+            _permitParams(z.nonce, z.deadline, strangerSig),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
         );
 
         assertEq(_storedDutchState(z.swapId), bytes32(0), "no auction created");

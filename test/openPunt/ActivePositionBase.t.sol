@@ -194,7 +194,7 @@ abstract contract ActivePositionBase is OpenPuntBase {
         returns (uint256 owedToSwapper, uint256 owedToMatcher)
     {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.PositionClosed.selector, swapId);
-        (, owedToSwapper, owedToMatcher) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, uint256, uint256));
+        (owedToSwapper, owedToMatcher) = abi.decode(l.data, (uint256, uint256));
     }
 
     function _hasLog(Vm.Log[] memory logs, bytes32 topic0, uint256 swapId) internal view returns (bool) {

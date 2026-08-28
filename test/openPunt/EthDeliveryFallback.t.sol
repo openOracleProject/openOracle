@@ -249,7 +249,10 @@ contract EthDeliveryFallbackTest is TokenCompatBase {
         _rejectorCall(
             address(punt),
             closeValue,
-            abi.encodeCall(punt.close, (p.swapId, input, active, false, _emptyPermit2(), CLOSE_COMP))
+            abi.encodeCall(
+                punt.close,
+                (p.swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            )
         );
         OpenPuntStorage.CloseDutch memory dutch = _decodeCloseAuctionStarted(vm.getRecordedLogs(), p.swapId);
         assertFalse(dutch.useInternalBalances, "fixture: auction was externally funded");

@@ -46,7 +46,10 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
         view
         returns (bytes memory)
     {
-        return abi.encodeCall(punt.close, (p.swapId, input, p.active, false, _emptyPermit2(), CLOSE_COMP));
+        return abi.encodeCall(
+            punt.close,
+            (p.swapId, input, p.active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
     }
 
     struct CommitSnap {
@@ -159,7 +162,7 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
         hookToken.armHook(
             address(actor),
             abi.encodeCall(
-                actor.exec, (address(punt), 0, abi.encodeCall(punt.cancelCloseAuction, (p.swapId, p.active)))
+                actor.exec, (address(punt), 0, abi.encodeCall(puntLifecycle.cancelCloseAuction, (p.swapId, p.active)))
             )
         );
 
@@ -215,7 +218,7 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionStarted.selector, swapId);
         require(l.topics.length == 3, "CloseAuctionStarted: expected two indexed fields");
         dutchHashTopic = l.topics[2];
-        (d, comp) = abi.decode(l.data, (OpenPuntStorage.CloseDutch, uint128));
+        (, d, comp) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
     }
 
     function _countLogs(Vm.Log[] memory logs, bytes32 topic0) internal view returns (uint256 n) {
@@ -259,7 +262,7 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
         hookToken.armHook(
             address(actor),
             abi.encodeCall(
-                actor.exec, (address(punt), 0, abi.encodeCall(punt.cancelCloseAuction, (pB.swapId, pB.active)))
+                actor.exec, (address(punt), 0, abi.encodeCall(puntLifecycle.cancelCloseAuction, (pB.swapId, pB.active)))
             )
         );
 
@@ -386,7 +389,19 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
                 (
                     address(punt),
                     0,
-                    abi.encodeCall(punt.close, (p.swapId, nestedInput, p.active, true, _emptyPermit2(), CLOSE_COMP))
+                    abi.encodeCall(
+                        punt.close,
+                        (
+                            p.swapId,
+                            nestedInput,
+                            p.active,
+                            true,
+                            _emptyPermit2(),
+                            CLOSE_COMP,
+                            _emptyOracleGame(),
+                            _emptyOracleHelper()
+                        )
+                    )
                 )
             )
         );
@@ -477,7 +492,7 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
         hookToken.armHook(
             address(actor),
             abi.encodeCall(
-                actor.exec, (address(punt), 0, abi.encodeCall(punt.cancelCloseAuction, (pA.swapId, pA.active)))
+                actor.exec, (address(punt), 0, abi.encodeCall(puntLifecycle.cancelCloseAuction, (pA.swapId, pA.active)))
             )
         );
         actor.exec(address(punt), CLOSE_COMP, _closeCall(pB, inputB));

@@ -12,21 +12,19 @@ contract CancelCloseAuctionTest is CloseBase {
 
     function test_swapperCancelsTheRequestAndRecoversExternalFunding() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
-        OpenPuntStorage.CloseDutch memory d = _startDefaultAuction(swapId, active);
-        bytes32 dutchHash = keccak256(abi.encode(d));
+        _startDefaultAuction(swapId, active);
         uint256 collatBefore = collat.balanceOf(swapper);
         uint256 ethBefore = swapper.balance;
         bytes32 positionHash = punt.swaps(swapId);
 
         vm.recordLogs();
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
-        (OpenPuntStorage.CloseDutch memory emitted, uint128 refunded, bytes32 topicHash) =
-            _readCloseAuctionCancelled(vm.getRecordedLogs(), swapId);
-        assertEq(keccak256(abi.encode(emitted)), dutchHash, "event auction");
-        assertEq(topicHash, dutchHash, "event hash");
-        assertEq(refunded, CLOSE_COMP, "event compensation");
+        Vm.Log memory cancelled =
+            _findLog(vm.getRecordedLogs(), address(punt), OpenPuntStorage.CloseAuctionCancelled.selector, swapId);
+        assertEq(cancelled.topics.length, 2, "only event signature and swap id are indexed");
+        assertEq(cancelled.data.length, 0, "cancel event carries no repeated auction data");
         assertEq(collat.balanceOf(swapper) - collatBefore, DUTCH_MAX, "reward refunded");
         assertEq(swapper.balance - ethBefore, CLOSE_COMP, "compensation refunded");
         assertEq(_storedDutchState(swapId), bytes32(0), "auction deleted");
@@ -39,7 +37,7 @@ contract CancelCloseAuctionTest is CloseBase {
         _startDefaultAuction(swapId, active);
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         Matched memory mt = _reportWithDutch(swapId, _noDutch(), active, p.preimage, reporter, REPORTER_COMP);
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
@@ -54,7 +52,7 @@ contract CancelCloseAuctionTest is CloseBase {
 
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.NotSwapper.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
         _assertUnchanged(before, swapId, active.collatToken, "outsider cancel");
     }
 
@@ -63,11 +61,11 @@ contract CancelCloseAuctionTest is CloseBase {
         _startDefaultAuction(swapId, active);
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.NothingToWithdraw.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
     }
 
     function test_liveReportPreventsIntentRevocationAndHasAlreadyConsumedTheAuction() public {
@@ -85,7 +83,7 @@ contract CancelCloseAuctionTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.OracleGameInProgress.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
         assertTrue(_hasLog(logs, OpenPuntStorage.PositionClosed.selector, swapId), "request remains binding");
@@ -97,7 +95,9 @@ contract CancelCloseAuctionTest is CloseBase {
         _advanceToSettlementEligibility();
 
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         uint48 requestedAt = punt.closeRequestBlock(swapId);
         assertTrue(requestedAt >= mt.game.reportTimestamp + mt.game.settlementTime, "too late for old report");
 
@@ -107,7 +107,7 @@ contract CancelCloseAuctionTest is CloseBase {
         assertEq(punt.closeRequestBlock(swapId), requestedAt, "future request preserved");
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
         assertEq(punt.closeRequestBlock(swapId), 0, "future request cancelled");
     }
 
@@ -118,7 +118,7 @@ contract CancelCloseAuctionTest is CloseBase {
         uint256 ethBefore = _spendable(swapper, address(0));
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
         assertEq(_spendable(swapper, address(collat)) - collatBefore, DUTCH_MAX, "collateral ledger refund");
         assertEq(_spendable(swapper, address(0)) - ethBefore, CLOSE_COMP, "ETH ledger refund");
     }
@@ -130,7 +130,7 @@ contract CancelCloseAuctionTest is CloseBase {
         uint256 before = swapper.balance;
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
         assertEq(swapper.balance - before, uint256(DUTCH_MAX) + CLOSE_COMP, "combined ETH refund");
     }
 
@@ -143,7 +143,7 @@ contract CancelCloseAuctionTest is CloseBase {
         uint48 requestB = punt.closeRequestBlock(swapIdB);
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapIdA, activeA);
+        puntLifecycle.cancelCloseAuction(swapIdA, activeA);
         assertEq(_storedDutchState(swapIdA), bytes32(0), "A cancelled");
         assertEq(_storedDutchState(swapIdB), auctionB, "B auction unchanged");
         assertEq(punt.closeRequestBlock(swapIdB), requestB, "B request unchanged");

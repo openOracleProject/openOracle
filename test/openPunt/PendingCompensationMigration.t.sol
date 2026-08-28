@@ -60,7 +60,7 @@ contract PendingCompensationMigrationTest is CloseBase {
         uint256 ethBefore = swapper.balance;
 
         vm.prank(swapper);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         (uint128 pending, uint48 deadline, bool intent) = _closeState(swapId);
         assertEq(pending, 0, "pending compensation refunded");
@@ -77,7 +77,7 @@ contract PendingCompensationMigrationTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.OracleGameInProgress.selector);
-        punt.cancelCloseAuction(swapId, active);
+        puntLifecycle.cancelCloseAuction(swapId, active);
 
         (uint128 pending, uint48 requestedAt, bool intent) = _closeState(swapId);
         assertEq(pending, 0, "nothing report-specific became refundable");

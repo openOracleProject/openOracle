@@ -131,7 +131,9 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
 
         vm.prank(reporter);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        lifecycleModule.report(swapId, _expectedDutchHash(d), active, p.preimage, _noTiming(), reporter, INITIAL_LIQUIDITY, AMOUNT2, 0);
+        lifecycleModule.report(
+            swapId, _expectedDutchHash(d), active, p.preimage, _noTiming(), reporter, INITIAL_LIQUIDITY, AMOUNT2, 0
+        );
 
         assertEq(punt.swaps(swapId), storedBefore, "core position untouched");
         assertEq(lifecycleModule.swaps(swapId), bytes32(0), "module storage still empty");
@@ -150,9 +152,10 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
     // ── selector disjointness ───────────────────────────────────────────
 
     function test_routedSelectorsAreDisjointFromCoreSelectors() public {
-        bytes4[3] memory routed = [
+        bytes4[4] memory routed = [
             OpenPuntLifecycle.report.selector,
             OpenPuntLifecycle.execute.selector,
+            OpenPuntLifecycle.cancelCloseAuction.selector,
             OpenPuntLifecycle.deployAndDistributeFeeReceiver.selector
         ];
 
@@ -166,20 +169,22 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
 
         // routed selectors are also distinct from each other
         assertTrue(routed[0] != routed[1], "report != execute");
-        assertTrue(routed[0] != routed[2], "report != deployAndDistributeFeeReceiver");
-        assertTrue(routed[1] != routed[2], "execute != deployAndDistributeFeeReceiver");
+        assertTrue(routed[0] != routed[2], "report != cancelCloseAuction");
+        assertTrue(routed[0] != routed[3], "report != deployAndDistributeFeeReceiver");
+        assertTrue(routed[1] != routed[2], "execute != cancelCloseAuction");
+        assertTrue(routed[1] != routed[3], "execute != deployAndDistributeFeeReceiver");
+        assertTrue(routed[2] != routed[3], "cancelCloseAuction != deployAndDistributeFeeReceiver");
     }
 
     /// @dev Every externally reachable selector declared on the core itself, including
     ///      the public state-variable getters inherited from OpenPuntStorage.
     function _coreSelectors() internal pure returns (bytes4[] memory sels) {
-        sels = new bytes4[](20);
+        sels = new bytes4[](19);
         uint256 i;
         sels[i++] = openPunt.propose.selector;
         sels[i++] = openPunt.matchSwap.selector;
         sels[i++] = openPunt.liquidationHeartbeat.selector;
         sels[i++] = openPunt.close.selector;
-        sels[i++] = openPunt.cancelCloseAuction.selector;
         sels[i++] = openPunt.cancelSwapOpen.selector;
         sels[i++] = openPunt.bailOutOpen.selector;
         sels[i++] = openPunt.dust.selector;

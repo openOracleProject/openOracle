@@ -102,6 +102,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.maintenanceMarginSwapper = type(uint128).max;
         s.notional = type(uint128).max;
         s.isLong = true;
+        s.pnlUsesToken1PerToken2 = true;
         s.fundingRate = type(int32).max; // positive: no sign extension into the padding
         s.fulfillmentFee = type(uint24).max;
         s.auctionFunding = true;
@@ -118,6 +119,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.matcherGasComp = type(uint96).max;
         s.openExecutionComp = type(uint96).max;
         s.useInternalBalances = true;
+        s.maturityOnly = true;
         _assertWidths(abi.encode(s), _proposedSwapFields(), "ProposedSwap");
     }
 
@@ -150,6 +152,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.maintenanceMarginSwapper = type(uint128).max;
         s.notional = type(uint128).max;
         s.swapperIsLong = true;
+        s.pnlUsesToken1PerToken2 = true;
         s.fulfillmentFee = type(uint24).max;
         s.fundingRate = type(int32).max;
         s.oracleAmount1 = type(uint128).max;
@@ -169,6 +172,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.active = true;
         s.openExecutionComp = type(uint96).max;
         s.useInternalBalances = true;
+        s.maturityOnly = true;
         _assertWidths(abi.encode(s), _matchedSwapFields(), "MatchedSwap");
     }
 
@@ -242,9 +246,9 @@ contract DirtyManifestTest is DirtyCalldataBase {
     // ══════════════════════════════════════════════════════════════════
 
     function test_paddingByteBudgetPerStruct() public pure {
-        assertEq(_paddingByteCount(_proposedSwapFields()), 555, "ProposedSwap padding bytes");
+        assertEq(_paddingByteCount(_proposedSwapFields()), 617, "ProposedSwap padding bytes");
         assertEq(_paddingByteCount(_matcherPreimageFields()), 317, "MatcherPreimage padding bytes");
-        assertEq(_paddingByteCount(_matchedSwapFields()), 597, "MatchedSwap padding bytes");
+        assertEq(_paddingByteCount(_matchedSwapFields()), 659, "MatchedSwap padding bytes");
         assertEq(_paddingByteCount(_closeDutchFields()), 228, "CloseDutch padding bytes");
         assertEq(_paddingByteCount(_oracleGameFields()), 437, "OracleGame padding bytes");
         assertEq(_paddingByteCount(_preimageHelperFields()), 12, "PreimageHelper padding bytes");
@@ -252,7 +256,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
             _paddingByteCount(_proposedSwapFields()) + _paddingByteCount(_matcherPreimageFields())
                 + _paddingByteCount(_matchedSwapFields()) + _paddingByteCount(_closeDutchFields())
                 + _paddingByteCount(_oracleGameFields()) + _paddingByteCount(_preimageHelperFields()),
-            2146,
+            2270,
             "total padding budget across all six structs"
         );
     }

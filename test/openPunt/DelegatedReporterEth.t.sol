@@ -99,7 +99,9 @@ contract DelegatedReporterEthTest is AssetModeBase {
 
         // and the report settles back to the designated reporter, not the funder
         vm.prank(swapper);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         Vm.Log[] memory closeLogs = _executeReport(swapId, mt, closeExecutor);
         assertTrue(

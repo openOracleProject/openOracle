@@ -180,8 +180,8 @@ contract AuctionDiscoveryTest is OpenPuntBase {
         _proposeBad(s, m, PuntErrors.InvalidFulfillFee.selector, "auctionEnd 1e7");
     }
 
-    /// @dev The starting buffer must remain positive after both the opening and closing fees.
-    function test_feeAuction_roundTripBufferBoundaryIsStrict() public {
+    /// @dev The maximum opening fee must leave swapper margin strictly above maintenance.
+    function test_feeAuction_openingBufferBoundaryIsStrict() public {
         OpenPuntStorage.MatcherPreimage memory m = _feeLadderPreimage();
         m.auctionStart = 1000;
         m.auctionEnd = 1000; // ceiling: 1e7 * 1000 / 1e7 = 1000 exactly
@@ -190,16 +190,16 @@ contract AuctionDiscoveryTest is OpenPuntBase {
         OpenPuntStorage.ProposedSwap memory ok = _feeLadderSwap();
         ok.notional = 1e7;
         ok.initialMarginMatcher = 1;
-        ok.initialMarginSwapper = 3001;
-        ok.maintenanceMarginSwapper = 1000; // buffer 2001 > two 1000-unit fees
-        _proposeOk(ok, m, "buffer one unit above both fees");
+        ok.initialMarginSwapper = 2001;
+        ok.maintenanceMarginSwapper = 1000; // buffer 1001 > the 1000-unit opening fee
+        _proposeOk(ok, m, "buffer one unit above the opening fee");
 
         OpenPuntStorage.ProposedSwap memory bad = _feeLadderSwap();
         bad.notional = 1e7;
         bad.initialMarginMatcher = 1;
-        bad.initialMarginSwapper = 3000;
-        bad.maintenanceMarginSwapper = 1000; // buffer 2000 == two 1000-unit fees
-        _proposeBad(bad, m, PuntErrors.InvalidFulfillFee.selector, "buffer equal to both fees");
+        bad.initialMarginSwapper = 2000;
+        bad.maintenanceMarginSwapper = 1000; // buffer 1000 == the 1000-unit opening fee
+        _proposeBad(bad, m, PuntErrors.InvalidFulfillFee.selector, "buffer equal to the opening fee");
     }
 
     function test_feeAuction_fixedFundingRateBounds() public {
@@ -341,23 +341,23 @@ contract AuctionDiscoveryTest is OpenPuntBase {
         _proposeOk(s, _fundingPreimage(), "fixed fee 1e7 - 1 under a large buffer");
     }
 
-    /// @dev Same two-fee boundary as the fee auction, applied to the fixed fee.
-    function test_fundingAuction_roundTripBufferBoundaryIsStrict() public {
+    /// @dev Same one-fee boundary as the fee auction, applied to the fixed opening fee.
+    function test_fundingAuction_openingBufferBoundaryIsStrict() public {
         OpenPuntStorage.ProposedSwap memory ok = _fundingSwap();
         ok.notional = 1e7;
         ok.fulfillmentFee = 1000; // fee amount: 1e7 * 1000 / 1e7 = 1000 exactly
         ok.initialMarginMatcher = 1;
-        ok.initialMarginSwapper = 3001;
-        ok.maintenanceMarginSwapper = 1000; // buffer 2001 > two 1000-unit fees
-        _proposeOk(ok, _fundingPreimage(), "buffer one unit above both fees");
+        ok.initialMarginSwapper = 2001;
+        ok.maintenanceMarginSwapper = 1000; // buffer 1001 > the 1000-unit opening fee
+        _proposeOk(ok, _fundingPreimage(), "buffer one unit above the opening fee");
 
         OpenPuntStorage.ProposedSwap memory bad = _fundingSwap();
         bad.notional = 1e7;
         bad.fulfillmentFee = 1000;
         bad.initialMarginMatcher = 1;
-        bad.initialMarginSwapper = 3000;
-        bad.maintenanceMarginSwapper = 1000; // buffer 2000 == two 1000-unit fees
-        _proposeBad(bad, _fundingPreimage(), PuntErrors.InvalidFulfillFee.selector, "buffer equal to both fees");
+        bad.initialMarginSwapper = 2000;
+        bad.maintenanceMarginSwapper = 1000; // buffer 1000 == the 1000-unit opening fee
+        _proposeBad(bad, _fundingPreimage(), PuntErrors.InvalidFulfillFee.selector, "buffer equal to the opening fee");
     }
 
     function test_fundingAuction_fixedFundingRateMustBeZero() public {

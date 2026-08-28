@@ -205,21 +205,21 @@ abstract contract LivenessBase is CloseBase {
 
     // ── bailout assertions ──────────────────────────────────────────────
 
-    /// @dev Every bailout carries a reusable MatchedSwap. Decode it, prove the event names the
-    ///      consumed report, prove the struct is back to idle, and prove it reconstructs the
-    ///      newly stored hash. The returned struct is what callers must feed onward.
-    function _readBailedOut(Vm.Log[] memory logs, uint256 swapId, uint256 expectedOldReportId)
-        internal
-        view
-        returns (OpenPuntStorage.MatchedSwap memory reusable)
-    {
+    /// @dev Proves the bailout names the consumed report and leaves the report-start checkpoint reusable.
+    function _readBailedOut(
+        Vm.Log[] memory logs,
+        uint256 swapId,
+        uint256 expectedOldReportId,
+        OpenPuntStorage.MatchedSwap memory reusable
+    ) internal view returns (OpenPuntStorage.MatchedSwap memory) {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.PositionReportBailedOut.selector, swapId);
         assertEq(uint256(l.topics[2]), expectedOldReportId, "bailout event names the old report id");
-        reusable = abi.decode(l.data, (OpenPuntStorage.MatchedSwap));
+        assertEq(l.data.length, 0, "bailout does not repeat the report-start checkpoint");
 
         assertTrue(reusable.active, "bailed-out position stays active");
         assertEq(punt.swapIdToReportId(swapId), 0, "bailed-out position is reportable again");
-        assertEq(punt.swaps(swapId), keccak256(abi.encode(reusable)), "emitted state reconstructs the stored hash");
+        assertEq(punt.swaps(swapId), keccak256(abi.encode(reusable)), "report-start state reconstructs stored hash");
+        return reusable;
     }
 
     /// @dev Counts PositionReportBailedOut occurrences, so "exactly one state transition" is

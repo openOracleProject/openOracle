@@ -103,7 +103,7 @@ contract HeartbeatPreservationTest is LivenessBase {
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, q.swapId), "not liquidated");
 
         // the position is reusable
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, mt.reportId, mt.swap);
         assertEq(punt.swapIdToReportId(q.swapId), 0, "report slot released");
         assertEq(punt.swaps(q.swapId), keccak256(abi.encode(reusable)), "position reusable");
 
@@ -124,7 +124,7 @@ contract HeartbeatPreservationTest is LivenessBase {
         Matched memory first = _prematureLiquidatingReport(q, q.active);
         _advanceValid(SETTLE_SECONDS);
         Vm.Log[] memory logs1 = _executeNow(q.swapId, first, closeExecutor);
-        OpenPuntStorage.MatchedSwap memory afterFirst = _readBailedOut(logs1, q.swapId, first.reportId);
+        OpenPuntStorage.MatchedSwap memory afterFirst = _readBailedOut(logs1, q.swapId, first.reportId, first.swap);
         _assertHb(q.swapId, 0, H, "preserved after the first refusal");
 
         // ── second premature report, still before H + 30 ─────────────────
@@ -155,8 +155,9 @@ contract HeartbeatPreservationTest is LivenessBase {
         // burn the beat's binding with a premature report, exactly as an attacker would
         Matched memory premature = _prematureLiquidatingReport(q, q.active);
         _advanceValid(SETTLE_SECONDS);
-        OpenPuntStorage.MatchedSwap memory reusable =
-            _readBailedOut(_executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(
+            _executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId, premature.swap
+        );
         _assertHb(q.swapId, 0, H, "preserved");
 
         // report at H + 26 so that eligibility lands exactly on H + 30
@@ -198,8 +199,9 @@ contract HeartbeatPreservationTest is LivenessBase {
 
         Matched memory premature = _prematureLiquidatingReport(q, q.active);
         _advanceValid(SETTLE_SECONDS);
-        OpenPuntStorage.MatchedSwap memory reusable =
-            _readBailedOut(_executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(
+            _executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId, premature.swap
+        );
 
         // report at H + 25, so eligibility is H + 29
         _advanceValid(uint256(H) + 25 - vm.getBlockTimestamp());
@@ -255,7 +257,7 @@ contract HeartbeatPreservationTest is LivenessBase {
         _assertHb(q.swapId, 0, H, "preserved unbound after the refusal");
 
         // and the next report binds it, so the notice it accrued is not wasted
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, first.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, first.reportId, first.swap);
         Matched memory second = _prematureLiquidatingReport(q, reusable);
         _assertHb(q.swapId, uint128(second.reportId), H, "rebound to the next report, timestamp intact");
     }
@@ -271,8 +273,9 @@ contract HeartbeatPreservationTest is LivenessBase {
 
         Matched memory premature = _prematureLiquidatingReport(q, q.active);
         _advanceValid(SETTLE_SECONDS);
-        OpenPuntStorage.MatchedSwap memory reusable =
-            _readBailedOut(_executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(
+            _executeNow(q.swapId, premature, closeExecutor), q.swapId, premature.reportId, premature.swap
+        );
         _assertHb(q.swapId, 0, H, "preserved immediately after the bailout");
 
         // While still inside hbMax, the preserved heartbeat prevents replacement.
@@ -316,7 +319,7 @@ contract HeartbeatPreservationTest is LivenessBase {
         _assertHb(q.swapId, 0, 0, "still nothing observable");
 
         // a fresh heartbeat is recordable, which it would not be if a live beat had been created
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, q.swapId, mt.reportId, mt.swap);
         _heartbeat(q.swapId, reusable, outsider);
         (uint128 id, uint48 ts) = _hb(q.swapId);
         assertEq(id, 0, "fresh beat unbound");

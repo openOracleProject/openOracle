@@ -124,7 +124,9 @@ contract OracleAssetModesTest is AssetModeBase {
 
         // a genuine close intent, so the report resolves the position
         vm.prank(swapper);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
         assertTrue(
@@ -178,10 +180,8 @@ contract OracleAssetModesTest is AssetModeBase {
 
         assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationFailed.selector, swapId), "returned to idle");
 
-        OpenPuntStorage.MatchedSwap memory idle =
-            _decodeSingleSwapState(logs, OpenPuntStorage.LiquidationFailed.selector, swapId);
         assertEq(punt.swapIdToReportId(swapId), 0, "reportId cleared");
-        assertEq(punt.swaps(swapId), keccak256(abi.encode(idle)), "event reconstructs the stored hash");
+        assertEq(punt.swaps(swapId), keccak256(abi.encode(active)), "report-start state reconstructs stored hash");
 
         assertEq(_spendable(reporter, address(0)), reporterEth - REPORTER_COMP, "ETH leg returned, comp spent");
         assertEq(_spendable(reporter, address(tokenB)), reporterLeg2, "ERC20 leg returned");

@@ -213,8 +213,8 @@ contract ActivePositionAccountingTest is ActivePositionBase {
     //  3. Fees and combined accounting
     // ══════════════════════════════════════════════════════════════════
 
-    /// @dev The fulfillment fee is charged once at open and once again at close.
-    function test_fulfillmentFeeIsChargedAtOpenAndAgainAtClose() public {
+    /// @dev The fulfillment fee is charged once when the position opens.
+    function test_fulfillmentFeeIsChargedOnlyAtOpen() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(0);
         s.isLong = true;
         s.maturityWindow = MATURITY_SHORT;
@@ -237,20 +237,18 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         (Vm.Log[] memory logs,) = _reportAndExecute(swapId, active, p.preimage, A2_OPEN, ELAPSED_STD);
         (uint256 owedS, uint256 owedM) = _readPositionClosed(logs, swapId);
 
-        // flat price, zero funding: equity = 990e18 - 10e18
-        assertEq(owedS, 980e18, "closing fee charged again");
-        assertEq(owedM, 1010e18, "matcher collects the closing fee");
+        // flat price, zero funding: both parties receive their remaining margins
+        assertEq(owedS, 990e18, "no second fee charged at close");
+        assertEq(owedM, 1000e18, "matcher receives its posted margin");
         assertEq(owedS + owedM, marginSum, "pool conserved");
 
-        // matcher earned exactly two fees over the whole life of the position
-        assertEq(
-            _spendable(matcher, address(collat)), matcherInt0 + 2 * uint256(FEE_AMOUNT), "exactly two fees collected"
-        );
+        // matcher earned exactly the opening fee over the whole life of the position
+        assertEq(_spendable(matcher, address(collat)), matcherInt0 + uint256(FEE_AMOUNT), "exactly one fee collected");
     }
 
-    /// @dev Profit offsets funding and the close fee.
+    /// @dev Profit exceeds positive funding by the remaining amount.
     ///      openFee 10e18 -> margin 990e18, pool 1990e18
-    ///      +pnl 20e18, -funding 10e18, -closeFee 10e18  => net 0
+    ///      +pnl 20e18, -funding 10e18 => net +10e18
     function test_combined_effectsOffset() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(RATE_10PCT);
         s.isLong = true;
@@ -259,12 +257,12 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         (uint256 owedS, uint256 owedM, uint256 marginSum) = _runClose(s, m, A2_UP, ELAPSED_STD);
 
         assertEq(marginSum, 1990e18, "pool after the opening fee");
-        assertEq(owedS, 990e18, "gain exactly cancels funding plus the close fee");
-        assertEq(owedM, 1000e18, "matcher back to its own margin");
+        assertEq(owedS, 1000e18, "gain exceeds funding by 10e18");
+        assertEq(owedM, 990e18, "pool conserved after gain and funding");
     }
 
-    /// @dev Loss reinforces funding and the close fee.
-    ///      -pnl 20e18, -funding 10e18, -closeFee 10e18 => net -40e18
+    /// @dev Loss and positive funding both reduce swapper equity.
+    ///      -pnl 20e18, -funding 10e18 => net -30e18
     function test_combined_effectsReinforce() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(RATE_10PCT);
         s.isLong = true;
@@ -273,12 +271,12 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         (uint256 owedS, uint256 owedM, uint256 marginSum) = _runClose(s, m, A2_DOWN, ELAPSED_STD);
 
         assertEq(marginSum, 1990e18, "pool after the opening fee");
-        assertEq(owedS, 950e18, "990e18 - 20e18 - 10e18 - 10e18");
-        assertEq(owedM, 1040e18, "matcher collects loss, funding and fee");
+        assertEq(owedS, 960e18, "990e18 - 20e18 - 10e18");
+        assertEq(owedM, 1030e18, "matcher collects loss and funding");
     }
 
     /// @dev Negative funding reinforces a gain.
-    ///      +pnl 20e18, +funding 10e18, -closeFee 10e18 => net +20e18
+    ///      +pnl 20e18, +funding 10e18 => net +30e18
     function test_combined_negativeFundingReinforcesGain() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(-RATE_10PCT);
         s.isLong = true;
@@ -286,8 +284,8 @@ contract ActivePositionAccountingTest is ActivePositionBase {
 
         (uint256 owedS, uint256 owedM,) = _runClose(s, m, A2_UP, ELAPSED_STD);
 
-        assertEq(owedS, 1010e18, "990e18 + 20e18 + 10e18 - 10e18");
-        assertEq(owedM, 980e18, "matcher pays gain and funding, keeps the fee");
+        assertEq(owedS, 1020e18, "990e18 + 20e18 + 10e18");
+        assertEq(owedM, 970e18, "matcher pays gain and funding");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -298,6 +296,7 @@ contract ActivePositionAccountingTest is ActivePositionBase {
 
     uint128 internal constant A2_AT_MAINT = A2_OPEN - 800e18; // equity exactly 200e18
     uint128 internal constant A2_ONE_BELOW = A2_OPEN - 800e18 - 1; // equity 200e18 - 1
+    uint128 internal constant A2_FEE_AT_MAINT = A2_OPEN - 790e18; // 990e18 post-open margin - 790e18 = 200e18
 
     function test_liquidation_equityExactlyAtMaintenanceIsHealthy() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgZeroFee(0);
@@ -331,6 +330,35 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         assertEq(_spendable(matcher, address(collat)) - matcherInt0, 2000e18, "matcher takes the whole pool");
         assertEq(punt.swaps(swapId), bytes32(0), "position hash deleted");
         assertEq(_spendable(address(punt), address(collat)), 0, "core retains no position collateral");
+    }
+
+    /// @dev The opening fee has already reduced the live margin to 990e18. A 790e18 loss
+    ///      therefore leaves exactly 200e18. No hypothetical closing fee may push this into
+    ///      liquidation.
+    function test_openingFeePositionIsHealthyAtItsActualMaintenanceBoundary() public {
+        (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(0);
+        s.isLong = true;
+        s.maturityWindow = MATURITY_SHORT;
+
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p) = _openAccounting(s, m);
+        (Vm.Log[] memory logs,) = _reportAndExecute(swapId, active, p.preimage, A2_FEE_AT_MAINT, ELAPSED_STD);
+
+        assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "healthy at equality");
+        (uint256 owedS, uint256 owedM) = _readPositionClosed(logs, swapId);
+        assertEq(owedS, MAINT, "actual equity equals maintenance");
+        assertEq(owedM, 1990e18 - MAINT, "remaining post-opening-fee pool goes to matcher");
+    }
+
+    function test_openingFeePositionLiquidatesOneUnitBelowItsActualMaintenanceBoundary() public {
+        (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(0);
+        s.isLong = true;
+        s.maturityWindow = MATURITY_SHORT;
+
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p) = _openAccounting(s, m);
+        (Vm.Log[] memory logs,) = _reportAndExecute(swapId, active, p.preimage, A2_FEE_AT_MAINT - 1, ELAPSED_STD);
+
+        assertTrue(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "liquidated one wei below");
+        assertFalse(_hasLog(logs, OpenPuntStorage.PositionClosed.selector, swapId), "not a maturity close");
     }
 
     /// @dev A mature but unhealthy position liquidates rather than closing.
@@ -386,11 +414,8 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "not liquidated");
 
         // The reusable report releases the sidecar without changing the active position hash.
-        OpenPuntStorage.MatchedSwap memory after1 =
-            _decodeSingleSwapState(logs, OpenPuntStorage.LiquidationFailed.selector, swapId);
         assertEq(punt.swapIdToReportId(swapId), 0, "reportId cleared");
         OpenPuntStorage.MatchedSwap memory expected = _copy(active);
-        assertEq(keccak256(abi.encode(after1)), keccak256(abi.encode(expected)), "active state unchanged");
         assertEq(punt.swaps(swapId), keccak256(abi.encode(expected)), "stored hash remains stable");
 
         // margins untouched
@@ -399,12 +424,13 @@ contract ActivePositionAccountingTest is ActivePositionBase {
         assertEq(_spendable(address(punt), address(collat)), corePool0, "pool untouched");
 
         // and the position still works for a second real report that does close it
-        vm.warp(uint256(after1.maturity));
+        vm.warp(uint256(expected.maturity));
         vm.roll(vm.getBlockNumber() + 1);
         openingReportTs = uint48(vm.getBlockTimestamp()) - uint48(SETTLE_HOP_SECONDS);
 
-        Matched memory second =
-            _reportOnPositionWithAmounts(swapId, _noDutch(), after1, p.preimage, reporter, REPORT_EXEC_COMP, A1, A2_UP);
+        Matched memory second = _reportOnPositionWithAmounts(
+            swapId, _noDutch(), expected, p.preimage, reporter, REPORT_EXEC_COMP, A1, A2_UP
+        );
         _advanceToSettlementEligibility();
 
         vm.recordLogs();

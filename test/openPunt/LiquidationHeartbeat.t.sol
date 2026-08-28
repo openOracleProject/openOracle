@@ -6,16 +6,19 @@ import "./LivenessBase.t.sol";
 /**
  * @notice `liquidationHeartbeat()` and the liquidation-authorization rule it feeds.
  *
- * @dev Minimum notice is measured against settlement eligibility rather than the eventual
- *      execute() timestamp. In block mode the game's
- *      wall clock lives in `lastReportOppoTime`, and the block-denominated settlement window is
- *      converted with the position's own `millisecondsPerBlock`:
+ * @dev Minimum notice is measured against the earlier of real execution time and synthetic
+ *      settlement eligibility. In block mode the game's wall clock lives in
+ *      `lastReportOppoTime`, and the block-denominated settlement window is converted with the
+ *      position's own `millisecondsPerBlock`:
  *
- *          lastReportOppoTime + floor(settlementTime * millisecondsPerBlock / 1000)
+ *          min(
+ *              lastReportOppoTime + floor(settlementTime * millisecondsPerBlock / 1000),
+ *              block.timestamp
+ *          )
  *              >= heartbeatTimestamp + liquidationHeartbeatMin
  *
- *      So waiting longer before executing can never retroactively authorize a report whose
- *      settlement-eligibility instant was too early.
+ *      Therefore neither waiting longer nor blocks arriving slightly faster than the configured
+ *      cadence can shorten the real notice period.
  */
 contract LiquidationHeartbeatTest is LivenessBase {
     /// @dev A four-second oracle game makes settlement eligibility land at a hand-chosen
@@ -309,6 +312,51 @@ contract LiquidationHeartbeatTest is LivenessBase {
         assertEq(punt.swaps(swapId), bytes32(0), "position terminal");
     }
 
+    /// @dev Two settlement blocks arrive in only two real seconds. That is exactly the permitted
+    ///      cadence deviation, but the synthetic clock is already two seconds further ahead. The
+    ///      synthetic clock alone would authorise; the real-time clamp refuses one second early.
+    function test_syntheticFutureTimeCannotAuthoriseOneSecondEarly() public {
+        LiveCfg memory c = _shortSettleCfg();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p,) = _openLive(c);
+
+        _heartbeat(swapId, active, outsider);
+        (, uint48 hbTs) = punt.liquidationHeartbeats(swapId);
+
+        _advanceValid(27);
+        Matched memory mt = _reportLive(swapId, _noDutch(), active, p.preimage, reporter, LIVE_COMP, A2_LIQUIDATES);
+        uint256 syntheticEligibility = uint256(mt.game.lastReportOppoTime) + _secondsForBlocks(c.settlementTime);
+        assertEq(syntheticEligibility, uint256(hbTs) + HB_MIN + 1, "synthetic clock would authorise");
+
+        vm.roll(vm.getBlockNumber() + c.settlementTime);
+        vm.warp(vm.getBlockTimestamp() + 2);
+        assertEq(vm.getBlockTimestamp(), uint256(hbTs) + HB_MIN - 1, "real clock is one second early");
+
+        Vm.Log[] memory logs = _executeNow(swapId, mt, closeExecutor);
+        assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationHeartbeatBailout.selector, swapId), "refused early");
+        assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "no early liquidation");
+    }
+
+    /// @dev The same fast-block shape authorises at the exact real-time minimum. This proves the
+    ///      clamp adds no extra delay beyond the configured heartbeat notice.
+    function test_syntheticFutureTimeAuthorisesAtTheRealMinimum() public {
+        LiveCfg memory c = _shortSettleCfg();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p,) = _openLive(c);
+
+        _heartbeat(swapId, active, outsider);
+        (, uint48 hbTs) = punt.liquidationHeartbeats(swapId);
+
+        _advanceValid(27);
+        Matched memory mt = _reportLive(swapId, _noDutch(), active, p.preimage, reporter, LIVE_COMP, A2_LIQUIDATES);
+
+        vm.roll(vm.getBlockNumber() + c.settlementTime);
+        vm.warp(vm.getBlockTimestamp() + 3);
+        assertEq(vm.getBlockTimestamp(), uint256(hbTs) + HB_MIN, "real clock reached the exact minimum");
+
+        Vm.Log[] memory logs = _executeNow(swapId, mt, closeExecutor);
+        assertTrue(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "authorised at minimum");
+        assertFalse(_hasLog(logs, OpenPuntStorage.LiquidationHeartbeatBailout.selector, swapId), "no heartbeat bailout");
+    }
+
     /// @dev The decisive property: executing much later cannot rescue a report whose
     ///      settlement-eligibility instant fell one second short of the minimum notice.
     function test_oneSecondShortStaysUnauthorisedHoweverLateExecutionHappens() public {
@@ -341,7 +389,7 @@ contract LiquidationHeartbeatTest is LivenessBase {
             "the bailout event names the report that was refused"
         );
 
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, A1, A2_LIQUIDATES, "one second short");
 
         // The binding is released but the notice clock is preserved: an unauthorized liquidation
@@ -373,7 +421,7 @@ contract LiquidationHeartbeatTest is LivenessBase {
 
         assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationHeartbeatBailout.selector, swapId), "bailed out");
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "no liquidation");
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, A1, A2_LIQUIDATES, "no heartbeat");
 
         // the position is genuinely reusable
@@ -475,7 +523,9 @@ contract LiquidationHeartbeatTest is LivenessBase {
         assertEq(bound, uint128(mt.reportId), "the report bound the heartbeat");
 
         vm.prank(swapper);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         _advanceValid(_secondsForBlocks(c.settlementTime) + 2);
         Vm.Log[] memory logs = _executeNow(swapId, mt, closeExecutor);
@@ -520,11 +570,10 @@ contract LiquidationHeartbeatTest is LivenessBase {
             "healthy reports are never heartbeat-gated"
         );
 
-        // the reusable state, and the heartbeat consumed along with the report
-        OpenPuntStorage.MatchedSwap memory reusable =
-            _decodeSingleSwapState(logs, OpenPuntStorage.LiquidationFailed.selector, swapId);
+        // the report-start checkpoint remains reusable, and the heartbeat was consumed with the report
+        OpenPuntStorage.MatchedSwap memory reusable = mt.swap;
         assertEq(punt.swapIdToReportId(swapId), 0, "reportId cleared");
-        assertEq(punt.swaps(swapId), keccak256(abi.encode(reusable)), "event reconstructs the stored hash");
+        assertEq(punt.swaps(swapId), keccak256(abi.encode(reusable)), "report-start state reconstructs stored hash");
         _assertHeartbeatCleared(swapId, "healthy reusable failure");
 
         Vm.Log[] memory hbLogs = _heartbeat(swapId, reusable, outsider);

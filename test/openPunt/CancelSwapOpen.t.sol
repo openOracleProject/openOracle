@@ -300,9 +300,8 @@ contract CancelSwapOpenTest is OpenPuntBase {
     //  Event, hash deletion, residue
     // ══════════════════════════════════════════════════════════════════
 
-    function test_swapCancelledEventReconstructsTheCancelledProposal() public {
+    function test_swapCancelledEventIdentifiesTheDeletedProposal() public {
         Proposal memory p = _propose();
-        bytes32 storedBefore = punt.swaps(p.swapId);
 
         vm.recordLogs();
         vm.prank(swapper);
@@ -310,15 +309,8 @@ contract CancelSwapOpenTest is OpenPuntBase {
 
         Vm.Log memory l =
             _findLog(vm.getRecordedLogs(), address(punt), OpenPuntStorage.SwapCancelled.selector, p.swapId);
-        (OpenPuntStorage.ProposedSwap memory es, OpenPuntStorage.MatcherPreimage memory em) =
-            abi.decode(l.data, (OpenPuntStorage.ProposedSwap, OpenPuntStorage.MatcherPreimage));
-
-        // the event carries exactly the proposal that was cancelled
-        assertEq(keccak256(abi.encode(es, em)), storedBefore, "event reconstructs the deleted proposal hash");
-        assertEq(keccak256(abi.encode(es)), keccak256(abi.encode(p.swap)), "ProposedSwap emitted verbatim");
-        assertEq(keccak256(abi.encode(em)), keccak256(abi.encode(p.preimage)), "MatcherPreimage emitted verbatim");
-        assertEq(es.swapper, swapper, "emitted swapper");
-        assertEq(es.initialMarginSwapper, INITIAL_MARGIN_SWAPPER, "emitted margin");
+        assertEq(l.topics.length, 2, "only event signature and swap id are indexed");
+        assertEq(l.data.length, 0, "cancel event does not repeat the SwapProposed payload");
 
         // and the slot is gone
         assertEq(punt.swaps(p.swapId), bytes32(0), "swap hash deleted");

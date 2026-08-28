@@ -28,16 +28,15 @@ contract HappyLifecycleTest is OpenPuntBase {
     uint24 internal constant EXPECTED_FEE = uint24(uint32(FEE_AUCTION_START)); // 10_000 == 0.1%
     // notional * fee / 1e7 = 10_000e18 * 10_000 / 1e7 = 10e18
     uint128 internal constant EXPECTED_OPEN_FEE = 10e18;
-    uint128 internal constant EXPECTED_CLOSE_FEE = 10e18;
     // Reported in the same block as close(), so zero Dutch rounds elapse.
     uint128 internal constant EXPECTED_DUTCH_REWARD = DUTCH_STARTING_REWARD; // 10e18
     uint128 internal constant EXPECTED_DUTCH_LEFTOVER = DUTCH_MAX_REWARD - DUTCH_STARTING_REWARD; // 40e18
 
     uint128 internal constant EXPECTED_MARGIN_SWAPPER_OPEN = INITIAL_MARGIN_SWAPPER - EXPECTED_OPEN_FEE; // 990e18
     uint256 internal constant EXPECTED_MARGIN_SUM = uint256(INITIAL_MARGIN_MATCHER) + EXPECTED_MARGIN_SWAPPER_OPEN; // 1990e18
-    // zero funding + unchanged price => netChange == -closeFee
-    uint256 internal constant EXPECTED_OWED_SWAPPER = EXPECTED_MARGIN_SWAPPER_OPEN - EXPECTED_CLOSE_FEE; // 980e18
-    uint256 internal constant EXPECTED_OWED_MATCHER = EXPECTED_MARGIN_SUM - EXPECTED_OWED_SWAPPER; // 1010e18
+    // zero funding + unchanged price => the opening margins return unchanged
+    uint256 internal constant EXPECTED_OWED_SWAPPER = EXPECTED_MARGIN_SWAPPER_OPEN; // 990e18
+    uint256 internal constant EXPECTED_OWED_MATCHER = EXPECTED_MARGIN_SUM - EXPECTED_OWED_SWAPPER; // 1000e18
 
     uint256 internal constant EXPECTED_TOTAL_ETH_IN = uint256(MATCHER_GAS_COMP) + SETTLER_REWARD + OPEN_EXEC_COMP;
     uint256 internal constant EXPECTED_CLOSING_COMP = uint256(CLOSE_EXEC_COMP) + REPORT_EXEC_COMP;
@@ -289,8 +288,8 @@ contract HappyLifecycleTest is OpenPuntBase {
         );
         assertEq(_spendable(reporter, address(collat)), EXPECTED_DUTCH_REWARD, "final reporter internal collat");
 
-        // With zero funding and an unchanged price, the only position-margin transfers
-        // are the opening and closing fulfillment fees (plus the swapper-funded reward).
+        // With zero funding and an unchanged price, the only position-margin transfer
+        // is the opening fulfillment fee (plus the swapper-funded reward).
         int256 swapperDelta = int256(collat.balanceOf(swapper)) + int256(_spendable(swapper, address(collat)))
             - int256(b.swapperCollatExt);
         int256 matcherDelta = int256(_spendable(matcher, address(collat))) - int256(b.matcherCollatInt);
@@ -298,14 +297,10 @@ contract HappyLifecycleTest is OpenPuntBase {
 
         assertEq(
             swapperDelta,
-            -int256(uint256(EXPECTED_OPEN_FEE) + EXPECTED_CLOSE_FEE + EXPECTED_DUTCH_REWARD),
-            "swapper paid exactly open fee + close fee + dutch reward"
+            -int256(uint256(EXPECTED_OPEN_FEE) + EXPECTED_DUTCH_REWARD),
+            "swapper paid exactly opening fee + dutch reward"
         );
-        assertEq(
-            matcherDelta,
-            int256(uint256(EXPECTED_OPEN_FEE) + EXPECTED_CLOSE_FEE),
-            "matcher earned exactly both fulfillment fees"
-        );
+        assertEq(matcherDelta, int256(uint256(EXPECTED_OPEN_FEE)), "matcher earned exactly the opening fee");
         assertEq(reporterDelta, int256(uint256(EXPECTED_DUTCH_REWARD)), "reporter earned exactly the dutch reward");
         assertEq(swapperDelta + matcherDelta + reporterDelta, int256(0), "collateral conserved system-wide");
 
@@ -431,7 +426,7 @@ contract HappyLifecycleTest is OpenPuntBase {
         returns (uint256 owedToSwapper, uint256 owedToMatcher)
     {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.PositionClosed.selector, id);
-        (, owedToSwapper, owedToMatcher) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, uint256, uint256));
+        (owedToSwapper, owedToMatcher) = abi.decode(l.data, (uint256, uint256));
     }
 
     function _assertNoPuntResidue() internal view {

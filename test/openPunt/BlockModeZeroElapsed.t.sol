@@ -79,7 +79,16 @@ contract BlockModeZeroElapsedTest is ActivePositionBase {
         assertEq(uint256(closing.game.lastReportOppoTime), t0, "closing report wall clock is t0");
 
         vm.prank(swapper);
-        punt.close{value: CLOSE_EXEC_COMP}(p.swapId, _noDutch(), closing.swap, false, _emptyPermit2(), CLOSE_EXEC_COMP);
+        punt.close{value: CLOSE_EXEC_COMP}(
+            p.swapId,
+            _noDutch(),
+            closing.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_EXEC_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
+        );
         (, uint48 requestedAt, bool intent) = _closeState(p.swapId);
         assertTrue(intent, "close intent applies to the live report");
         assertEq(requestedAt, vm.getBlockNumber(), "request block stored");
@@ -141,7 +150,14 @@ contract BlockModeZeroElapsedTest is ActivePositionBase {
         );
         vm.prank(swapper);
         punt.close{value: CLOSE_EXEC_COMP}(
-            p.swapId, _noDutch(), closing.swap, false, _emptyPermit2(), CLOSE_EXEC_COMP
+            p.swapId,
+            _noDutch(),
+            closing.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_EXEC_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
         );
 
         _advanceTimeAndBlocks(2, 20);

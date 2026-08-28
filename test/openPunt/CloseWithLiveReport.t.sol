@@ -28,14 +28,15 @@ contract CloseWithLiveReportTest is CloseBase {
     }
 
     function test_liveReportRegistersRequestAndTopsUpThatReport() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         bytes32 positionHash = punt.swaps(swapId);
         uint256 compBefore = punt.executionGasComp(mt.reportId);
 
         vm.recordLogs();
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         (uint256 reportIdTopic, uint128 added) = _readCloseIntentSet(vm.getRecordedLogs(), swapId);
         assertEq(reportIdTopic, mt.reportId, "live report");
@@ -47,41 +48,44 @@ contract CloseWithLiveReportTest is CloseBase {
     }
 
     function test_liveErc20ReportRequiresOnlyExecutionCompensationAsMsgValue() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         uint256 compBefore = punt.executionGasComp(mt.reportId);
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
-        punt.close{value: CLOSE_COMP - 1}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP - 1}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
-        punt.close{value: CLOSE_COMP + 1}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP + 1}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         assertEq(punt.closeRequestBlock(swapId), 0, "rejected calls set no request");
         assertEq(punt.executionGasComp(mt.reportId), compBefore, "compensation unchanged");
     }
 
     function test_internalFundingUsesOnlyExecutionCompensation() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         uint256 ledgerBefore = _spendable(swapper, address(0));
         uint256 compBefore = punt.executionGasComp(mt.reportId);
 
         vm.prank(swapper);
-        punt.close(swapId, _dutchInput(), active, true, _emptyPermit2(), CLOSE_COMP);
+        punt.close(
+            swapId, _dutchInput(), active, true, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         assertEq(_spendable(swapper, address(0)), ledgerBefore - CLOSE_COMP, "only compensation consumed");
         assertEq(punt.executionGasComp(mt.reportId), compBefore + CLOSE_COMP, "report topped up");
     }
 
     function test_zeroCompensationStillRegistersTheRequest() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         uint256 compBefore = punt.executionGasComp(mt.reportId);
 
         vm.prank(swapper);
-        punt.close(swapId, _dutchInput(), active, false, _emptyPermit2(), 0);
+        punt.close(swapId, _dutchInput(), active, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper());
         assertTrue(punt.closeRequestBlock(swapId) != 0, "request recorded");
         assertEq(punt.executionGasComp(mt.reportId), compBefore, "nothing added");
     }
@@ -89,16 +93,19 @@ contract CloseWithLiveReportTest is CloseBase {
     function test_secondCloseRevertsWhileTheRequestIsLive() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,,) = _positionWithLiveReport();
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.CloseIntentLive.selector);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
     }
 
     function test_liveReportIgnoresDutchFieldsAndNeverCallsPermit2() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         OpenPuntStorage.CloseDutch memory nonsense;
         nonsense.swapper = outsider;
         nonsense.collatToken = address(tokenB);
@@ -107,7 +114,9 @@ contract CloseWithLiveReportTest is CloseBase {
         uint256 permitCalls = _permit2().callCount();
 
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, nonsense, active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, nonsense, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         assertEq(_storedDutchState(swapId), bytes32(0), "no auction stored");
         assertEq(punt.executionGasComp(mt.reportId), REPORTER_COMP + CLOSE_COMP, "only comp changed");
         assertEq(_permit2().callCount(), permitCalls, "Permit2 untouched");
@@ -117,15 +126,18 @@ contract CloseWithLiveReportTest is CloseBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,,) = _positionWithLiveReport();
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.NotSwapper.selector);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         assertEq(punt.closeRequestBlock(swapId), 0, "no request");
     }
 
     function test_requestBeforeEligibilityClosesAndPaysCombinedCompensationOnce() public {
-        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) =
-            _positionWithLiveReport();
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
         assertTrue(_hasLog(logs, OpenPuntStorage.PositionClosed.selector, swapId), "position closed");
@@ -144,7 +156,9 @@ contract CloseWithLiveReportTest is CloseBase {
         _advanceChain((eligibilityBlock - vm.getBlockNumber()) * 2);
 
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         uint48 requestedAt = punt.closeRequestBlock(swapId);
         assertEq(requestedAt, first.game.reportTimestamp + first.game.settlementTime, "exact boundary");
 

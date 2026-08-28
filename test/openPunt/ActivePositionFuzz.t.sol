@@ -9,22 +9,21 @@ import "./ActivePositionBase.t.sol";
  *
  * @dev The model below is written from the protocol's *description*, not from its code:
  *      it uses plain `a * b / c` integer arithmetic over the token2 leg rather than the
- *      contract's cross-multiplied form, and re-derives the ordering of PnL, funding, fee
+ *      contract's cross-multiplied form, and re-derives the ordering of PnL, funding
  *      and the two clamps independently. It never calls mulDivCapped, calcFee,
  *      calcLinearRate, or any other production helper.
  *
  *      Two modelling assumptions are stated explicitly and are separately pinned by the
  *      deterministic matrix:
- *        (1) With the token1 leg identical in both games, the contract's
- *            mulDiv(notional, a1*|dA2|, a2Open*a1) and the model's
- *            notional*|dA2|/a2Open are the same rational, hence the same floor.
+ *        (1) With the token1 leg identical in both games, token2/token1 PnL reduces to
+ *            notional*|dA2|/a2Open, while token1/token2 PnL reduces to
+ *            notional*|dA2|/a2Close.
  *        (2) mulDivCapped(x, y, d, cap) == min(floor(x*y/d), cap).
  */
 contract ActivePositionFuzzTest is ActivePositionBase {
     struct Model {
         uint256 marginSwapperOpen;
         uint256 marginSum;
-        uint256 closeFee;
         uint256 fundingMag;
         uint256 pnl;
         int256 equity;
@@ -39,12 +38,15 @@ contract ActivePositionFuzzTest is ActivePositionBase {
 
     // ── independent reference model ─────────────────────────────────────
 
-    function _model(uint128 a2Close, int32 rate, uint256 elapsed, bool isLong) internal pure returns (Model memory r) {
+    function _model(uint128 a2Close, int32 rate, uint256 elapsed, bool isLong, bool token1PerToken2)
+        internal
+        pure
+        returns (Model memory r)
+    {
         uint256 notional = uint256(NOTIONAL_ACC);
 
-        // fee is charged once at open and once at close, at the same rate
+        // the fulfillment fee is charged once, when the position opens
         uint256 fee = notional * uint256(FEE_BPS) / 1e7;
-        r.closeFee = fee;
         r.marginSwapperOpen = uint256(MARGIN_S) - fee;
         r.marginSum = r.marginSwapperOpen + uint256(MARGIN_M);
 
@@ -54,22 +56,20 @@ contract ActivePositionFuzzTest is ActivePositionBase {
 
         // price PnL, expressed directly over the token2 leg (assumption 1)
         uint256 delta = a2Close >= A2_OPEN ? uint256(a2Close) - A2_OPEN : uint256(A2_OPEN) - a2Close;
-        uint256 rawPnl = notional * delta / uint256(A2_OPEN);
+        uint256 denominator = token1PerToken2 ? uint256(a2Close) : uint256(A2_OPEN);
+        uint256 rawPnl = notional * delta / denominator;
 
         // the contract bounds raw PnL before signing it (assumption 2)
-        uint256 cap = r.marginSum + r.fundingMag + r.closeFee + 1;
+        uint256 cap = r.marginSum + r.fundingMag + 1;
         r.pnl = rawPnl > cap ? cap : rawPnl;
 
-        // the swapper is long the token2/token1 ratio
-        bool ratioUp = a2Close >= A2_OPEN;
+        bool ratioUp = token1PerToken2 ? a2Close <= A2_OPEN : a2Close >= A2_OPEN;
         bool profits = (ratioUp == isLong);
 
         int256 net = profits ? int256(r.pnl) : -int256(r.pnl);
         if (rate > 0) net -= int256(r.fundingMag); // swapper pays matcher
 
         else if (rate < 0) net += int256(r.fundingMag); // matcher pays swapper
-        net -= int256(r.closeFee);
-
         r.equity = int256(r.marginSwapperOpen) + net;
         r.liquidates = r.equity < int256(uint256(MAINT));
 
@@ -90,16 +90,18 @@ contract ActivePositionFuzzTest is ActivePositionBase {
         uint128 a2CloseSeed,
         int32 rateSeed,
         uint32 elapsedSeed,
-        bool isLong
+        bool isLong,
+        bool token1PerToken2
     ) public {
         uint128 a2Close = uint128(bound(uint256(a2CloseSeed), 1e18, 20_000e18));
         int32 rate = int32(int256(bound(int256(rateSeed), -int256(1_000_000), int256(1_000_000))));
         uint256 elapsed = bound(uint256(elapsedSeed), 3600, 2_592_000);
 
-        Model memory want = _model(a2Close, rate, elapsed, isLong);
+        Model memory want = _model(a2Close, rate, elapsed, isLong, token1PerToken2);
 
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _cfgWithFee(rate);
         s.isLong = isLong;
+        s.pnlUsesToken1PerToken2 = token1PerToken2;
         s.maturityWindow = MATURITY_SHORT; // always mature by execution time
 
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p) = _openAccounting(s, m);

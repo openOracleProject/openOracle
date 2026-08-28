@@ -123,7 +123,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         // ── every padding byte of the rewritten member ───────────────────
         (swapId, pos, mt) = _sameBlockRace();
         clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
-        uint256 stOff = _argOffset(960 + 32 * 4); // OracleGame.settlementTimestamp, a uint48
+        uint256 stOff = _argOffset(1024 + 32 * 4); // OracleGame.settlementTimestamp, a uint48
         _assertCleanWord(clean, stOff, bytes32(uint256(0)), "OracleGame.settlementTimestamp is the stale zero");
 
         bytes32 storedBefore = punt.swaps(swapId);
@@ -160,11 +160,11 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
 
         uint256 rejected;
         rejected += _sweepOracleStruct(
-            clean, 960, _oracleGameFields(), "OracleGame", swapId, mt.reportId, storedBefore, tempBefore, oracleBefore
+            clean, 1024, _oracleGameFields(), "OracleGame", swapId, mt.reportId, storedBefore, tempBefore, oracleBefore
         );
         rejected += _sweepOracleStruct(
             clean,
-            960 + 20 * 32,
+            1024 + 20 * 32,
             _preimageHelperFields(),
             "PreimageHelper",
             swapId,
@@ -232,7 +232,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         // A well-formed but different oracle value still fails through the commitment.
         (swapId, pos, mt) = _sameBlockRace();
         clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
-        uint256 off = _argOffset(960 + 32 * 0); // OracleGame.currentAmount1, a uint128
+        uint256 off = _argOffset(1024 + 32 * 0); // OracleGame.currentAmount1, a uint128
 
         bytes32 storedBefore = punt.swaps(swapId);
         (bool ok, bytes memory ret) =
@@ -296,7 +296,10 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
     function test_closeDutchOverrideFieldsMustBeZero() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
-        bytes memory clean = abi.encodeCall(punt.close, (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP));
+        bytes memory clean = abi.encodeCall(
+            punt.close,
+            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
 
         Book memory before = _book(swapId, active.collatToken);
 
@@ -332,10 +335,9 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
      * @notice On the live-report branch, `close()` never reads the Dutch curve or the Permit2
      *         params — it only records the intent and tops up compensation.
      *
-     * @dev "Ignored" does not mean "not decoded":
-     *      `CloseDutch memory d = dutch` runs unconditionally at the top of the function, before
-     *      the branch, so the struct is fully decoded and validated even on the path that never
-     *      uses it. Dirty ignored data is therefore still rejected.
+     * @dev "Ignored" does not mean "not decoded": Solidity's external ABI decoder validates every
+     *      typed argument before the function body chooses a branch. Dirty ignored data is
+     *      therefore still rejected.
      */
     function test_liveReportBranchStillDecodesTheIgnoredDutchStruct() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, OpenPuntStorage.MatcherPreimage memory pre) =
@@ -356,7 +358,10 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         junk.maxRounds = 99;
         junk.expiration = type(uint48).max;
 
-        bytes memory clean = abi.encodeCall(punt.close, (swapId, junk, reporting, false, _emptyPermit2(), CLOSE_COMP));
+        bytes memory clean = abi.encodeCall(
+            punt.close,
+            (swapId, junk, reporting, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+        );
 
         uint256 oracleCustodyBefore = _rawBalanceOf(active.collatToken, address(oracle));
         uint256 swapperCollatBefore = _rawBalanceOf(active.collatToken, swapper);

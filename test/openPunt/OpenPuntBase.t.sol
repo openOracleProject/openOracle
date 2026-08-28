@@ -287,6 +287,10 @@ abstract contract OpenPuntBase is Test {
         return OpenPuntStorage.Permit2Params({nonce: 0, deadline: type(uint256).max, signature: bytes("")});
     }
 
+    function _emptyOracleGame() internal pure returns (IOpenOracle2.OracleGame memory game) {}
+
+    function _emptyOracleHelper() internal pure returns (IOpenOracle2.PreimageHelper memory helper) {}
+
     function _noTiming() internal pure returns (IOpenOracle2.TimingBoundaries memory) {
         return IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
     }
@@ -411,7 +415,9 @@ abstract contract OpenPuntBase is Test {
         OpenPuntStorage.CloseDutch memory d = _defaultCloseDutch();
         vm.recordLogs();
         vm.prank(swapper);
-        punt.close{value: altGasCompExec}(swapId, d, active, false, _emptyPermit2(), altGasCompExec);
+        punt.close{value: altGasCompExec}(
+            swapId, d, active, false, _emptyPermit2(), altGasCompExec, _emptyOracleGame(), _emptyOracleHelper()
+        );
         emittedDutch = _decodeCloseAuctionStarted(vm.getRecordedLogs(), swapId);
     }
 
@@ -462,6 +468,12 @@ abstract contract OpenPuntBase is Test {
         mt.swap = _decodeSingleSwapState(logs, OpenPuntStorage.PositionReportStarted.selector, swapId);
         mt.reportId = punt.swapIdToReportId(swapId);
         (mt.game, mt.helper) = _decodeReportSubmitted(logs, mt.reportId);
+        assertEq(mt.game.flags, 1 << 4, "active report stores settlement eligibility");
+        assertEq(
+            oracle.settlementEligibility(mt.reportId),
+            mt.game.reportTimestamp + mt.game.settlementTime,
+            "stored eligibility matches the submitted game"
+        );
     }
 
     /// @dev Empty auction sentinel: reporting on a position that has no live close auction.
@@ -588,7 +600,7 @@ abstract contract OpenPuntBase is Test {
         returns (OpenPuntStorage.CloseDutch memory d)
     {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionStarted.selector, swapId);
-        (d,) = abi.decode(l.data, (OpenPuntStorage.CloseDutch, uint128));
+        (, d,) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
     }
 
     /// @dev Rebuilds the oracle preimage from the raw packed ReportSubmitted payload.

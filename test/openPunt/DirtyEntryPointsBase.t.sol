@@ -8,29 +8,36 @@ abstract contract DirtyEntryPointsBase is DirtyCalldataBase {
     // ── close() top-level argument offsets ──────────────────────────────
     //
     //   close(uint256 swapId, CloseDutch dutch, MatchedSwap swapState,
-    //         bool useInternalBalances, Permit2Params permit2, uint128 altGasCompExec)
+    //         bool useInternalBalances, Permit2Params permit2, uint128 altGasCompExec,
+    //         OracleGame oracleState, PreimageHelper oracleHelper)
     //
     //   0     swapId                (1 word)
     //   32    CloseDutch            (11 words -> 352 bytes)
-    //   384   MatchedSwap           (29 words -> 928 bytes)
-    //   1312  useInternalBalances   (1 word)
-    //   1344  Permit2Params HEAD    (1 word: offset to the dynamic tail)
-    //   1376  altGasCompExec        (1 word)
+    //   384   MatchedSwap           (31 words -> 992 bytes)
+    //   1376  useInternalBalances   (1 word)
+    //   1408  Permit2Params HEAD    (1 word: offset to the dynamic tail)
+    //   1440  altGasCompExec        (1 word)
+    //   1472  OracleGame            (20 words -> 640 bytes)
+    //   2112  PreimageHelper        (4 words -> 128 bytes)
+    //   2240  Permit2Params TAIL
     uint256 internal constant CLOSE_DUTCH_OFF = 32;
     uint256 internal constant CLOSE_MATCHED_OFF = 384;
-    uint256 internal constant CLOSE_USE_INTERNAL_OFF = 1312;
-    uint256 internal constant CLOSE_PERMIT2_HEAD_OFF = 1344;
-    uint256 internal constant CLOSE_ALT_COMP_OFF = 1376;
+    uint256 internal constant CLOSE_USE_INTERNAL_OFF = 1376;
+    uint256 internal constant CLOSE_PERMIT2_HEAD_OFF = 1408;
+    uint256 internal constant CLOSE_ALT_COMP_OFF = 1440;
+    uint256 internal constant CLOSE_GAME_OFF = 1472;
+    uint256 internal constant CLOSE_HELPER_OFF = 2112;
+    uint256 internal constant CLOSE_PERMIT2_TAIL_OFF = 2240;
 
     // ── propose() top-level argument offsets ────────────────────────────
     //
     //   propose(ProposedSwap s, MatcherPreimage m, Permit2Params permit2)
     //
-    //   0     ProposedSwap     (25 words -> 800 bytes)
-    //   800   MatcherPreimage  (12 words -> 384 bytes)
-    //   1184  Permit2Params HEAD
-    uint256 internal constant PROPOSE_PREIMAGE_OFF = 800;
-    uint256 internal constant PROPOSE_PERMIT2_HEAD_OFF = 1184;
+    //   0     ProposedSwap     (27 words -> 864 bytes)
+    //   864   MatcherPreimage  (12 words -> 384 bytes)
+    //   1248  Permit2Params HEAD
+    uint256 internal constant PROPOSE_PREIMAGE_OFF = 864;
+    uint256 internal constant PROPOSE_PERMIT2_HEAD_OFF = 1248;
 
     // ── raw mutation shorthands ─────────────────────────────────────────
 

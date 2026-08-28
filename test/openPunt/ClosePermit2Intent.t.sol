@@ -77,7 +77,9 @@ contract ClosePermit2IntentTest is CloseBase {
         address who
     ) internal {
         vm.prank(who);
-        punt.close{value: CLOSE_COMP}(swapId, input, active, false, _permitParams(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, input, active, false, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
     }
 
     function _observedWitness() internal view returns (bytes32) {
@@ -260,7 +262,9 @@ contract ClosePermit2IntentTest is CloseBase {
         uint256 calls0 = _permit2().callCount();
 
         vm.prank(swapper);
-        punt.close{value: 0}(swapIdA, _dutchInput(), activeA, true, _permitParams(), CLOSE_COMP);
+        punt.close{value: 0}(
+            swapIdA, _dutchInput(), activeA, true, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
         assertEq(_permit2().callCount(), calls0, "internal auction funding never calls Permit2");
 
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _positionCfg(true, false);
@@ -268,7 +272,14 @@ contract ClosePermit2IntentTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: uint256(DUTCH_MAX) + CLOSE_COMP}(
-            swapIdB, _dutchInput(), activeB, false, _permitParams(), CLOSE_COMP
+            swapIdB,
+            _dutchInput(),
+            activeB,
+            false,
+            _permitParams(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
         );
         assertEq(_permit2().callCount(), calls0, "native ETH auction funding never calls Permit2");
     }
@@ -288,7 +299,9 @@ contract ClosePermit2IntentTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert();
-        punt.close{value: CLOSE_COMP}(swapId, _dutchInput(), active, false, _permitParams(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId, _dutchInput(), active, false, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        );
 
         _assertUnchanged(before, swapId, active.collatToken, "failed reward pull");
         (uint128 pending,, bool intent) = _closeState(swapId);

@@ -8,7 +8,7 @@ import "./ActivePositionBase.t.sol";
  *
  * @dev Two distinct clamps exist and are tested separately:
  *        - `pnlCap` inside mulDivCapped, which bounds the raw PnL to
- *          marginSum + funding + closeFee + 1 before any signing happens
+ *          marginSum + funding + 1 before any signing happens
  *        - the terminal `[0, marginSum]` clamp on owedToSwapper in the close branch
  *      The overflow case forces the first one through a real oracle price move whose
  *      `notional * priceDelta` product cannot be represented in 256 bits.
@@ -179,8 +179,16 @@ contract ActivePositionCapsTest is ActivePositionBase {
         internal
         returns (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p)
     {
+        return _openBigWithMode(isLong, false);
+    }
+
+    function _openBigWithMode(bool isLong, bool token1PerToken2)
+        internal
+        returns (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p)
+    {
         _fundBigLegs();
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _bigConfig(isLong);
+        s.pnlUsesToken1PerToken2 = token1PerToken2;
 
         p = _proposeWith(s, m, swapper);
         Matched memory mt = _matchSwapWith(p, BIG_A2_OPEN, matcher);
@@ -243,5 +251,17 @@ contract ActivePositionCapsTest is ActivePositionBase {
         assertEq(collat.balanceOf(swapper), swapperExt0, "swapper receives nothing");
         assertEq(_spendable(matcher, address(collat)) - matcherInt0, 2000e18, "matcher takes the whole pool");
         assertEq(punt.swaps(swapId), bytes32(0), "position terminal");
+    }
+
+    function test_reciprocalOverflowScaleGain_completesAndClampsToPool() public {
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p) = _openBigWithMode(false, true);
+        _assertProductWouldOverflow(active);
+
+        (Vm.Log[] memory logs,) =
+            _reportAndExecuteWithLegs(swapId, active, p.preimage, BIG_A1, BIG_A2_CLOSE, ELAPSED_STD);
+
+        (uint256 owedS, uint256 owedM) = _readPositionClosed(logs, swapId);
+        assertEq(owedS, 2000e18, "reciprocal gain is safely capped to the whole pool");
+        assertEq(owedM, 0, "matcher receives nothing after the capped reciprocal gain");
     }
 }

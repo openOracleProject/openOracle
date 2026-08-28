@@ -87,7 +87,16 @@ contract ActiveBlockCadenceTest is LivenessBase {
 
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p,) = _openLive(c);
         vm.prank(swapper);
-        punt.close{value: CLOSE_COMP}(swapId, _defaultCloseDutch(), active, false, _emptyPermit2(), CLOSE_COMP);
+        punt.close{value: CLOSE_COMP}(
+            swapId,
+            _defaultCloseDutch(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper()
+        );
 
         Matched memory mt = _reportLive(swapId, _noDutch(), active, p.preimage, reporter, LIVE_COMP, A2_HEALTHY);
         (, uint48 deadlineBefore, bool intentBefore) = _closeState(swapId);
@@ -137,7 +146,7 @@ contract ActiveBlockCadenceTest is LivenessBase {
         );
         _assertNoEconomicOutcome(logs, swapId);
 
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, A1, A2_HEALTHY, "cadence bailout");
 
         // reusable: the decoded state drives a real follow-up report
@@ -167,15 +176,14 @@ contract ActiveBlockCadenceTest is LivenessBase {
         );
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionLiquidated.selector, swapId), "liquidation prevented");
 
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         assertEq(
             _spendable(matcher, address(collat)), before.matcherCollat, "the matcher received no margin pool at all"
         );
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, A1, A2_LIQUIDATES, "BPS over liquidation");
 
         // and the same price liquidates once the cadence is sane again
-        OpenPuntStorage.MatchedSwap memory reusable =
-            _decodeSingleSwapState(logs, OpenPuntStorage.PositionReportBailedOut.selector, swapId);
+        OpenPuntStorage.MatchedSwap memory reusable = mt.swap;
         Matched memory second = _reportLive(swapId, _noDutch(), reusable, p.preimage, reporter, 0, A2_LIQUIDATES);
         _advanceValid(_secondsForBlocks(c.settlementTime) + 2);
         Vm.Log[] memory logs2 = _executeNow(swapId, second, closeExecutor);
@@ -215,7 +223,7 @@ contract ActiveBlockCadenceTest is LivenessBase {
         );
         _assertNoEconomicOutcome(logs, swapId);
 
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         // exactly one compensation payment, despite two diagnostics
         _assertBailoutIsEconomicallyComplete(
             before, mt.reportId, LIVE_COMP, A1, A2_HEALTHY, "combined cadence and latency bailout"
@@ -252,18 +260,14 @@ contract ActiveBlockCadenceTest is LivenessBase {
         assertTrue(
             _hasBailoutLog(logs, OpenPuntStorage.ImpliedMillisecondsPerBlockBailout.selector, swapId), "cadence bailout"
         );
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
 
         // The request applied to this report and is cleared by its reusable bailout.
         (uint128 pending,, bool intent) = _closeState(swapId);
         assertFalse(intent, "failed report consumes close intent");
         assertEq(pending, 0, "pending compensation already migrated, and stays migrated");
         assertEq(_storedDutchState(swapId), bytes32(0), "consumed auction stays absent");
-        assertEq(
-            _spendable(address(punt), address(collat)),
-            coreCollatBefore,
-            "margin pool remains on the core"
-        );
+        assertEq(_spendable(address(punt), address(collat)), coreCollatBefore, "margin pool remains on the core");
 
         // cleared
         (uint128 hbReportAfter, uint48 hbTimeAfter) = punt.liquidationHeartbeats(swapId);

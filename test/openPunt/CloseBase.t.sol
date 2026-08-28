@@ -132,8 +132,17 @@ abstract contract CloseBase is ActivePositionBase {
 
         vm.recordLogs();
         vm.prank(swapper);
-        punt.close{value: value}(swapId, input, active, auctionInternal, _emptyPermit2(), comp);
-        emitted = _decodeCloseAuctionStarted(vm.getRecordedLogs(), swapId);
+        punt.close{value: value}(
+            swapId, input, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+        );
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionStarted.selector, swapId);
+        (OpenPuntStorage.MatchedSwap memory checkpoint,,) =
+            abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
+        assertEq(
+            keccak256(abi.encode(checkpoint)), keccak256(abi.encode(active)), "close event refreshes active preimage"
+        );
+        emitted = _decodeCloseAuctionStarted(logs, swapId);
     }
 
     /// @dev The standard fixture auction: ERC20 collateral, externally funded.
@@ -257,17 +266,7 @@ abstract contract CloseBase is ActivePositionBase {
     {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionStarted.selector, swapId);
         dutchHashTopic = l.topics[2];
-        (d, comp) = abi.decode(l.data, (OpenPuntStorage.CloseDutch, uint128));
-    }
-
-    function _readCloseAuctionCancelled(Vm.Log[] memory logs, uint256 swapId)
-        internal
-        view
-        returns (OpenPuntStorage.CloseDutch memory d, uint128 refunded, bytes32 dutchHashTopic)
-    {
-        Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionCancelled.selector, swapId);
-        dutchHashTopic = l.topics[2];
-        (d, refunded) = abi.decode(l.data, (OpenPuntStorage.CloseDutch, uint128));
+        (, d, comp) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
     }
 
     function _readCloseIntentSet(Vm.Log[] memory logs, uint256 swapId)

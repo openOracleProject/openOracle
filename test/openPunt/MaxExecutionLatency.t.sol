@@ -123,7 +123,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
         );
         _assertNoEconomicOutcome(logs, swapId);
 
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, A1, A2_HEALTHY, "late bailout");
 
         // A stale replay of the consumed live-report state cannot collect the compensation again.
@@ -154,7 +154,9 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         // set the intent on the live report
         vm.prank(swapper);
-        punt.close{value: 0}(swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0);
+        punt.close{value: 0}(
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+        );
         (,, bool intentBefore) = _closeState(swapId);
         assertTrue(intentBefore, "intent set while the report was live");
 
@@ -163,7 +165,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
         Vm.Log[] memory logs = _executeNow(swapId, mt, closeExecutor);
 
         assertTrue(_hasBailoutLog(logs, OpenPuntStorage.MaxExecutionLatencyBailout.selector, swapId), "latency bailout");
-        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId);
+        OpenPuntStorage.MatchedSwap memory reusable = _readBailedOut(logs, swapId, mt.reportId, mt.swap);
 
         (uint128 pending,, bool intent) = _closeState(swapId);
         assertFalse(intent, "failed report consumes the close intent");
@@ -346,7 +348,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         assertTrue(_hasBailoutLog(logs, OpenPuntStorage.MaxExecutionLatencyBailout.selector, swapId), "latency bailout");
         assertTrue(oracle.oracleGame(mt.reportId) != oracleHashBefore, "the report was settled by execute()");
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         _assertBailoutIsEconomicallyComplete(
             before, mt.reportId, LIVE_COMP, A1, A2_HEALTHY, "internally settled late bailout"
         );
@@ -381,7 +383,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
             _hasBailoutLog(logs, OpenPuntStorage.MaxExecutionLatencyBailout.selector, swapId),
             "pre-settling does not bypass the deadline"
         );
-        _readBailedOut(logs, swapId, mt.reportId);
+        _readBailedOut(logs, swapId, mt.reportId, mt.swap);
         // the legs were already returned by the independent settle(), before this snapshot,
         // so execution hands back nothing further
         _assertBailoutIsEconomicallyComplete(before, mt.reportId, LIVE_COMP, 0, 0, "pre-settled late bailout");

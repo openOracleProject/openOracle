@@ -140,6 +140,25 @@ contract Permit2IntentTest is OpenPuntBase {
         );
     }
 
+    function test_maturityOnlyChangesTheWitness() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        OpenPuntStorage.MatcherPreimage memory m = _defaultMatcherPreimage();
+
+        _proposeFrom(swapper, s, m);
+        bytes32 baseline = _observedWitness();
+
+        OpenPuntStorage.ProposedSwap memory fixedMaturity = _copy(s);
+        fixedMaturity.maturityOnly = true;
+        _proposeFrom(swapper, fixedMaturity, m);
+
+        assertTrue(_observedWitness() != baseline, "maturity-only mode moves the witness");
+        assertEq(
+            _observedWitness(),
+            _expectedWitness(_expectedIntent(fixedMaturity, m, swapper), swapper),
+            "and matches the independently derived intent"
+        );
+    }
+
     function test_changedMatcherPreimageFieldChangesWitness() public {
         OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
         OpenPuntStorage.MatcherPreimage memory m = _defaultMatcherPreimage();

@@ -105,7 +105,7 @@ contract DutchResolutionPathsTest is CloseBase {
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.OracleGameInProgress.selector);
-        punt.cancelCloseAuction(c.swapId, c.active);
+        puntLifecycle.cancelCloseAuction(c.swapId, c.active);
     }
 
     function test_zeroExpectedHashClaimsWhateverAuctionIsPresent() public {

@@ -30,32 +30,32 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
     // ── report() argument offsets ───────────────────────────────────────
     //   0     swapId            1 word
     //   32    expectedDutchHash  bytes32
-    //   64    MatchedSwap       29 words -> 928
-    //   992   MatcherPreimage   12 words -> 384
-    //   1376  TimingBoundaries  4 words  -> 128
-    //   1504  reporter          address
-    //   1536  amount1           uint128
-    //   1568  amount2           uint128
-    //   1600  altGasCompExec    uint128
+    //   64    MatchedSwap       31 words -> 992
+    //   1056  MatcherPreimage   12 words -> 384
+    //   1440  TimingBoundaries  4 words  -> 128
+    //   1568  reporter          address
+    //   1600  amount1           uint128
+    //   1632  amount2           uint128
+    //   1664  altGasCompExec    uint128
     uint256 internal constant REP_DUTCH_HASH_OFF = 32;
     uint256 internal constant REP_MATCHED_OFF = 64;
-    uint256 internal constant REP_PREIMAGE_OFF = 992;
-    uint256 internal constant REP_TIMING_OFF = 1376;
-    uint256 internal constant REP_REPORTER_OFF = 1504;
-    uint256 internal constant REP_AMOUNT1_OFF = 1536;
-    uint256 internal constant REP_AMOUNT2_OFF = 1568;
-    uint256 internal constant REP_ALTCOMP_OFF = 1600;
+    uint256 internal constant REP_PREIMAGE_OFF = 1056;
+    uint256 internal constant REP_TIMING_OFF = 1440;
+    uint256 internal constant REP_REPORTER_OFF = 1568;
+    uint256 internal constant REP_AMOUNT1_OFF = 1600;
+    uint256 internal constant REP_AMOUNT2_OFF = 1632;
+    uint256 internal constant REP_ALTCOMP_OFF = 1664;
 
     // ── execute() argument offsets ──────────────────────────────────────
     //   0     swapId          1 word
-    //   32    MatchedSwap     29 words -> 928
-    //   960   OracleGame      20 words -> 640
-    //   1600  PreimageHelper  4 words  -> 128
-    //   1728  looseTiming     bool
+    //   32    MatchedSwap     31 words -> 992
+    //   1024  OracleGame      20 words -> 640
+    //   1664  PreimageHelper  4 words  -> 128
+    //   1792  looseTiming     bool
     uint256 internal constant EX_MATCHED_OFF = 32;
-    uint256 internal constant EX_GAME_OFF = 960;
-    uint256 internal constant EX_HELPER_OFF = 1600;
-    uint256 internal constant EX_LOOSE_OFF = 1728;
+    uint256 internal constant EX_GAME_OFF = 1024;
+    uint256 internal constant EX_HELPER_OFF = 1664;
+    uint256 internal constant EX_LOOSE_OFF = 1792;
 
     uint256 internal swapId;
     OpenPuntStorage.MatchedSwap internal active;
@@ -104,7 +104,7 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
     }
 
     function test_reportCalldataLayout() public view {
-        assertEq(_cleanReport().length, 4 + 32 + 32 + 928 + 384 + 128 + 32 + 32 + 32 + 32, "report calldata length");
+        assertEq(_cleanReport().length, 4 + 32 + 32 + 992 + 384 + 128 + 32 + 32 + 32 + 32, "report calldata length");
     }
 
     /// @dev Table-driven so all seven required report mutations share one reconciliation.
@@ -196,7 +196,7 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
 
     function test_executeCalldataLayout() public {
         Eligible memory e = _eligible();
-        assertEq(_cleanExecute(e).length, 4 + 32 + 928 + 640 + 128 + 32, "execute calldata length");
+        assertEq(_cleanExecute(e).length, 4 + 32 + 992 + 640 + 128 + 32, "execute calldata length");
     }
 
     struct ExecBook {
