@@ -78,6 +78,7 @@ interface IOpenOracle2 {
 
     function nextReportId() external view returns (uint256);
     function oracleGame(uint256 reportId) external view returns (bytes32);
+    function settlementEligibility(uint256 reportId) external view returns (uint48);
     function finalPrice(uint256 reportId) external view returns (uint256);
     function tokenHolder(address holder, address token) external view returns (uint256);
     function disputeHistory(uint256 reportId, uint256 index)
