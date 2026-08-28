@@ -146,6 +146,17 @@ abstract contract OpenPuntInvariantBase is OpenPuntBase {
                 keccak256(abi.encode(q.game, q.helper)),
                 "oracle commitment reconstructs from the event-derived preimage"
             );
+            if (q.phase == OpenPuntHandler.Phase.ActiveReport) {
+                assertEq(q.game.flags, 1 << 4, "active report stores settlement eligibility");
+                assertEq(
+                    oracle.settlementEligibility(q.reportId),
+                    q.game.reportTimestamp + q.game.settlementTime,
+                    "active report eligibility matches the modeled game"
+                );
+            } else {
+                assertEq(q.game.flags, 0, "opening report uses no stored eligibility");
+                assertEq(oracle.settlementEligibility(q.reportId), 0, "opening report has no eligibility sidecar");
+            }
         }
     }
 
@@ -279,7 +290,6 @@ abstract contract OpenPuntInvariantBase is OpenPuntBase {
 
             if (q.reportId != 0) {
                 assertEq(punt.executionGasComp(q.reportId), q.assignedComp, "assigned tranche matches the model");
-                assertEq(pending, 0, "a live report has consumed any stored auction compensation");
             }
         }
         _assertEthBooks();

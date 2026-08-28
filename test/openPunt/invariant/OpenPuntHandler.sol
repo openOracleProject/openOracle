@@ -259,7 +259,7 @@ contract OpenPuntHandler {
     //  arguments a caller genuinely chooses at propose time
     // ══════════════════════════════════════════════════════════════════
 
-    function _swapCfg(bool heartbeatOn, uint16 latency)
+    function _swapCfg(bool heartbeatOn, uint16 latency, bool token1PerToken2)
         internal
         view
         returns (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m)
@@ -272,6 +272,7 @@ contract OpenPuntHandler {
         s.maintenanceMarginSwapper = MAINT;
         s.notional = NOTIONAL;
         s.isLong = true;
+        s.pnlUsesToken1PerToken2 = token1PerToken2;
         s.auctionFunding = true; // funding auctioned, fulfillment fee fixed at zero
         s.fulfillmentFee = 0;
         s.fundingRate = 0;
@@ -321,6 +322,10 @@ contract OpenPuntHandler {
     }
 
     function _emptyPermit() internal pure returns (OpenPuntStorage.Permit2Params memory p) {}
+
+    function _emptyOracleGame() internal pure returns (IOpenOracle2.OracleGame memory game) {}
+
+    function _emptyOracleHelper() internal pure returns (IOpenOracle2.PreimageHelper memory helper) {}
 
     // ══════════════════════════════════════════════════════════════════
     //  Event decoding — the model is fed by the protocol's own events
@@ -501,8 +506,9 @@ contract OpenPuntHandler {
     function propose(uint256 seed) external {
         bool heartbeatOn = seed % 2 == 0;
         uint16 latency = seed % 4 == 0 ? 60 : 0;
+        bool token1PerToken2 = (seed >> 2) % 2 == 1;
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
-            _swapCfg(heartbeatOn, latency);
+            _swapCfg(heartbeatOn, latency, token1PerToken2);
         uint256 value = uint256(s.matcherGasComp) + s.settlerReward + s.openExecutionComp;
 
         vm.recordLogs();
@@ -719,12 +725,18 @@ contract OpenPuntHandler {
 
         vm.recordLogs();
         vm.prank(swapper);
-        try punt.close{value: CLOSE_COMP}(id, input, q.matched, false, _emptyPermit(), CLOSE_COMP) {
+        try punt.close{value: CLOSE_COMP}(
+            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        ) {
             Vm.Log[] memory logs = vm.getRecordedLogs();
             (bool f, Vm.Log memory l) = _find(logs, OpenPuntStorage.CloseAuctionStarted.selector, id);
             require(f, "handler: CloseAuctionStarted missing");
-            (OpenPuntStorage.CloseDutch memory d, uint128 comp) =
-                abi.decode(l.data, (OpenPuntStorage.CloseDutch, uint128));
+            (OpenPuntStorage.MatchedSwap memory emittedSwap, OpenPuntStorage.CloseDutch memory d, uint128 comp) =
+                abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
+            _violation(
+                keccak256(abi.encode(emittedSwap)) == keccak256(abi.encode(q.matched)),
+                "close checkpoint does not match active position"
+            );
             q.dutch = d;
             q.dutchHash = l.topics[2];
             q.dutchStatus = DutchStatus.Live;
@@ -752,7 +764,7 @@ contract OpenPuntHandler {
             if (q.dutchStatus != DutchStatus.Live || q.reportId != 0) continue;
 
             vm.prank(swapper);
-            try punt.cancelCloseAuction(id, q.matched) {
+            try puntLifecycle.cancelCloseAuction(id, q.matched) {
                 expectedCollat -= q.dutchHeld;
                 modelSwapperPlusReporterCollat += int256(uint256(q.dutchHeld));
                 q.dutchHeld = 0;
@@ -771,18 +783,43 @@ contract OpenPuntHandler {
         _miss("cancelCloseAuction");
     }
 
-    /// @dev Close intent during a live report: adds funded execution compensation rather than
-    ///      creating an auction.
+    /// @dev During a live report, compensation is assigned to that report. At or after its stored
+    ///      settlement eligibility, the same call creates a future auction and leaves the old
+    ///      report's compensation untouched.
     function setCloseIntentDuringReport(uint256 seed) external {
         (bool found, uint256 id) = _pick(seed, Phase.ActiveReport);
         if (!found) return _miss("setCloseIntentDuringReport");
         Pos storage q = pos[id];
 
+        bool reportLive = block.number < oracle.settlementEligibility(q.reportId);
+        OpenPuntStorage.CloseDutch memory input = _dutchInput();
+        vm.recordLogs();
         vm.prank(swapper);
-        try punt.close{value: CLOSE_COMP}(id, _noDutch(), q.matched, false, _emptyPermit(), CLOSE_COMP) {
+        try punt.close{value: CLOSE_COMP}(
+            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+        ) {
             q.closeIntent = true;
             q.closeRequestBlock = uint48(block.number);
-            q.assignedComp += CLOSE_COMP;
+            if (reportLive) {
+                q.assignedComp += CLOSE_COMP;
+            } else {
+                Vm.Log[] memory logs = vm.getRecordedLogs();
+                (bool f, Vm.Log memory l) = _find(logs, OpenPuntStorage.CloseAuctionStarted.selector, id);
+                require(f, "handler: future CloseAuctionStarted missing");
+                (OpenPuntStorage.MatchedSwap memory emittedSwap, OpenPuntStorage.CloseDutch memory d, uint128 comp) =
+                    abi.decode(l.data, (OpenPuntStorage.MatchedSwap, OpenPuntStorage.CloseDutch, uint128));
+                _violation(
+                    keccak256(abi.encode(emittedSwap)) == keccak256(abi.encode(q.matched)),
+                    "future close checkpoint does not match active position"
+                );
+                q.dutch = d;
+                q.dutchHash = l.topics[2];
+                q.dutchStatus = DutchStatus.Live;
+                q.pendingComp = comp;
+                q.dutchHeld = d.maxReward;
+                expectedCollat += d.maxReward;
+                modelSwapperPlusReporterCollat -= int256(uint256(d.maxReward));
+            }
             _hit("setCloseIntentDuringReport");
         } catch (bytes memory _e) {
             lastRevertData = _e;
@@ -866,8 +903,8 @@ contract OpenPuntHandler {
      * @dev Closing token2 leg. Derived from the seed and from the position's own declared
      *      parameters, never from production arithmetic.
      *
-     *      The liquidating value is chosen from the ratio directly: the swapper is long, so a fall
-     *      in token2 per token1 costs it `notional * delta / openingCross`. With notional and
+     *      For token2-per-token1 positions, the liquidating value is chosen from the ratio directly:
+     *      the swapper is long, so a fall costs it `notional * delta / openingCross`. With notional and
      *      margin both 1000e18 and a 200e18 maintenance floor, equity drops below the floor once
      *      the loss exceeds 800e18, i.e. once A2 falls below 400e18. 300e18 clears that with room
      *      to spare; a 900e18 fall at these margins would
@@ -910,6 +947,7 @@ contract OpenPuntHandler {
         // captured before the terminal transition so conservation is checked against the pool the
         // position actually owned, not against whatever the model holds afterwards
         uint256 preTerminalPool = q.marginPool;
+        uint256 auctionRefund = q.dutchStatus == DutchStatus.Live ? q.dutchHeld : 0;
 
         // Per-recipient collateral, measured immediately around this call. The lifetime book
         // reconciles swapper and reporter jointly because a claimed Dutch reward is split by
@@ -931,7 +969,7 @@ contract OpenPuntHandler {
             if (_has(logs, OpenPuntStorage.PositionClosed.selector, id)) {
                 (bool f, Vm.Log memory l) = _find(logs, OpenPuntStorage.PositionClosed.selector, id);
                 require(f, "handler: PositionClosed");
-                (, uint256 owedS, uint256 owedM) = abi.decode(l.data, (OpenPuntStorage.MatchedSwap, uint256, uint256));
+                (uint256 owedS, uint256 owedM) = abi.decode(l.data, (uint256, uint256));
                 _violation(owedS + owedM == preTerminalPool, "close payouts do not conserve the pool");
                 _violation(!q.paidOut, "a terminal payout was delivered twice");
                 q.paidOut = true;
@@ -942,10 +980,20 @@ contract OpenPuntHandler {
                 // transfer actually reached them
                 modelSwapperPlusReporterCollat += int256(owedS);
                 modelMatcherCollat += int256(owedM);
-                _violation(_actorCollat(swapper) - swapperBefore == owedS, "close: swapper delta != owedToSwapper");
+                _violation(
+                    _actorCollat(swapper) - swapperBefore == owedS + auctionRefund,
+                    "close: swapper delta != payout plus auction refund"
+                );
                 _violation(_actorCollat(matcher) - matcherBefore == owedM, "close: matcher delta != owedToMatcher");
                 _violation(_actorCollat(reporter) == reporterBefore, "close: the reporter was paid");
                 expectedCollat -= q.marginPool;
+                if (auctionRefund != 0) {
+                    expectedCollat -= auctionRefund;
+                    modelSwapperPlusReporterCollat += int256(auctionRefund);
+                    q.dutchHeld = 0;
+                    q.dutchStatus = DutchStatus.Cancelled;
+                    q.dutchHash = bytes32(0);
+                }
                 q.marginPool = 0;
                 q.closeIntent = false;
                 q.closeRequestBlock = 0;
@@ -955,6 +1003,10 @@ contract OpenPuntHandler {
                 q.phase = Phase.Finalized;
                 _hit("outcomeClose");
             } else if (_has(logs, OpenPuntStorage.PositionLiquidated.selector, id)) {
+                (bool f, Vm.Log memory l) = _find(logs, OpenPuntStorage.PositionLiquidated.selector, id);
+                require(f, "handler: PositionLiquidated");
+                uint256 owedM = abi.decode(l.data, (uint256));
+                _violation(owedM == preTerminalPool, "liquidation event payout != whole pool");
                 _violation(!q.paidOut, "a terminal payout was delivered twice");
                 q.paidOut = true;
                 q.owedToMatcher = preTerminalPool; // liquidation moves the WHOLE pool to the matcher
@@ -964,9 +1016,19 @@ contract OpenPuntHandler {
                     _actorCollat(matcher) - matcherBefore == preTerminalPool,
                     "liquidation: matcher did not receive the whole pool"
                 );
-                _violation(_actorCollat(swapper) == swapperBefore, "liquidation: the swapper was paid");
+                _violation(
+                    _actorCollat(swapper) - swapperBefore == auctionRefund,
+                    "liquidation: swapper delta != auction refund"
+                );
                 _violation(_actorCollat(reporter) == reporterBefore, "liquidation: the reporter was paid");
                 expectedCollat -= q.marginPool;
+                if (auctionRefund != 0) {
+                    expectedCollat -= auctionRefund;
+                    modelSwapperPlusReporterCollat += int256(auctionRefund);
+                    q.dutchHeld = 0;
+                    q.dutchStatus = DutchStatus.Cancelled;
+                    q.dutchHash = bytes32(0);
+                }
                 q.marginPool = 0;
                 q.closeIntent = false;
                 q.closeRequestBlock = 0;
@@ -977,7 +1039,10 @@ contract OpenPuntHandler {
                 _hit("outcomeLiquidated");
             } else {
                 // reusable: LiquidationFailed, or one of the three bailouts
-                q.matched = _readSingleState(logs, _reusableTopic(logs, id), id);
+                _violation(
+                    punt.swaps(id) == keccak256(abi.encode(q.matched)),
+                    "reusable outcome changed the report-start checkpoint"
+                );
                 bool requestApplied = q.closeRequestBlock != 0
                     && uint256(q.closeRequestBlock) < uint256(q.game.reportTimestamp) + q.game.settlementTime;
                 if (requestApplied) {
@@ -1010,13 +1075,6 @@ contract OpenPuntHandler {
             lastRevertData = _e;
             _miss("executeActiveReport");
         }
-    }
-
-    function _reusableTopic(Vm.Log[] memory logs, uint256 id) internal view returns (bytes32) {
-        if (_has(logs, OpenPuntStorage.LiquidationFailed.selector, id)) {
-            return OpenPuntStorage.LiquidationFailed.selector;
-        }
-        return OpenPuntStorage.PositionReportBailedOut.selector;
     }
 
     // ══════════════════════════════════════════════════════════════════

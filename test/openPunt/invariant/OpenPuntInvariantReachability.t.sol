@@ -151,10 +151,24 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         uint256 id = handler.ids(0);
         assertTrue(punt.closeRequestBlock(id) != 0, "future close request survived the old report");
 
-        handler.reportNoDutch(0);
+        handler.reportZeroSentinel(0);
         handler.clockToEligibility(0);
         handler.executeActiveReport(0);
         _need("outcomeClose");
+    }
+
+    function test_reach_terminalOldReportRefundsTheFutureAuction() public {
+        _openPosition(1); // heartbeat disabled
+        handler.reportNoDutch(1); // deeply underwater
+        handler.clockToEligibility(1);
+        handler.setCloseIntentDuringReport(1); // eligible report: funds the future auction
+
+        uint256 id = handler.ids(0);
+        assertTrue(_storedDutchState(id) != bytes32(0), "future auction exists beside old report");
+        handler.executeActiveReport(1);
+
+        _need("outcomeLiquidated");
+        assertEq(_storedDutchState(id), bytes32(0), "terminal execution returned and deleted auction");
     }
 
     function test_reach_liquidationWithoutHeartbeatMode() public {
