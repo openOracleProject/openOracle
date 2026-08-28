@@ -48,9 +48,10 @@ contract openPunt is OpenPuntStorage {
     /// @notice Routes supported lifecycle calls to the immutable module.
     /// @dev Executes by delegatecall against the core's storage and bubbles returndata unchanged.
     fallback() external {
-        // only allow report(), execute(), and deployAndDistributeFeeReceiver()
+        // only allow the lifecycle functions explicitly routed through this core
         if (
             msg.sig != OpenPuntLifecycle.report.selector && msg.sig != OpenPuntLifecycle.execute.selector
+                && msg.sig != OpenPuntLifecycle.cancelCloseAuction.selector
                 && msg.sig != OpenPuntLifecycle.deployAndDistributeFeeReceiver.selector
         ) {
             revert Errors.InvalidSelector();
@@ -96,7 +97,6 @@ contract openPunt is OpenPuntStorage {
         address collatToken = s.collatToken;
         uint128 initialMarginSwapper = s.initialMarginSwapper;
         uint128 maintenanceMarginSwapper = s.maintenanceMarginSwapper;
-        uint24 fulfillmentFee = s.fulfillmentFee;
         uint48 expiration = s.expiration;
         bool useInternalBalances = s.useInternalBalances;
         bool isEth = collatToken == address(0);
@@ -150,7 +150,7 @@ contract openPunt is OpenPuntStorage {
                 revert Errors.InvalidFundingRate();
             }
             uint256 maximumFeeAmount = Math.mulDiv(s.notional, s.fulfillmentFee, 1e7);
-            if (s.fulfillmentFee >= 1e7 || 2 * maximumFeeAmount >= startingBuffer) {
+            if (s.fulfillmentFee >= 1e7 || maximumFeeAmount >= startingBuffer) {
                 revert Errors.InvalidFulfillFee();
             }
             if (s.fundingRate != 0) revert Errors.MustBeZero();
@@ -159,7 +159,7 @@ contract openPunt is OpenPuntStorage {
                 revert Errors.InvalidFulfillFee();
             }
             uint256 maximumFeeAmount = Math.mulDiv(s.notional, uint256(int256(m.auctionEnd)), 1e7);
-            if (2 * maximumFeeAmount >= startingBuffer) revert Errors.InvalidFulfillFee();
+            if (maximumFeeAmount >= startingBuffer) revert Errors.InvalidFulfillFee();
             if (s.fundingRate < -maxAbsFunding || s.fundingRate > maxAbsFunding) revert Errors.InvalidFundingRate();
             if (s.fulfillmentFee != 0) revert Errors.MustBeZero();
         }
@@ -246,10 +246,12 @@ contract openPunt is OpenPuntStorage {
         s.swapper = _swap.swapper;
         s.openExecutionComp = _swap.openExecutionComp;
         s.useInternalBalances = _swap.useInternalBalances;
+        s.maturityOnly = _swap.maturityOnly;
         s.priceTolerated = _swap.priceTolerated;
         s.toleranceRange = _swap.toleranceRange;
         s.collatToken = _swap.collatToken;
         s.swapperIsLong = _swap.isLong;
+        s.pnlUsesToken1PerToken2 = _swap.pnlUsesToken1PerToken2;
         // used to authenticate oracle amounts in report() later
         s.matcherPreimageHash = keccak256(abi.encode(preimage));
 
@@ -354,14 +356,18 @@ contract openPunt is OpenPuntStorage {
     /**
      * @notice Registers a close request and funds the compensation offered to the report executor.
      * @dev With a live report, records the request block and funds only that report's execution
-     *      compensation. With no live report, also creates and funds the supplied Dutch auction.
+     *      compensation. With no report, or with a settlement-eligible report that is not
+     *      auto-executed by this call, creates and funds the supplied future Dutch auction.
      *      The caller always supplies Dutch terms so report-state changes cannot invalidate close calldata.
      * @param swapId Position identifier.
-     * @param dutch Close-reward auction parameters. Override fields must be zero if no report is live.
+     * @param dutch Close-reward auction parameters. Override fields must be zero whenever the
+     *              future-auction branch is reached.
      * @param swapState Current active MatchedSwap preimage committed in swaps[swapId].
      * @param useInternalBalances Whether this call funds its reward and ETH compensation from OpenOracle balances.
      * @param permit2 Permit2 authorization used for an externally funded ERC20 Dutch reward.
      * @param altGasCompExec ETH-denominated compensation offered to the relevant report executor.
+     * @param oracleState Optional current oracle-game preimage used to execute an eligible live report.
+     * @param oracleHelper Optional helper preimage; reportId zero disables automatic execution.
      */
     function close(
         uint256 swapId,
@@ -369,7 +375,9 @@ contract openPunt is OpenPuntStorage {
         MatchedSwap calldata swapState,
         bool useInternalBalances,
         Permit2Params calldata permit2,
-        uint128 altGasCompExec
+        uint128 altGasCompExec,
+        IOpenOracle2.OracleGame calldata oracleState,
+        IOpenOracle2.PreimageHelper calldata oracleHelper
     ) external payable {
         MatchedSwap memory s = swapState;
         bytes32 passedSwapHash = keccak256(abi.encode(swapState));
@@ -386,12 +394,41 @@ contract openPunt is OpenPuntStorage {
         if (closeRequestBlock(swapId) != 0) revert Errors.CloseIntentLive();
 
         uint256 reportId = swapIdToReportId(swapId);
+        uint48 reportEligibility;
+        bool reportLive;
         if (reportId != 0) {
+            reportEligibility = oracle.settlementEligibility(reportId);
+            if (reportEligibility == 0) revert Errors.InvalidOracleParams();
+            reportLive = _getBlockNumber() < reportEligibility;
+        }
+        uint256 expectedMsgValue = useInternalBalances ? 0 : ethToReserve;
+        if (msg.value != expectedMsgValue) revert Errors.InvalidMsgValue();
+
+        uint256 providedReportId = oracleHelper.reportId;
+        if (providedReportId != 0 && reportId == providedReportId && !reportLive) {
+            _executeFromClose(swapId, swapState, oracleState, oracleHelper);
+
+            // A terminal execution must persist, so return any close funding that was never used.
+            if (swaps[swapId] == bytes32(0)) {
+                payEth(s.swapper, msg.value);
+                return;
+            }
+
+            // Reusable active-position outcomes preserve the MatchedSwap commitment.
+            if (swaps[swapId] != passedSwapHash) revert Errors.WrongHash();
+            reportId = swapIdToReportId(swapId);
+            reportEligibility = 0;
+            reportLive = false;
+            if (reportId != 0) {
+                reportEligibility = oracle.settlementEligibility(reportId);
+                if (reportEligibility == 0) revert Errors.InvalidOracleParams();
+                reportLive = _getBlockNumber() < reportEligibility;
+            }
+        }
+
+        if (reportLive) {
             // a live report doesn't need a Dutch reward. execute() decides whether this request preceded
             // that report's final settlement eligibility; otherwise it remains for a future report.
-            uint256 expected = useInternalBalances ? 0 : ethToReserve;
-            if (msg.value != expected) revert Errors.InvalidMsgValue();
-
             // record the current L2 block number as the time of close request
             _setCloseRequest(swapId);
             _addExecutionGasComp(reportId, altGasCompExec);
@@ -409,10 +446,7 @@ contract openPunt is OpenPuntStorage {
         }
 
         CloseDutch memory d = dutch;
-        uint128 expectedMsgValue = useInternalBalances ? 0 : ethToReserve;
         bool needsPermit2 = !isEth && !useInternalBalances;
-
-        if (msg.value != expectedMsgValue) revert Errors.InvalidMsgValue();
 
         // ensure overwritten fields are zero when passed in:
         if (
@@ -467,10 +501,12 @@ contract openPunt is OpenPuntStorage {
         }
 
         // CEI inversion: the auction becomes live only after funding succeeds
-        // If reentrancy changed this position's report, close request, or auction, revert atomically.
+        // If reentrancy changed this position's report, close request, auction, or report deadline,
+        // revert atomically. A settlement-eligible report may remain while this future auction is funded.
         if (
-            swaps[swapId] != passedSwapHash || swapIdToReportId(swapId) != 0 || closeRequestBlock(swapId) != 0
+            swaps[swapId] != passedSwapHash || swapIdToReportId(swapId) != reportId || closeRequestBlock(swapId) != 0
                 || closeAuctions[swapId].maxReward != 0
+                || (reportId != 0 && oracle.settlementEligibility(reportId) != reportEligibility)
         ) revert Errors.WrongHash();
 
         closeAuctions[swapId] = StoredDutch({
@@ -488,48 +524,25 @@ contract openPunt is OpenPuntStorage {
         // records the current block number at time of close request
         _setCloseRequest(swapId);
 
-        emit CloseAuctionStarted(swapId, dutchHash, d, altGasCompExec);
+        emit CloseAuctionStarted(swapId, dutchHash, s, d, altGasCompExec);
     }
 
-    /**
-     * @notice Cancels a close request while no report is live and returns any unclaimed auction funding.
-     * @dev A live report blocks cancellation so the swapper cannot revoke intent after observing its price.
-     * @param swapId Position identifier.
-     * @param swapState Current active MatchedSwap preimage committed in swaps[swapId].
-     */
-    function cancelCloseAuction(uint256 swapId, MatchedSwap calldata swapState) external {
-        MatchedSwap memory s = swapState;
-        if (keccak256(abi.encode(s)) != swaps[swapId]) revert Errors.WrongHash();
-        if (msg.sender != s.swapper) revert Errors.NotSwapper();
-        if (!s.active) revert Errors.NotActive();
-        if (swapIdToReportId(swapId) != 0) revert Errors.OracleGameInProgress();
-        if (closeRequestBlock(swapId) == 0) revert Errors.NothingToWithdraw();
+    /// @dev Executes the lifecycle module against core storage while preserving the original caller.
+    function _executeFromClose(
+        uint256 swapId,
+        MatchedSwap calldata swapState,
+        IOpenOracle2.OracleGame calldata oracleState,
+        IOpenOracle2.PreimageHelper calldata oracleHelper
+    ) internal {
+        (bool success, bytes memory returndata) = lifecycleModule.delegatecall(
+            abi.encodeCall(OpenPuntLifecycle.execute, (swapId, swapState, oracleState, oracleHelper, true))
+        );
 
-        StoredDutch memory stored = closeAuctions[swapId];
-        delete closeAuctions[swapId];
-        // sets recorded close request block to zero
-        _clearCloseRequest(swapId);
-
-        if (stored.maxReward != 0) {
-            CloseDutch memory d = _materializeDutch(swapId, s, stored);
-            bytes32 dutchHash = keccak256(abi.encode(d));
-            bool collatIsEth = s.collatToken == address(0);
-            uint128 expectedEth = stored.executionComp + (collatIsEth ? stored.maxReward : 0);
-
-            if (stored.useInternalBalances) {
-                oracle.internalTransferFrom(address(this), s.swapper, address(0), expectedEth);
-                if (!collatIsEth) {
-                    oracle.internalTransferFrom(address(this), s.swapper, s.collatToken, stored.maxReward);
-                }
-            } else {
-                oracle.pushOrCredit(address(0), s.swapper, expectedEth);
-                if (!collatIsEth) oracle.pushOrCredit(s.collatToken, s.swapper, stored.maxReward);
+        if (!success) {
+            assembly ("memory-safe") {
+                revert(add(returndata, 0x20), mload(returndata))
             }
-
-            emit CloseAuctionCancelled(swapId, dutchHash, d, stored.executionComp);
         }
-
-        emit CloseIntentCancelled(swapId);
     }
 
     /**
@@ -586,7 +599,7 @@ contract openPunt is OpenPuntStorage {
             payEth(swapper, swapperPiece + settlerReward);
         }
 
-        emit SwapCancelled(swapId, s, preimage);
+        emit SwapCancelled(swapId);
     }
 
     /**
@@ -620,8 +633,8 @@ contract openPunt is OpenPuntStorage {
                 s.matcher,
                 s.useInternalBalances
             );
-            emit OpeningBailedOut(swapId, s);
-            emit SwapRefunded(swapId, s.swapper, s.matcher, s);
+            emit OpeningBailedOut(swapId);
+            emit SwapRefunded(swapId, s.swapper, s.matcher);
             return;
         }
 
