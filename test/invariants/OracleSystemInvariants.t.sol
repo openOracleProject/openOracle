@@ -6,7 +6,13 @@ import "forge-std/StdInvariant.sol";
 import {OpenOracle} from "../../src/OpenOracleSlim.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
 import {OracleSystemHandler} from "./OracleSystemHandler.sol";
-import {AdversarialCallback, RevertingToken, ReturnsFalseToken, NoReturnToken, ReentrantToken} from "./AdversarialMocks.sol";
+import {
+    AdversarialCallback,
+    RevertingToken,
+    ReturnsFalseToken,
+    NoReturnToken,
+    ReentrantToken
+} from "./AdversarialMocks.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Broad invariant campaign across the oracle system.
@@ -14,6 +20,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         across multiple actors and a token rotation that includes adversarial mocks
 ///         (reverting, returns-false, USDT-style no-return, reentrant) plus an adversarial callback.
 contract OracleSystemInvariantsTest is StdInvariant, Test {
+    uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4;
+
     OpenOracle internal oracle;
     OracleSystemHandler internal handler;
     AdversarialCallback internal callback;
@@ -57,12 +65,18 @@ contract OracleSystemInvariantsTest is StdInvariant, Test {
             vanillaA.transfer(a, 100_000e18);
             vanillaB.transfer(a, 100_000e18);
             noReturnTok.transfer(a, 100_000e18);
-            vm.prank(a); vanillaA.approve(address(oracle), type(uint256).max);
-            vm.prank(a); vanillaB.approve(address(oracle), type(uint256).max);
-            vm.prank(a); noReturnTok.approve(address(oracle), type(uint256).max);
-            vm.prank(a); revertingTok.approve(address(oracle), type(uint256).max);
-            vm.prank(a); returnsFalseTok.approve(address(oracle), type(uint256).max);
-            vm.prank(a); reentrantTok.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            vanillaA.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            vanillaB.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            noReturnTok.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            revertingTok.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            returnsFalseTok.approve(address(oracle), type(uint256).max);
+            vm.prank(a);
+            reentrantTok.approve(address(oracle), type(uint256).max);
         }
         // Fund actors with the adversarial-transfer tokens via cheatcode.
         for (uint256 i = 0; i < allActors.length; i++) {
@@ -157,6 +171,19 @@ contract OracleSystemInvariantsTest is StdInvariant, Test {
             OpenOracle.OracleGame memory g = handler.getReportGame(i);
             OpenOracle.PreimageHelper memory h = handler.getReportHelper(i);
             assertEq(stored, keccak256(abi.encode(g, h)), "stored hash != reconstructed");
+        }
+    }
+
+    /// @dev The optional eligibility sidecar is absent when its flag is off and otherwise tracks
+    ///      the latest successful report/dispute timestamp plus the committed settlement window.
+    function invariant_settlementEligibilityMatchesLatestRound() public view {
+        uint256 n = handler.reportCount();
+        for (uint256 i = 0; i < n; i++) {
+            uint256 id = handler.getReportId(i);
+            OpenOracle.OracleGame memory g = handler.getReportGame(i);
+            uint256 expected =
+                (g.flags & FLAG_STORE_SETTLEMENT_ELIGIBILITY) == 0 ? 0 : uint256(g.reportTimestamp) + g.settlementTime;
+            assertEq(oracle.settlementEligibility(id), expected, "settlement eligibility drift");
         }
     }
 

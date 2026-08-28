@@ -4,7 +4,13 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import {OpenOracle} from "../../src/OpenOracleSlim.sol";
 import {MockERC20} from "../utils/MockERC20.sol";
-import {AdversarialCallback, RevertingToken, ReturnsFalseToken, NoReturnToken, ReentrantToken} from "./AdversarialMocks.sol";
+import {
+    AdversarialCallback,
+    RevertingToken,
+    ReturnsFalseToken,
+    NoReturnToken,
+    ReentrantToken
+} from "./AdversarialMocks.sol";
 
 /// @notice Drives randomized report / dispute / settle / deposit / withdraw / transfer ops across multiple
 ///         actors, multiple tokens (including ETH and adversarial mocks), and an adversarial callback.
@@ -23,6 +29,7 @@ contract OracleSystemHandler is Test {
         OpenOracle.PreimageHelper helper;
         bool settled;
     }
+
     ReportState[] public reports;
     mapping(uint256 => uint256) public reportIdToIdx; // reportId → reports[] index (+1; 0 = absent)
 
@@ -62,20 +69,55 @@ contract OracleSystemHandler is Test {
 
     // ─── Setup helpers ──────────────────────────────────────────────────────
 
-    function addActor(address a) external { actors.push(a); _markTouched(a); }
-    function addToken(address t) external { tokens.push(t); }
-    function actorCount() external view returns (uint256) { return actors.length; }
-    function tokenCount() external view returns (uint256) { return tokens.length; }
-    function reportCount() external view returns (uint256) { return reports.length; }
-    function holderCount() external view returns (uint256) { return touchedHolders.length; }
-    function holderAt(uint256 i) external view returns (address) { return touchedHolders[i]; }
-    function tokenAt(uint256 i) external view returns (address) { return tokens[i]; }
+    function addActor(address a) external {
+        actors.push(a);
+        _markTouched(a);
+    }
+
+    function addToken(address t) external {
+        tokens.push(t);
+    }
+
+    function actorCount() external view returns (uint256) {
+        return actors.length;
+    }
+
+    function tokenCount() external view returns (uint256) {
+        return tokens.length;
+    }
+
+    function reportCount() external view returns (uint256) {
+        return reports.length;
+    }
+
+    function holderCount() external view returns (uint256) {
+        return touchedHolders.length;
+    }
+
+    function holderAt(uint256 i) external view returns (address) {
+        return touchedHolders[i];
+    }
+
+    function tokenAt(uint256 i) external view returns (address) {
+        return tokens[i];
+    }
 
     /// @dev Explicit accessors — Solidity's array-of-struct auto-getter may not return nested struct fields.
-    function getReportId(uint256 i) external view returns (uint256) { return reports[i].id; }
-    function getReportGame(uint256 i) external view returns (OpenOracle.OracleGame memory) { return reports[i].game; }
-    function getReportHelper(uint256 i) external view returns (OpenOracle.PreimageHelper memory) { return reports[i].helper; }
-    function getReportSettled(uint256 i) external view returns (bool) { return reports[i].settled; }
+    function getReportId(uint256 i) external view returns (uint256) {
+        return reports[i].id;
+    }
+
+    function getReportGame(uint256 i) external view returns (OpenOracle.OracleGame memory) {
+        return reports[i].game;
+    }
+
+    function getReportHelper(uint256 i) external view returns (OpenOracle.PreimageHelper memory) {
+        return reports[i].helper;
+    }
+
+    function getReportSettled(uint256 i) external view returns (bool) {
+        return reports[i].settled;
+    }
 
     function _markTouched(address user) internal {
         for (uint256 t = 0; t < tokens.length; t++) {
@@ -123,7 +165,7 @@ contract OracleSystemHandler is Test {
 
         uint128 amt1 = uint128(bound(uint256(amt1Seed), 1, 1e21));
         uint128 amt2 = uint128(bound(uint256(amt2Seed), 1, 1e21));
-        uint8 flags = uint8(bound(uint256(flagSeed), 0, 0x0F));
+        uint8 flags = uint8(bound(uint256(flagSeed), 0, 0x1F));
         bool useCallback = (cbSeed & 1) == 1;
 
         // Param window: contract constraints are settlementTime > disputeDelay, multiplier ≥ 100,
@@ -134,7 +176,8 @@ contract OracleSystemHandler is Test {
         uint16 multiplier = uint16(bound(uint256(uint128(paramSeedA >> 48)), 100, 1000));
         uint24 feePercentage = uint24(bound(uint256(uint128(paramSeedB >> 24)), 0, 5_000_000));
         uint24 protocolFee = uint24(bound(uint256(uint128(paramSeedA >> 80)), 0, 1e7 - uint256(feePercentage)));
-        uint128 escalationHalt = uint128(bound(uint256(uint128(paramSeedB >> 64)), uint256(amt1), uint256(amt1) * 100 + 1));
+        uint128 escalationHalt =
+            uint128(bound(uint256(uint128(paramSeedB >> 64)), uint256(amt1), uint256(amt1) * 100 + 1));
         uint32 callbackGasLimit = useCallback ? uint32(bound(uint256(uint128(paramSeedA >> 16)), 30_000, 500_000)) : 0;
 
         OpenOracle.OracleGame memory g;
@@ -174,12 +217,8 @@ contract OracleSystemHandler is Test {
             g.lastReportOppoTime = uint48((g.flags & FLAG_TIME_TYPE) != 0 ? bn : ts);
             if ((g.flags & FLAG_TRACK_DISPUTES) != 0) g.numReports = 1;
 
-            OpenOracle.PreimageHelper memory h = OpenOracle.PreimageHelper({
-                reportId: reportId,
-                creator: reporter,
-                blockTimestamp: ts,
-                blockNumber: bn
-            });
+            OpenOracle.PreimageHelper memory h =
+                OpenOracle.PreimageHelper({reportId: reportId, creator: reporter, blockTimestamp: ts, blockNumber: bn});
 
             reports.push(ReportState({id: reportId, game: g, helper: h, settled: false}));
             reportIdToIdx[reportId] = reports.length;
@@ -258,15 +297,7 @@ contract OracleSystemHandler is Test {
 
         vm.prank(disputer);
         try oracle.dispute{value: disputeValue}(
-            r.id,
-            nextA1,
-            newA2,
-            disputer,
-            false,
-            false,
-            g,
-            r.helper,
-            _emptyTiming()
+            r.id, nextA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
         ) {
             uint48 newOppo = timeType ? uint48(block.number) : uint48(block.timestamp);
             g.currentAmount1 = nextA1;
