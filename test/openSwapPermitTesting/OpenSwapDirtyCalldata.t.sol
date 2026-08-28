@@ -3,12 +3,20 @@ pragma solidity 0.8.28;
 
 import "../utils/SlimTestBase.sol";
 import {SwapCompat} from "./SwapCompat.sol";
+import {DeployPermit2} from "permit2/test/utils/DeployPermit2.sol";
 
 /// @notice Per-field "value vs value+1" boundary probe of propose() calldata. For each
 ///         sub-256-bit field, the byte immediately above the value bytes is set to 0x00
 ///         (value within declared width → must succeed) and then to 0x01 (value = type-max + 1
 ///         → must revert). Bool: 0x00 (=false) vs 0x02 (=2).
 contract OpenSwapDirtyCalldataTest is SlimTestBase {
+    bytes4 internal constant INVALID_SIGNATURE_LENGTH = bytes4(keccak256("InvalidSignatureLength()"));
+    uint256 internal constant PERMIT2_HEAD_OFFSET = 0x340;
+    uint256 internal constant PERMIT2_TAIL_OFFSET = 0x380;
+    uint256 internal constant SIGNATURE_OFFSET_WORD = PERMIT2_TAIL_OFFSET + 0x40;
+    uint256 internal constant SIGNATURE_LENGTH_WORD = PERMIT2_TAIL_OFFSET + 0x60;
+    uint256 internal constant SIGNATURE_DATA_OFFSET = PERMIT2_TAIL_OFFSET + 0x80;
+
     function setUp() public {
         _setUpAll();
     }
@@ -90,6 +98,183 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
         assertTrue(ok, "clean abi.encodeCall must succeed");
     }
 
+    /// @dev Regression for solc's handling of a malformed nested `bytes` offset. If the
+    ///      decoder forwards an empty signature instead of rejecting the calldata itself,
+    ///      authentic Permit2 must reject it and the entire proposal must roll back.
+    function testDirtyCalldata_HugePermit2SignatureOffsetFailsClosedAgainstAuthenticPermit2() public {
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _buildCleanInputs();
+        bytes memory signature = new bytes(65);
+        openSwapV2.Permit2Params memory permit2 =
+            openSwapV2.Permit2Params({nonce: 77, deadline: type(uint256).max, signature: signature});
+        bytes memory data = abi.encodeCall(swapContract.propose, (s, m, permit2, MIN_OUT));
+
+        // Args layout: Permit2 tuple starts at 0x380; its nested signature offset is at +0x40.
+        _writeArgWord(data, SIGNATURE_OFFSET_WORD, bytes32(type(uint256).max));
+
+        new DeployPermit2().deployPermit2();
+
+        uint256 nextIdBefore = swapContract.nextSwapId();
+        uint256 swapperTokenBefore = sellToken.balanceOf(swapper);
+        uint256 oracleTokenBefore = sellToken.balanceOf(address(oracle));
+        uint256 coreCreditBefore = oracle.tokenHolder(address(swapContract), address(sellToken));
+        uint256 coreEthBefore = address(swapContract).balance;
+        uint256 eth = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
+
+        vm.prank(swapper);
+        (bool ok, bytes memory ret) = address(swapContract).call{value: eth}(data);
+
+        assertFalse(ok, "malformed Permit2 signature offset must fail closed");
+        assertEq(bytes4(ret), INVALID_SIGNATURE_LENGTH, "authentic Permit2 rejects the decoded empty signature");
+        assertEq(swapContract.nextSwapId(), nextIdBefore, "nextSwapId rolls back");
+        assertEq(swapContract.swaps(nextIdBefore), bytes32(0), "no proposal is stored");
+        assertEq(sellToken.balanceOf(swapper), swapperTokenBefore, "swapper tokens do not move");
+        assertEq(sellToken.balanceOf(address(oracle)), oracleTokenBefore, "oracle custody does not change");
+        assertEq(
+            oracle.tokenHolder(address(swapContract), address(sellToken)), coreCreditBefore, "core receives no credit"
+        );
+        assertEq(address(swapContract).balance, coreEthBefore, "gas compensation deposit rolls back");
+    }
+
+    function testDirtyCalldata_Permit2OuterOffsetsFailAtTheAbiBoundary() public {
+        (bytes memory clean, uint256 eth) = _permit2CallData(35, _signature35());
+        _assertPermit2AbiReject(_withArgWord(clean, PERMIT2_HEAD_OFFSET, bytes32(type(uint256).max)), eth, "head=max");
+        _assertPermit2AbiReject(_withArgWord(clean, PERMIT2_HEAD_OFFSET, bytes32(uint256(1 << 200))), eth, "head=huge");
+        _assertPermit2AbiReject(_withArgWord(clean, PERMIT2_HEAD_OFFSET, bytes32(uint256(0))), eth, "head=static");
+        _assertPermit2AbiReject(_withArgWord(clean, PERMIT2_HEAD_OFFSET, bytes32(clean.length)), eth, "head=past-end");
+    }
+
+    function testDirtyCalldata_Permit2NestedOffsetsAndLengthsFailAtTheAbiBoundary() public {
+        (bytes memory clean, uint256 eth) = _permit2CallData(35, _signature35());
+        _assertPermit2AbiReject(
+            _withArgWord(clean, SIGNATURE_OFFSET_WORD, bytes32(uint256(1 << 128))), eth, "sig-offset=huge"
+        );
+        _assertPermit2AbiReject(
+            _withArgWord(clean, SIGNATURE_OFFSET_WORD, bytes32(clean.length)), eth, "sig-offset=past-end"
+        );
+        _assertPermit2AbiReject(
+            _withArgWord(clean, SIGNATURE_LENGTH_WORD, bytes32(type(uint256).max)), eth, "sig-length=max"
+        );
+        _assertPermit2AbiReject(
+            _withArgWord(clean, SIGNATURE_LENGTH_WORD, bytes32(uint256(10_000))), eth, "sig-length=past-end"
+        );
+    }
+
+    function testDirtyCalldata_Permit2TruncationIntoDeclaredSignatureFailsAtTheAbiBoundary() public {
+        (bytes memory clean, uint256 eth) = _permit2CallData(35, _signature35());
+        _assertPermit2AbiReject(_truncate(clean, clean.length - 30), eth, "one declared signature byte removed");
+        _assertPermit2AbiReject(_truncate(clean, 4 + SIGNATURE_LENGTH_WORD), eth, "length word removed");
+    }
+
+    function testDirtyCalldata_InBoundsSignatureRepointOnlyChangesBytesForwardedToPermit2() public {
+        bytes memory expectedSignature = _signature35();
+        (bytes memory clean, uint256 eth) = _permit2CallData(35, expectedSignature);
+
+        uint256 snap = vm.snapshotState();
+        vm.prank(swapper);
+        (bool cleanOk,) = address(swapContract).call{value: eth}(clean);
+        assertTrue(cleanOk, "clean control");
+        uint256 cleanSwapId = swapContract.nextSwapId() - 1;
+        bytes32 cleanHash = swapContract.swaps(cleanSwapId);
+        assertEq(keccak256(MockPermit2(PERMIT2).lastSignature()), keccak256(expectedSignature), "clean signature");
+        vm.revertToState(snap);
+
+        bytes memory repointed = _withArgWord(clean, SIGNATURE_OFFSET_WORD, bytes32(uint256(0)));
+        vm.prank(swapper);
+        (bool ok,) = address(swapContract).call{value: eth}(repointed);
+        assertTrue(ok, "in-bounds repoint is lawful ABI");
+
+        bytes memory observed = MockPermit2(PERMIT2).lastSignature();
+        assertEq(observed.length, 35, "nonce is reinterpreted as signature length");
+        assertTrue(keccak256(observed) != keccak256(expectedSignature), "forwarded bytes genuinely changed");
+        assertEq(swapContract.nextSwapId() - 1, cleanSwapId, "same swap id");
+        assertEq(swapContract.swaps(cleanSwapId), cleanHash, "Permit2 bytes cannot alter the stored commitment");
+    }
+
+    function testDirtyCalldata_NonzeroSignaturePaddingIsIgnored() public {
+        bytes memory expectedSignature = _signature35();
+        (bytes memory data, uint256 eth) = _permit2CallData(35, expectedSignature);
+        for (uint256 i = expectedSignature.length; i < 64; ++i) {
+            data[4 + SIGNATURE_DATA_OFFSET + i] = 0xab;
+        }
+
+        vm.prank(swapper);
+        (bool ok,) = address(swapContract).call{value: eth}(data);
+        assertTrue(ok, "nonzero bytes-tail padding is lawful ABI");
+        bytes memory observed = MockPermit2(PERMIT2).lastSignature();
+        assertEq(observed.length, expectedSignature.length, "declared length bounds the forwarded bytes");
+        assertEq(keccak256(observed), keccak256(expectedSignature), "padding is not forwarded to Permit2");
+    }
+
+    function testDirtyCalldata_TruncatedSignaturePaddingIsAcceptedAndInert() public {
+        bytes memory expectedSignature = _signature35();
+        (bytes memory clean, uint256 eth) = _permit2CallData(35, expectedSignature);
+        bytes memory shortened = _truncate(clean, clean.length - 29);
+
+        vm.prank(swapper);
+        (bool ok,) = address(swapContract).call{value: eth}(shortened);
+        assertTrue(ok, "declared bytes remain even though ABI padding was removed");
+        assertEq(
+            keccak256(MockPermit2(PERMIT2).lastSignature()), keccak256(expectedSignature), "same signature is forwarded"
+        );
+    }
+
+    function _permit2CallData(uint256 nonce, bytes memory signature)
+        internal
+        view
+        returns (bytes memory data, uint256 eth)
+    {
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _buildCleanInputs();
+        openSwapV2.Permit2Params memory permit2 =
+            openSwapV2.Permit2Params({nonce: nonce, deadline: type(uint256).max, signature: signature});
+        data = abi.encodeCall(swapContract.propose, (s, m, permit2, MIN_OUT));
+        eth = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
+    }
+
+    function _signature35() internal pure returns (bytes memory) {
+        return hex"1122334455667788990011223344556677889900112233445566778899001122334455";
+    }
+
+    function _writeArgWord(bytes memory data, uint256 argOffset, bytes32 value) internal pure {
+        assembly ("memory-safe") {
+            mstore(add(add(data, 0x24), argOffset), value)
+        }
+    }
+
+    function _withArgWord(bytes memory clean, uint256 argOffset, bytes32 value)
+        internal
+        pure
+        returns (bytes memory out)
+    {
+        out = bytes.concat(clean);
+        _writeArgWord(out, argOffset, value);
+    }
+
+    function _truncate(bytes memory data, uint256 newLength) internal pure returns (bytes memory out) {
+        require(newLength <= data.length, "bad truncation");
+        out = new bytes(newLength);
+        for (uint256 i; i < newLength; ++i) {
+            out[i] = data[i];
+        }
+    }
+
+    function _assertPermit2AbiReject(bytes memory data, uint256 eth, string memory label) internal {
+        uint256 nextIdBefore = swapContract.nextSwapId();
+        uint256 callsBefore = MockPermit2(PERMIT2).callCount();
+        uint256 swapperTokenBefore = sellToken.balanceOf(swapper);
+        uint256 coreEthBefore = address(swapContract).balance;
+
+        vm.prank(swapper);
+        (bool ok, bytes memory ret) = address(swapContract).call{value: eth}(data);
+
+        assertFalse(ok, string.concat(label, ": malformed calldata accepted"));
+        assertEq(ret.length, 0, string.concat(label, ": expected ABI-boundary empty revert"));
+        assertEq(MockPermit2(PERMIT2).callCount(), callsBefore, string.concat(label, ": Permit2 was reached"));
+        assertEq(swapContract.nextSwapId(), nextIdBefore, string.concat(label, ": nextSwapId changed"));
+        assertEq(swapContract.swaps(nextIdBefore), bytes32(0), string.concat(label, ": proposal stored"));
+        assertEq(sellToken.balanceOf(swapper), swapperTokenBefore, string.concat(label, ": tokens moved"));
+        assertEq(address(swapContract).balance, coreEthBefore, string.concat(label, ": ETH retained"));
+    }
+
     // ProposedSwap layout:
     //   0x000  sellAmt              uint128
     //   0x020  minFulfillLiquidity  uint128
@@ -122,33 +307,113 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     //   0x340  Permit2Params offset (dynamic)
     //   0x360  minOut               uint128
 
-    function testBoundary_SellAmt() public { _assertBoundary(0x000, 16, "sellAmt"); }
-    function testBoundary_MinFulfillLiquidity() public { _assertBoundary(0x020, 16, "minFulfillLiquidity"); }
-    function testBoundary_SettlerReward() public { _assertBoundary(0x040, 12, "settlerReward"); }
-    function testBoundary_MaxGameTime() public { _assertBoundary(0x060, 3, "maxGameTime"); }
-    function testBoundary_BlocksPerSecond() public { _assertBoundary(0x080, 2, "blocksPerSecond"); }
-    function testBoundary_BuyToken() public { _assertBoundary(0x0A0, 20, "buyToken"); }
-    function testBoundary_MatcherGasComp() public { _assertBoundary(0x0C0, 12, "matcherGasComp"); }
-    function testBoundary_SellToken() public { _assertBoundary(0x0E0, 20, "sellToken"); }
-    function testBoundary_Swapper() public { _assertBoundary(0x100, 20, "swapper"); }
-    function testBoundary_ExecutorGasComp() public { _assertBoundary(0x120, 12, "executorGasComp"); }
-    function testBoundary_UseInternalBalances() public { _assertBoolBoundary(0x140, "useInternalBalances"); }
-    function testBoundary_Expiration() public { _assertBoundary(0x160, 6, "expiration"); }
-    function testBoundary_PriceTolerated() public { _assertBoundary(0x180, 29, "priceTolerated"); }
-    function testBoundary_ToleranceRange() public { _assertBoundary(0x1A0, 3, "toleranceRange"); }
-    function testBoundary_InitialLiquidity() public { _assertBoundary(0x1C0, 16, "initialLiquidity"); }
-    function testBoundary_EscalationHalt() public { _assertBoundary(0x1E0, 16, "escalationHalt"); }
-    function testBoundary_SettlementTime() public { _assertBoundary(0x200, 6, "settlementTime"); }
-    function testBoundary_DisputeDelay() public { _assertBoundary(0x220, 3, "disputeDelay"); }
-    function testBoundary_ProtocolFee() public { _assertBoundary(0x240, 3, "protocolFee"); }
-    function testBoundary_Multiplier() public { _assertBoundary(0x260, 2, "multiplier"); }
-    function testBoundary_StartFulfillFeeIncrease() public { _assertBoundary(0x280, 6, "startFulfillFeeIncrease"); }
-    function testBoundary_MaxFee() public { _assertBoundary(0x2A0, 3, "maxFee"); }
-    function testBoundary_StartingFee() public { _assertBoundary(0x2C0, 3, "startingFee"); }
-    function testBoundary_RoundLength() public { _assertBoundary(0x2E0, 3, "roundLength"); }
-    function testBoundary_GrowthRate() public { _assertBoundary(0x300, 2, "growthRate"); }
-    function testBoundary_MaxRounds() public { _assertBoundary(0x320, 2, "maxRounds"); }
-    function testBoundary_MinOut() public { _assertBoundary(0x360, 16, "minOut"); }
+    function testBoundary_SellAmt() public {
+        _assertBoundary(0x000, 16, "sellAmt");
+    }
+
+    function testBoundary_MinFulfillLiquidity() public {
+        _assertBoundary(0x020, 16, "minFulfillLiquidity");
+    }
+
+    function testBoundary_SettlerReward() public {
+        _assertBoundary(0x040, 12, "settlerReward");
+    }
+
+    function testBoundary_MaxGameTime() public {
+        _assertBoundary(0x060, 3, "maxGameTime");
+    }
+
+    function testBoundary_BlocksPerSecond() public {
+        _assertBoundary(0x080, 2, "blocksPerSecond");
+    }
+
+    function testBoundary_BuyToken() public {
+        _assertBoundary(0x0A0, 20, "buyToken");
+    }
+
+    function testBoundary_MatcherGasComp() public {
+        _assertBoundary(0x0C0, 12, "matcherGasComp");
+    }
+
+    function testBoundary_SellToken() public {
+        _assertBoundary(0x0E0, 20, "sellToken");
+    }
+
+    function testBoundary_Swapper() public {
+        _assertBoundary(0x100, 20, "swapper");
+    }
+
+    function testBoundary_ExecutorGasComp() public {
+        _assertBoundary(0x120, 12, "executorGasComp");
+    }
+
+    function testBoundary_UseInternalBalances() public {
+        _assertBoolBoundary(0x140, "useInternalBalances");
+    }
+
+    function testBoundary_Expiration() public {
+        _assertBoundary(0x160, 6, "expiration");
+    }
+
+    function testBoundary_PriceTolerated() public {
+        _assertBoundary(0x180, 29, "priceTolerated");
+    }
+
+    function testBoundary_ToleranceRange() public {
+        _assertBoundary(0x1A0, 3, "toleranceRange");
+    }
+
+    function testBoundary_InitialLiquidity() public {
+        _assertBoundary(0x1C0, 16, "initialLiquidity");
+    }
+
+    function testBoundary_EscalationHalt() public {
+        _assertBoundary(0x1E0, 16, "escalationHalt");
+    }
+
+    function testBoundary_SettlementTime() public {
+        _assertBoundary(0x200, 6, "settlementTime");
+    }
+
+    function testBoundary_DisputeDelay() public {
+        _assertBoundary(0x220, 3, "disputeDelay");
+    }
+
+    function testBoundary_ProtocolFee() public {
+        _assertBoundary(0x240, 3, "protocolFee");
+    }
+
+    function testBoundary_Multiplier() public {
+        _assertBoundary(0x260, 2, "multiplier");
+    }
+
+    function testBoundary_StartFulfillFeeIncrease() public {
+        _assertBoundary(0x280, 6, "startFulfillFeeIncrease");
+    }
+
+    function testBoundary_MaxFee() public {
+        _assertBoundary(0x2A0, 3, "maxFee");
+    }
+
+    function testBoundary_StartingFee() public {
+        _assertBoundary(0x2C0, 3, "startingFee");
+    }
+
+    function testBoundary_RoundLength() public {
+        _assertBoundary(0x2E0, 3, "roundLength");
+    }
+
+    function testBoundary_GrowthRate() public {
+        _assertBoundary(0x300, 2, "growthRate");
+    }
+
+    function testBoundary_MaxRounds() public {
+        _assertBoundary(0x320, 2, "maxRounds");
+    }
+
+    function testBoundary_MinOut() public {
+        _assertBoundary(0x360, 16, "minOut");
+    }
 
     // ─── Comprehensive every-padding-byte fuzz ────────────────────────────────
     //
@@ -166,9 +431,9 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     //   minOut (uint128)                    → 16 bytes
     //   Total                               → 611 byte positions
     //
-    // We skip the dynamic Permit2Params region (0x340 offset + 0x380+ tail) — its
-    // signature is variable-length and contract usage is bounded by the permit2
-    // pre-deployed contract's own validation.
+    // This loop skips the dynamic Permit2Params region (0x340 offset + 0x380+ tail).
+    // Its malformed-offset, length, truncation, lawful-repointing, and padding cases
+    // are covered separately above against both the recorder and authentic Permit2.
     function testFuzzAllPaddingBytes_Propose_TypeDecodeRevert() public {
         uint256[] memory padBytes = _allProposePaddingByteOffsets();
         bytes1 DIRTY = 0xFF;
@@ -212,42 +477,46 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
             [uint256(0x000), uint256(16)], // sellAmt
             [uint256(0x020), uint256(16)], // minFulfillLiquidity
             [uint256(0x040), uint256(12)], // settlerReward
-            [uint256(0x060), uint256(3)],  // maxGameTime
-            [uint256(0x080), uint256(2)],  // blocksPerSecond
+            [uint256(0x060), uint256(3)], // maxGameTime
+            [uint256(0x080), uint256(2)], // blocksPerSecond
             [uint256(0x0A0), uint256(20)], // buyToken
             [uint256(0x0C0), uint256(12)], // matcherGasComp
             [uint256(0x0E0), uint256(20)], // sellToken
             [uint256(0x100), uint256(20)], // swapper (override; expected 0)
             [uint256(0x120), uint256(12)], // executorGasComp
-            [uint256(0x140), uint256(1)],  // useInternalBalances
-            [uint256(0x160), uint256(6)],  // expiration
+            [uint256(0x140), uint256(1)], // useInternalBalances
+            [uint256(0x160), uint256(6)], // expiration
             [uint256(0x180), uint256(29)], // priceTolerated
-            [uint256(0x1A0), uint256(3)],  // toleranceRange
+            [uint256(0x1A0), uint256(3)], // toleranceRange
             // MatcherPreimage at 0x1C0
             [uint256(0x1C0), uint256(16)], // initialLiquidity
             [uint256(0x1E0), uint256(16)], // escalationHalt
-            [uint256(0x200), uint256(6)],  // settlementTime
-            [uint256(0x220), uint256(3)],  // disputeDelay
-            [uint256(0x240), uint256(3)],  // protocolFee
-            [uint256(0x260), uint256(2)],  // multiplier
-            [uint256(0x280), uint256(6)],  // startFulfillFeeIncrease (override; expected 0)
-            [uint256(0x2A0), uint256(3)],  // maxFee
-            [uint256(0x2C0), uint256(3)],  // startingFee
-            [uint256(0x2E0), uint256(3)],  // roundLength
-            [uint256(0x300), uint256(2)],  // growthRate
-            [uint256(0x320), uint256(2)],  // maxRounds
+            [uint256(0x200), uint256(6)], // settlementTime
+            [uint256(0x220), uint256(3)], // disputeDelay
+            [uint256(0x240), uint256(3)], // protocolFee
+            [uint256(0x260), uint256(2)], // multiplier
+            [uint256(0x280), uint256(6)], // startFulfillFeeIncrease (override; expected 0)
+            [uint256(0x2A0), uint256(3)], // maxFee
+            [uint256(0x2C0), uint256(3)], // startingFee
+            [uint256(0x2E0), uint256(3)], // roundLength
+            [uint256(0x300), uint256(2)], // growthRate
+            [uint256(0x320), uint256(2)], // maxRounds
             // minOut (top-level uint128) at 0x360
             [uint256(0x360), uint256(16)]
         ];
 
         uint256 total = 0;
-        for (uint256 i = 0; i < fields.length; i++) total += 32 - fields[i][1];
+        for (uint256 i = 0; i < fields.length; i++) {
+            total += 32 - fields[i][1];
+        }
         out = new uint256[](total);
         uint256 k = 0;
         for (uint256 i = 0; i < fields.length; i++) {
             uint256 slotOff = fields[i][0];
             uint256 padLen = 32 - fields[i][1];
-            for (uint256 p = 0; p < padLen; p++) out[k++] = slotOff + p;
+            for (uint256 p = 0; p < padLen; p++) {
+                out[k++] = slotOff + p;
+            }
         }
     }
 }
