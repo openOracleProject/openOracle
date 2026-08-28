@@ -122,8 +122,8 @@ contract OpenOracleGGDirtyCalldataTest is BaseGGTest {
 
     function testDirtyCalldata_RevertsDirtyUint8Flags() public {
         // uint8 flags at slot 19 (offset 0x260). Value at byte 31; high 31 bytes = padding.
-        // (Setting byte 31 to 0x10 would pass decoder but hit InvalidMode — different path.
-        //  Setting a high byte tests the decoder specifically.)
+        // Setting the low byte to 0x10 lawfully enables settlement-eligibility storage;
+        // setting a high byte tests the decoder rather than flag validation.
         assertFalse(_reportWithDirtyByte(0x260, 0xff), "dirty uint8 high padding must revert");
     }
 }

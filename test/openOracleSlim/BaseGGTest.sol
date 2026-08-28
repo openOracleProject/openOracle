@@ -29,6 +29,7 @@ abstract contract BaseGGTest is Test {
     uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1;
     uint8 internal constant FLAG_STORE_ALL = 1 << 2;
     uint8 internal constant FLAG_STORE_PRICE = 1 << 3;
+    uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4;
 
     // ETH side sentinel (matches Slim.ETH_SENTINEL).
     address internal constant ETH_SENTINEL = address(0);
@@ -80,8 +81,7 @@ abstract contract BaseGGTest is Test {
     }
 
     function _emptyTiming() internal pure returns (Slim.TimingBoundaries memory) {
-        return
-            Slim.TimingBoundaries({blockNumber: 0, blockNumberBound: 0, blockTimestamp: 0, blockTimestampBound: 0});
+        return Slim.TimingBoundaries({blockNumber: 0, blockNumberBound: 0, blockTimestamp: 0, blockTimestampBound: 0});
     }
 
     function _oracleCaller() internal returns (address) {
@@ -265,10 +265,13 @@ abstract contract BaseGGTest is Test {
     }
 
     // Convenience: reporter = _oracleCaller().
-    function _report(CompatTypes.CreateReportParams memory params, uint128 amount1, uint128 amount2, bool tib1, bool tib2)
-        internal
-        returns (ReportContext memory)
-    {
+    function _report(
+        CompatTypes.CreateReportParams memory params,
+        uint128 amount1,
+        uint128 amount2,
+        bool tib1,
+        bool tib2
+    ) internal returns (ReportContext memory) {
         return _report(params, amount1, amount2, _oracleCaller(), tib1, tib2);
     }
 
@@ -286,15 +289,7 @@ abstract contract BaseGGTest is Test {
         (uint48 ct, uint48 oppo) = _timestamps(ctx.game.flags);
 
         oracle.dispute{value: ethValue}(
-            ctx.reportId,
-            newAmount1,
-            newAmount2,
-            disputer,
-            tib1,
-            tib2,
-            ctx.game,
-            ctx.helper,
-            _emptyTiming()
+            ctx.reportId, newAmount1, newAmount2, disputer, tib1, tib2, ctx.game, ctx.helper, _emptyTiming()
         );
 
         ctx.game = _gameAfterDispute(ctx.game, newAmount1, newAmount2, disputer, ct, oppo);
@@ -302,14 +297,10 @@ abstract contract BaseGGTest is Test {
     }
 
     // Convenience: disputer = _oracleCaller(), value = 0 (ERC20 pair).
-    function _dispute(
-        ReportContext memory ctx,
-        address,
-        uint128 newAmount1,
-        uint128 newAmount2,
-        bool tib1,
-        bool tib2
-    ) internal returns (ReportContext memory) {
+    function _dispute(ReportContext memory ctx, address, uint128 newAmount1, uint128 newAmount2, bool tib1, bool tib2)
+        internal
+        returns (ReportContext memory)
+    {
         return _dispute(ctx, address(0), newAmount1, newAmount2, _oracleCaller(), tib1, tib2, 0);
     }
 

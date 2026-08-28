@@ -148,16 +148,16 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
     function testReport_RevertsFlagsAboveMax() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
-        p.flags = 0x10; // bit 4 — no flag uses it, must revert
+        p.flags = 0x20; // bit 5 is undefined
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidMode.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
     function testReport_AcceptsFlagsAtMax() public {
-        // All four defined flag bits combined (0x0F) should be accepted.
+        // All five defined flag bits combined (0x1F) should be accepted.
         CompatTypes.CreateReportParams memory p = _defaultParams();
-        p.flags = 0x0F;
+        p.flags = 0x1F;
         vm.prank(alice);
         // Should not revert with InvalidMode (will pass through to the rest of report).
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
@@ -183,8 +183,8 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         CompatTypes.CreateReportParams memory p = _defaultParams();
         vm.prank(alice);
         vm.expectRevert(Errors.NeitherTokenIsETH.selector);
-        CompatTypes.reportRaw(oracle, uint256(p.settlerReward) + 1, 
-            p, 1e18, 2000e18, alice, false, false, _emptyTiming()
+        CompatTypes.reportRaw(
+            oracle, uint256(p.settlerReward) + 1, p, 1e18, 2000e18, alice, false, false, _emptyTiming()
         );
     }
 
@@ -206,9 +206,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         uint256 fee = uint256(ctx.game.currentAmount2) * ctx.game.feePercentage / 1e7;
 
         vm.prank(bob);
-        oracle.dispute(
-            ctx.reportId, 1.1e18, 2300e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 2300e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
 
         assertEq(
             oracle.tokenHolder(alice, address(token2)),
@@ -224,9 +222,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // newAmount1 will pass escalation check (1e18 * 110/100 = 1.1e18).
         vm.prank(bob);
         vm.expectRevert(Errors.AmountsCannotBeZero.selector);
-        oracle.dispute(
-            ctx.reportId, 1.1e18, 0, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 0, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     function testDispute_RevertsTooLate() public {
@@ -236,9 +232,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         vm.prank(bob);
         vm.expectRevert(Errors.DisputeTooLate.selector);
-        oracle.dispute(
-            ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     function testDispute_RevertsTooEarly() public {
@@ -247,9 +241,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         vm.prank(bob);
         vm.expectRevert(Errors.DisputeTooEarly.selector);
-        oracle.dispute(
-            ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     function testDispute_RevertsAlreadySettled() public {
@@ -267,9 +259,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         vm.warp(block.timestamp - 250);
         vm.prank(bob);
         vm.expectRevert(Errors.AlreadySettled.selector);
-        oracle.dispute(
-            ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     function testDispute_RevertsZeroDisputer() public {
@@ -278,19 +268,8 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
         vm.prank(bob);
         vm.expectRevert(Errors.AddressCannotBeZero.selector);
-        oracle.dispute(
-            ctx.reportId,
-            1.1e18,
-            2100e18,
-            address(0),
-            false,
-            false,
-            ctx.game,
-            ctx.helper,
-            _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.1e18, 2100e18, address(0), false, false, ctx.game, ctx.helper, _emptyTiming());
     }
-
 
     function testDispute_RevertsEscalationHalted() public {
         // Set escalationHalt low so we can reach it quickly.
@@ -305,9 +284,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // At halt, expectedAmount1 = oldAmount1 + 1. Submitting a different value reverts.
         vm.prank(bob);
         vm.expectRevert(Errors.EscalationHalted.selector);
-        oracle.dispute(
-            ctx.reportId, 1.5e18, 2900e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.5e18, 2900e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     function testDispute_RevertsInvalidAmount1_BelowEscalation() public {
@@ -318,9 +295,7 @@ contract OpenOracleGGValidationTest is BaseGGTest {
         // Submit something else.
         vm.prank(bob);
         vm.expectRevert(Errors.InvalidAmount1.selector);
-        oracle.dispute(
-            ctx.reportId, 1.05e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming()
-        );
+        oracle.dispute(ctx.reportId, 1.05e18, 2100e18, bob, false, false, ctx.game, ctx.helper, _emptyTiming());
     }
 
     // -------------------------------------------------------------------------
