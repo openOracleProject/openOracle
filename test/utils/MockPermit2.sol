@@ -14,6 +14,7 @@ contract MockPermit2 is ISignatureTransfer {
     bytes32 public lastWitness;
     string public lastWitnessTypeString;
     address public lastOwner;
+    bytes public lastSignature;
     uint256 public callCount;
 
     function permitTransferFrom(
@@ -31,11 +32,12 @@ contract MockPermit2 is ISignatureTransfer {
         address owner,
         bytes32 witness,
         string calldata witnessTypeString,
-        bytes calldata /* signature */
+        bytes calldata signature
     ) external {
         lastWitness = witness;
         lastWitnessTypeString = witnessTypeString;
         lastOwner = owner;
+        lastSignature = signature;
         callCount += 1;
         IERC20(permit.permitted.token).transferFrom(owner, transferDetails.to, transferDetails.requestedAmount);
     }
