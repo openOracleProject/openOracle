@@ -60,6 +60,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         if (reporter == address(this)) revert Errors.ContractCannotBeParticipant();
         if (swapIdToReportId(swapId) != 0) revert Errors.OracleGameInProgress();
         if (!s.active) revert Errors.NotActive();
+        if (s.maturityOnly && block.timestamp < s.maturity) revert Errors.MaturityNotReached();
 
         // since openOracle already allows atomic looped escalation when disputeDelay is 0,
         // and larger starting amounts may be useful sometimes, we allow the game to start larger in this case
@@ -173,7 +174,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         IOpenOracle2.OracleGame calldata oracleState,
         IOpenOracle2.PreimageHelper calldata oracleHelper,
         bool looseTiming
-    ) external {
+    ) external payable {
         MatchedSwap memory s = swapState;
         bytes32 passedSwapHash = keccak256(abi.encode(s));
         if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
@@ -244,9 +245,10 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         uint128 oracleAmount2 = oracleState.currentAmount2;
         bool useInternalBalances = s.useInternalBalances;
 
-        // convert block numbers to wall clock using the passed expected block cadence
-        uint48 settlementDurationSeconds = uint48(uint256(oracleState.settlementTime) * millisecondsPerBlock / 1000);
-        uint48 settlementEligibilityTimestamp = oracleState.lastReportOppoTime + settlementDurationSeconds;
+        // derive a synthetic wall-clock eligibility timestamp from the expected block cadence
+        uint48 syntheticSettlementDurationSeconds =
+            uint48(uint256(oracleState.settlementTime) * millisecondsPerBlock / 1000);
+        uint48 syntheticEligibilityTimestamp = oracleState.lastReportOppoTime + syntheticSettlementDurationSeconds;
 
         // validates slippage only for position opening
         uint256 price = Math.mulDiv(oracleAmount1, 1e30, oracleAmount2);
@@ -269,7 +271,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
 
         // as long as we are not in recovery mode, if execution is too late reject the oracle game
         bool executionTooLate = !cadenceRecovery && s.maxExecutionLatency != 0
-            && block.timestamp > uint256(settlementEligibilityTimestamp) + s.maxExecutionLatency;
+            && block.timestamp > uint256(syntheticEligibilityTimestamp) + s.maxExecutionLatency;
 
         bool slippageBailoutForOpen = !slippageOk && !active;
         // decide if position-opening oracle games should bail out and refund
@@ -288,8 +290,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 if (slippageBailoutForOpen) emit SlippageBailout(swapId);
                 if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
                 if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
-                emit PositionOpeningFailed(swapId, reportId, s);
-                emit SwapRefunded(swapId, swapper, matcher, s);
+                emit PositionOpeningFailed(swapId, reportId);
+                emit SwapRefunded(swapId, swapper, matcher);
             } else {
                 // open position normally
                 uint256 openFee = Math.mulDiv(s.notional, fulfillmentFee, 1e7);
@@ -297,8 +299,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 s.active = true;
                 s.oracleAmount1 = oracleAmount1;
                 s.oracleAmount2 = oracleAmount2;
-                s.maturity = settlementEligibilityTimestamp + s.maturityWindow;
-                s.start = settlementEligibilityTimestamp;
+                s.maturity = syntheticEligibilityTimestamp + s.maturityWindow;
+                s.start = syntheticEligibilityTimestamp;
                 _clearReportId(swapId);
                 swaps[swapId] = keccak256(abi.encode(s));
                 oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(openFee));
@@ -321,30 +323,34 @@ contract OpenPuntLifecycle is OpenPuntStorage {
 
                 if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
                 if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
-                emit PositionReportBailedOut(swapId, reportId, s);
+                emit PositionReportBailedOut(swapId, reportId);
             } else {
                 // position is already active and the oracle game doesn't trigger bailout conditions
 
-                // amounts in s are the opening oracle game amounts, local variables are the closing oracle game amounts
-                uint256 currentCross = uint256(oracleAmount2) * s.oracleAmount1;
-                uint256 openingCross = uint256(s.oracleAmount2) * oracleAmount1;
+                // Amounts in s are the opening oracle amounts; locals are the closing amounts.
+                // These are the two cross-products needed for either reciprocal PnL orientation.
+                uint256 token2PerToken1CurrentCross = uint256(oracleAmount2) * s.oracleAmount1;
+                uint256 token2PerToken1OpeningCross = uint256(s.oracleAmount2) * oracleAmount1;
 
-                bool ratioIncreased = currentCross >= openingCross; // token2 per token1
+                uint256 currentCross =
+                    s.pnlUsesToken1PerToken2 ? token2PerToken1OpeningCross : token2PerToken1CurrentCross;
+                uint256 openingCross =
+                    s.pnlUsesToken1PerToken2 ? token2PerToken1CurrentCross : token2PerToken1OpeningCross;
+
+                bool ratioIncreased = currentCross >= openingCross;
                 uint256 priceDelta = ratioIncreased ? currentCross - openingCross : openingCross - currentCross;
                 bool swapperProfits = ratioIncreased == s.swapperIsLong;
-                uint256 closeFees = Math.mulDiv(s.notional, s.fulfillmentFee, 1e7);
-
-                uint256 timeElapsed = uint256(settlementEligibilityTimestamp) - s.start;
+                uint256 syntheticTimeElapsed = uint256(syntheticEligibilityTimestamp) - s.start;
                 int256 signedRate = int256(s.fundingRate);
                 uint256 absoluteRate = signedRate < 0 ? uint256(-signedRate) : uint256(signedRate);
-                uint256 fundingMagnitude = Math.mulDiv(s.notional, absoluteRate * timeElapsed, 1e7 * 365 days);
+                uint256 fundingMagnitude = Math.mulDiv(s.notional, absoluteRate * syntheticTimeElapsed, 1e7 * 365 days);
 
                 uint256 marginSum = uint256(initialMarginMatcher) + initialMarginSwapper;
-                uint256 pnlCap = marginSum + fundingMagnitude + closeFees + 1;
+                uint256 pnlCap = marginSum + fundingMagnitude + 1;
                 uint256 pricePnl = mulDivCapped(s.notional, priceDelta, openingCross, pnlCap);
 
                 bool intendedClose = closeRequestApplies;
-                bool maturityPassed = settlementEligibilityTimestamp >= s.maturity;
+                bool maturityPassed = syntheticEligibilityTimestamp >= s.maturity;
 
                 int256 netChange = swapperProfits ? int256(pricePnl) : -int256(pricePnl);
 
@@ -356,20 +362,18 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     netChange += int256(fundingMagnitude);
                 }
 
-                // closing fee is paid by the swapper to the matcher
-                netChange -= int256(closeFees);
-
                 int256 swapperEquity = int256(uint256(initialMarginSwapper)) + netChange;
 
                 // does this oracle price imply the swapper is in liquidation range
                 bool isLiq = swapperEquity < int256(uint256(s.maintenanceMarginSwapper));
 
                 // is a liquidation authorized
+                // Require both synthetic eligibility and real elapsed time to satisfy the notice.
+                uint256 heartbeatClock = Math.min(uint256(syntheticEligibilityTimestamp), block.timestamp);
                 bool liquidationAuthorized = s.liquidationHeartbeatMax == 0
                     || (
                         heartbeatState.reportId == reportId
-                            && uint256(settlementEligibilityTimestamp)
-                                >= uint256(heartbeatState.timestamp) + s.liquidationHeartbeatMin
+                            && heartbeatClock >= uint256(heartbeatState.timestamp) + s.liquidationHeartbeatMin
                     );
 
                 if (isLiq && !liquidationAuthorized) {
@@ -386,23 +390,25 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     _clearReportId(swapId);
 
                     emit LiquidationHeartbeatBailout(swapId, uint128(reportId));
-                    emit PositionReportBailedOut(swapId, reportId, s);
+                    emit PositionReportBailedOut(swapId, reportId);
                 } else if (isLiq) {
                     // if liquidatable AND liquidation is authorized
 
                     // end position
                     delete swaps[swapId];
                     _deleteReportId(swapId);
+                    _returnAuction(swapId, s);
 
                     // matcher gets all the collateral
                     oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(marginSum));
-                    emit PositionLiquidated(swapId, reportId, s);
+                    emit PositionLiquidated(swapId, reportId, marginSum);
                 } else if (intendedClose || maturityPassed) {
                     // if either maturity passed or the swapper wanted to close
 
                     // close position
                     delete swaps[swapId];
                     _deleteReportId(swapId);
+                    _returnAuction(swapId, s);
                     uint256 owedToSwapper;
 
                     // clamp swapper's final payout to existing margin
@@ -421,16 +427,41 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     } else {
                         oracle.pushOrCredit(collatToken, swapper, uint128(owedToSwapper));
                     }
-                    emit PositionClosed(swapId, reportId, s, owedToSwapper, owedToMatcher);
+                    emit PositionClosed(swapId, reportId, owedToSwapper, owedToMatcher);
                 } else {
                     // effectively a liquidation failure: the report passed cadence and latency checks,
                     // position is healthy, no applicable close request exists, and
                     // maturity has not passed.
                     _clearReportId(swapId);
-                    emit LiquidationFailed(swapId, reportId, s);
+                    emit LiquidationFailed(swapId, reportId);
                 }
             }
         }
+    }
+
+    /**
+     * @notice Cancels a close request while no report is live and returns any unclaimed auction funding.
+     * @dev A live report blocks cancellation so the swapper cannot revoke intent after observing its price.
+     *      This function is called through the OpenPunt core fallback and executes against core storage.
+     * @param swapId Position identifier.
+     * @param swapState Current active MatchedSwap preimage committed in swaps[swapId].
+     */
+    function cancelCloseAuction(uint256 swapId, MatchedSwap calldata swapState) external {
+        MatchedSwap memory s = swapState;
+        if (keccak256(abi.encode(s)) != swaps[swapId]) revert Errors.WrongHash();
+        if (msg.sender != s.swapper) revert Errors.NotSwapper();
+        if (!s.active) revert Errors.NotActive();
+        if (swapIdToReportId(swapId) != 0) revert Errors.OracleGameInProgress();
+        if (closeRequestBlock(swapId) == 0) revert Errors.NothingToWithdraw();
+
+        StoredDutch memory stored = closeAuctions[swapId];
+        _clearCloseRequest(swapId);
+
+        if (stored.maxReward != 0) {
+            _returnAuction(swapId, s);
+        }
+
+        emit CloseIntentCancelled(swapId);
     }
 
     /**
@@ -471,8 +502,8 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         (fees1, fees2) = OpenPuntFeeReceiver(feeReceiver).distribute();
     }
 
-    /// @dev Creates OpenPunt oracle games in block-number mode (`flags == 0`); the preimage's
-    ///      settlementTime and disputeDelay therefore represent block counts.
+    /// @dev Creates active-position games in block-number mode with settlement-eligibility storage
+    ///      enabled. The preimage's settlementTime and disputeDelay therefore represent block counts.
     /// @param s Active position supplying tokens and fee-recipient context.
     /// @param o Committed oracle-game parameters.
     /// @param timing OpenOracle timing bounds.
@@ -510,7 +541,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
             callbackContract: address(0),
             callbackGasLimit: 0,
             protocolFee: o.protocolFee,
-            flags: 0
+            flags: 1 << 4
         });
 
         reportId = oracle.report{value: settlerReward}(params, true, true, timing);
