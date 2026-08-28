@@ -34,6 +34,7 @@ library PuntErrors {
     error MustBeZero();
 
     error InvalidMaturity();
+    error MaturityNotReached();
     error InvalidMargin();
     error InvalidFundingRate();
     error InvalidReportId();
