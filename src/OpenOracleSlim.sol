@@ -33,7 +33,7 @@ contract OpenOracle {
     uint256 internal constant MULTIPLIER_PRECISION = 100;
     address internal constant ETH_SENTINEL = address(0);
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
-    uint8 internal constant FLAGS_MAX = 0x0F; // FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_ALL | FLAG_STORE_PRICE
+    uint8 internal constant FLAGS_MAX = 0x1F; // FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_ALL | FLAG_STORE_PRICE | FLAG_STORE_SETTLEMENT_ELIGIBILITY
 
     bytes32 internal constant WITNESS_TYPEHASH =
         keccak256("Witness(address beneficiary,address relayer,address swapper,bytes32 intent)");
@@ -44,6 +44,7 @@ contract OpenOracle {
     uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1; // = 2
     uint8 internal constant FLAG_STORE_ALL = 1 << 2; // = 4
     uint8 internal constant FLAG_STORE_PRICE = 1 << 3; // = 8
+    uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4; // = 16
 
     bytes4 internal constant CALLBACK_SELECTOR =
         bytes4(keccak256("openOracleCallback(uint256,uint256,uint256,uint256,address,address)"));
@@ -57,6 +58,7 @@ contract OpenOracle {
     mapping(uint256 => OracleGame) public storedGame; // reportId => optional storage
     mapping(uint256 => StoredHelper) public storedHelper; // reportId => optional stored helper
     mapping(address => mapping(address => mapping(address => uint256))) public internalAllowance; // owner => spender => token => amount
+    mapping(uint256 => uint48) public settlementEligibility; // reportId => optional stored settlement eligibility time
 
     struct DisputeRecord {
         uint128 amount1;
@@ -177,6 +179,11 @@ contract OpenOracle {
             initialRecord.amount2 = amount2;
             initialRecord.baseFee = uint128(block.basefee);
             initialRecord.reportTimestamp = reportTimestamp;
+        }
+
+        bool trackSettlementEligibility = _hasFlag(params.flags, FLAG_STORE_SETTLEMENT_ELIGIBILITY);
+        if (trackSettlementEligibility) {
+            settlementEligibility[reportId] = reportTimestamp + params.settlementTime;
         }
 
         // Force typed calldata loads for fields only used by later dispute/settle paths.
@@ -345,6 +352,10 @@ contract OpenOracle {
                 record.reportTimestamp = currentTime;
                 record.baseFee = uint128(block.basefee);
                 if (nextIndex < type(uint24).max) oracle.numReports = nextIndex + 1;
+            }
+
+            if (_hasFlag(oracle.flags, FLAG_STORE_SETTLEMENT_ELIGIBILITY)) {
+                settlementEligibility[reportId] = currentTime + oracle.settlementTime;
             }
 
             bytes32 nextStateHash;
