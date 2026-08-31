@@ -96,13 +96,21 @@ contract CancelCloseAuctionTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         uint48 requestedAt = punt.closeRequestBlock(swapId);
         assertTrue(requestedAt >= mt.game.reportTimestamp + mt.game.settlementTime, "too late for old report");
 
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertEq(punt.swapIdToReportId(swapId), 0, "old report cleared");
         assertEq(punt.closeRequestBlock(swapId), requestedAt, "future request preserved");
 

@@ -88,7 +88,7 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
         IOpenOracle2.PreimageHelper memory h;
 
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        puntLifecycle.execute(999, empty, g, h, false);
+        puntLifecycle.execute(999, empty, g, h, 0);
     }
 
     /// @dev NoOracleGame is module-only; an active position with no live report reaches it.
@@ -98,7 +98,7 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
         IOpenOracle2.PreimageHelper memory h;
 
         vm.expectRevert(PuntErrors.NoOracleGame.selector);
-        puntLifecycle.execute(swapId, active, g, h, false);
+        puntLifecycle.execute(swapId, active, g, h, 0);
     }
 
     // ── module isolation ────────────────────────────────────────────────
@@ -116,7 +116,7 @@ contract DeploymentAndRoutingTest is OpenPuntBase {
         // cannot match anything there.
         vm.prank(executor);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        lifecycleModule.execute(swapId, active, g, h, false);
+        lifecycleModule.execute(swapId, active, g, h, 0);
 
         assertEq(punt.swaps(swapId), storedBefore, "core position untouched");
         assertEq(punt.nextSwapId(), nextSwapIdBefore, "core nextSwapId untouched");

@@ -203,7 +203,7 @@ contract HashAndEventRoundTripTest is OpenPuntBase {
 
         vm.prank(executor);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        puntLifecycle.execute(swapId, tampered, g, h, false);
+        puntLifecycle.execute(swapId, tampered, g, h, 0);
 
         assertEq(punt.swaps(swapId), genuine, string.concat(field, ": stored position hash unchanged"));
     }

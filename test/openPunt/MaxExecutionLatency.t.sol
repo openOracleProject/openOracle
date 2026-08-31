@@ -132,7 +132,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
         uint256 execEth = _spendable(closeExecutor, address(0));
         vm.prank(closeExecutor);
         vm.expectRevert(PuntErrors.NoOracleGame.selector);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertEq(_spendable(closeExecutor, address(0)), execEth, "the replaying account is paid nothing further");
 
         // the decoded reusable state drives the next real report
@@ -155,7 +155,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
         // set the intent on the live report
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
         (,, bool intentBefore) = _closeState(swapId);
         assertTrue(intentBefore, "intent set while the report was live");
@@ -198,7 +198,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertFalse(
@@ -225,7 +225,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertFalse(
@@ -258,7 +258,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(
@@ -313,7 +313,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertFalse(
@@ -376,7 +376,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
         Book memory before = _book();
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, settled, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, settled, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(
@@ -407,7 +407,7 @@ contract MaxExecutionLatencyTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, settled, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, settled, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertFalse(

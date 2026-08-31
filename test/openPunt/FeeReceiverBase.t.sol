@@ -206,12 +206,12 @@ abstract contract FeeReceiverBase is AssetModeBase {
         vm.recordLogs();
         vm.prank(caller);
         (receiver, fees1, fees2) =
-            puntLifecycle.deployAndDistributeFeeReceiver(swapId, swapper_, matcher_, g.game, g.helper);
+            puntLifecycle.deployAndDistributeFeeReceiver(swapId, g.game.token1, g.game.token2, swapper_, matcher_);
         logs = vm.getRecordedLogs();
     }
 
-    /// @dev Calls `distribute()` straight on the clone: no core routing, no oracle preimages,
-    ///      no position state. The clone is a standalone permissionless sweeper once deployed.
+    /// @dev Calls `distribute()` straight on the clone with no core routing or position state.
+    ///      The clone is a standalone permissionless sweeper once deployed.
     function _distributeDirect(address receiver, address caller)
         internal
         returns (uint256 fees1, uint256 fees2, Vm.Log[] memory logs)

@@ -308,7 +308,8 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
 
         bytes memory clean = abi.encodeCall(
-            punt.close, (swapId, input, active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            punt.close,
+            (swapId, input, active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
         uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
         _assertCleanWord(clean, _argOffset(CLOSE_PERMIT2_HEAD_OFF), bytes32(tailStart), "close Permit2 head offset");
@@ -355,7 +356,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
         uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
         _assertCleanWord(clean, _argOffset(tailStart + 64), bytes32(uint256(96)), "close signature offset");
@@ -395,7 +396,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, _dutchInput(), active, false, _params(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
         uint256 tailStart = CLOSE_PERMIT2_TAIL_OFF;
 

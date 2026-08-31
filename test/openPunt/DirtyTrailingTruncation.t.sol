@@ -161,7 +161,7 @@ contract DirtyTrailingTruncationTest is DirtyEntryPointsBase {
             _reportOnPositionWithAmounts(swapId, _noDutch(), active, preimage, reporter, REPORT_EXEC_COMP, A1, A2_OPEN);
         _advanceToSettlementEligibility();
 
-        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, mt.swap, mt.game, mt.helper, false));
+        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, mt.swap, mt.game, mt.helper, 0));
 
         uint256 snap = vm.snapshotState();
         (bool okClean,) = _rawCallPunt(closeExecutor, 0, clean);

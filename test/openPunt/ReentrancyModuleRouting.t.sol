@@ -41,12 +41,14 @@ contract ReentrancyModuleRoutingTest is ReentrancyBase {
      */
     function test_moduleRoutedGuardedFunctionSharesTheCoreGuard() public {
         _seed(address(actor), 10);
-        IOpenOracle2.OracleGame memory g;
-        IOpenOracle2.PreimageHelper memory h;
 
         actor.resetObservations();
         actor.arm(
-            address(punt), abi.encodeCall(puntLifecycle.deployAndDistributeFeeReceiver, (1, swapper, matcher, g, h)), 0
+            address(punt),
+            abi.encodeCall(
+                puntLifecycle.deployAndDistributeFeeReceiver, (1, address(tokenA), address(tokenB), swapper, matcher)
+            ),
+            0
         );
         actor.exec(address(punt), 0, abi.encodeCall(punt.withdraw, (address(actor), false)));
         actor.disarm();
@@ -64,7 +66,7 @@ contract ReentrancyModuleRoutingTest is ReentrancyBase {
         IOpenOracle2.PreimageHelper memory h;
 
         actor.resetObservations();
-        actor.arm(address(punt), abi.encodeCall(puntLifecycle.execute, (1, empty, g, h, false)), 0);
+        actor.arm(address(punt), abi.encodeCall(puntLifecycle.execute, (1, empty, g, h, 0)), 0);
         actor.exec(address(punt), 0, abi.encodeCall(punt.withdraw, (address(actor), false)));
         actor.disarm();
 
@@ -96,7 +98,7 @@ contract ReentrancyModuleRoutingTest is ReentrancyBase {
         // Calling the module directly runs against the module's own empty storage.
         vm.prank(closeExecutor);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        lifecycleModule.execute(p.swapId, active, mt.game, mt.helper, false);
+        lifecycleModule.execute(p.swapId, active, mt.game, mt.helper, 0);
 
         assertEq(punt.swaps(p.swapId), coreHash, "the core position is untouched");
         _assertModuleClean(address(tokenA), address(tokenB), "direct module call");
@@ -144,7 +146,7 @@ contract ReentrancyModuleRoutingTest is ReentrancyBase {
         IOpenOracle2.PreimageHelper memory h;
 
         actor.resetObservations();
-        actor.arm(address(punt), abi.encodeCall(puntLifecycle.execute, (999, empty, g, h, false)), 0);
+        actor.arm(address(punt), abi.encodeCall(puntLifecycle.execute, (999, empty, g, h, 0)), 0);
         actor.exec(address(punt), 0, abi.encodeCall(punt.withdraw, (address(actor), false)));
         actor.disarm();
 
@@ -160,7 +162,7 @@ contract ReentrancyModuleRoutingTest is ReentrancyBase {
         IOpenOracle2.PreimageHelper memory h;
 
         // truncate the payload so the module's decoder fails
-        bytes memory good = abi.encodeCall(puntLifecycle.execute, (1, empty, g, h, false));
+        bytes memory good = abi.encodeCall(puntLifecycle.execute, (1, empty, g, h, 0));
         bytes memory bad = new bytes(good.length - 32);
         for (uint256 i = 0; i < bad.length; i++) {
             bad[i] = good[i];

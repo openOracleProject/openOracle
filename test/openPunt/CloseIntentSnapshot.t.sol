@@ -45,7 +45,15 @@ contract CloseRequestTimingTest is CloseBase {
         uint256 compBefore = punt.executionGasComp(mt.reportId);
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            mt.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         (, uint48 requestedAt, bool intent) = _closeState(swapId);
@@ -56,7 +64,7 @@ contract CloseRequestTimingTest is CloseBase {
         _advanceChain(2);
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertTrue(_hasLog(vm.getRecordedLogs(), OpenPuntStorage.PositionClosed.selector, swapId), "same report closes");
     }
 
@@ -71,7 +79,15 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            mt.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         (, uint48 requestedAt, bool intentAfter) = _closeState(swapId);
@@ -85,7 +101,7 @@ contract CloseRequestTimingTest is CloseBase {
         assertTrue(auctionHash != bytes32(0), "future auction stored");
 
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertTrue(punt.swaps(swapId) != bytes32(0), "old healthy report is reusable");
         assertEq(punt.closeRequestBlock(swapId), requestedAt, "future request survives");
         assertEq(_storedDutchState(swapId), auctionHash, "future auction survives old report");
@@ -111,7 +127,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         assertTrue(_storedDutchState(swapId) != bytes32(0), "known eligible report creates a future auction");
@@ -124,7 +140,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationFailed.selector, swapId), "healthy report remains reusable");
         (, uint48 requestAfter, bool intent) = _closeState(swapId);
@@ -140,7 +156,15 @@ contract CloseRequestTimingTest is CloseBase {
         uint256 swapperEthLedgerBefore = _spendable(swapper, address(0));
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), oldReport.swap, false, _emptyPermit2(), CLOSE_COMP, oldReport.game, oldReport.helper
+            swapId,
+            _dutchInput(),
+            oldReport.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            oldReport.game,
+            oldReport.helper,
+            0
         );
 
         assertEq(punt.swapIdToReportId(swapId), 0, "eligible old report auto-executed");
@@ -165,7 +189,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), oldReport.swap, false, _emptyPermit2(), CLOSE_COMP, oldReport.game, wrongHelper
+            swapId, _dutchInput(), oldReport.swap, false, _emptyPermit2(), CLOSE_COMP, oldReport.game, wrongHelper, 0
         );
 
         assertEq(punt.swapIdToReportId(swapId), oldReport.reportId, "old report remains live on-chain");
@@ -201,7 +225,15 @@ contract CloseRequestTimingTest is CloseBase {
         uint256 compBefore = punt.executionGasComp(mt.reportId);
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         assertEq(_storedDutchState(swapId), bytes32(0), "live disputed report needs no future auction");
@@ -227,7 +259,15 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            mt.swap,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         assertTrue(_storedDutchState(swapId) != bytes32(0), "future auction funded while old report remains");
         assertEq(swapperCollatBefore - collat.balanceOf(swapper), DUTCH_MAX, "reward escrowed");
@@ -236,7 +276,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertTrue(_hasLog(vm.getRecordedLogs(), OpenPuntStorage.PositionClosed.selector, swapId), "maturity closes");
         assertEq(punt.swaps(swapId), bytes32(0), "position terminal");
         assertEq(punt.closeRequestBlock(swapId), 0, "terminal state clears request");
@@ -252,7 +292,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper
+            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper, 0
         );
 
         assertEq(punt.swaps(swapId), bytes32(0), "maturity report terminated the position");
@@ -270,13 +310,21 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.prank(swapper);
         punt.close(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            mt.swap,
+            true,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         assertEq(collatLedgerBefore - _spendable(swapper, address(collat)), DUTCH_MAX, "internal reward escrowed");
         assertEq(ethLedgerBefore - _spendable(swapper, address(0)), CLOSE_COMP, "internal compensation escrowed");
 
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
 
         assertEq(_spendable(swapper, address(collat)), collatLedgerBefore, "reward returned to internal balance");
         assertEq(_spendable(swapper, address(0)), ethLedgerBefore, "compensation returned to internal balance");
@@ -289,7 +337,7 @@ contract CloseRequestTimingTest is CloseBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionClosed.selector, swapId), "pre-maturity eligibility");
         assertTrue(punt.swaps(swapId) != bytes32(0), "position survives");
@@ -299,7 +347,7 @@ contract CloseRequestTimingTest is CloseBase {
         (uint256 swapId, Matched memory mt) = _reportEndingRelativeToMaturity(0);
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertTrue(
             _hasLog(vm.getRecordedLogs(), OpenPuntStorage.PositionClosed.selector, swapId), "inclusive at maturity"
         );
@@ -309,7 +357,7 @@ contract CloseRequestTimingTest is CloseBase {
         (uint256 swapId, Matched memory mt) = _reportEndingRelativeToMaturity(2);
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         assertTrue(
             _hasLog(vm.getRecordedLogs(), OpenPuntStorage.PositionClosed.selector, swapId), "past maturity closes"
         );
@@ -325,7 +373,8 @@ contract CloseRequestTimingTest is CloseBase {
             _emptyPermit2(),
             CLOSE_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
     }
 

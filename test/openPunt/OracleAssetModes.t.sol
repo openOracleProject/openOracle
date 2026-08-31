@@ -125,7 +125,7 @@ contract OracleAssetModesTest is AssetModeBase {
         // a genuine close intent, so the report resolves the position
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);

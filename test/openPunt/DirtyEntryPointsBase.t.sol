@@ -9,7 +9,8 @@ abstract contract DirtyEntryPointsBase is DirtyCalldataBase {
     //
     //   close(uint256 swapId, CloseDutch dutch, MatchedSwap swapState,
     //         bool useInternalBalances, Permit2Params permit2, uint128 altGasCompExec,
-    //         OracleGame oracleState, PreimageHelper oracleHelper)
+    //         OracleGame oracleState, PreimageHelper oracleHelper,
+    //         uint8 settlementTimestampSearchDepth)
     //
     //   0     swapId                (1 word)
     //   32    CloseDutch            (11 words -> 352 bytes)
@@ -19,7 +20,8 @@ abstract contract DirtyEntryPointsBase is DirtyCalldataBase {
     //   1440  altGasCompExec        (1 word)
     //   1472  OracleGame            (20 words -> 640 bytes)
     //   2112  PreimageHelper        (4 words -> 128 bytes)
-    //   2240  Permit2Params TAIL
+    //   2240  settlementTimestampSearchDepth (1 word)
+    //   2272  Permit2Params TAIL
     uint256 internal constant CLOSE_DUTCH_OFF = 32;
     uint256 internal constant CLOSE_MATCHED_OFF = 384;
     uint256 internal constant CLOSE_USE_INTERNAL_OFF = 1376;
@@ -27,7 +29,8 @@ abstract contract DirtyEntryPointsBase is DirtyCalldataBase {
     uint256 internal constant CLOSE_ALT_COMP_OFF = 1440;
     uint256 internal constant CLOSE_GAME_OFF = 1472;
     uint256 internal constant CLOSE_HELPER_OFF = 2112;
-    uint256 internal constant CLOSE_PERMIT2_TAIL_OFF = 2240;
+    uint256 internal constant CLOSE_SEARCH_DEPTH_OFF = 2240;
+    uint256 internal constant CLOSE_PERMIT2_TAIL_OFF = 2272;
 
     // ── propose() top-level argument offsets ────────────────────────────
     //

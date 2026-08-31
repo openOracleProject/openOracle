@@ -283,7 +283,7 @@ contract FeeReceiverDistributionTest is FeeReceiverBase {
         _advanceValidToEligibility(g);
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, openingMt.swap, g.game, g.helper, false);
+        puntLifecycle.execute(p.swapId, openingMt.swap, g.game, g.helper, 0);
         OpenPuntStorage.MatchedSwap memory active =
             _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
         assertTrue(active.active, "position opened");
@@ -321,8 +321,8 @@ contract FeeReceiverDistributionTest is FeeReceiverBase {
     //  7. Distribution after terminal position deletion
     // ══════════════════════════════════════════════════════════════════
 
-    /// @dev Fee ownership survives the position: the oracle game and the clone's immutable args
-    ///      carry it, so no live position hash is required.
+    /// @dev Fee ownership survives the position because the clone's immutable arguments carry it,
+    ///      so no live position hash or oracle preimage is required.
     function test_feesRemainDistributableAfterThePositionIsDeleted() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _defaultFeeCfg();
         s.maturityWindow = 1; // mature by the time the closing report executes, so it truly closes
@@ -337,10 +337,9 @@ contract FeeReceiverDistributionTest is FeeReceiverBase {
 
         // open, then close the position for real
         _advanceValidToEligibility(g);
-        uint48 settledAt = uint48(vm.getBlockNumber()); // block mode: settle() records the BLOCK NUMBER
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, openingMt.swap, g.game, g.helper, false);
+        puntLifecycle.execute(p.swapId, openingMt.swap, g.game, g.helper, 0);
         OpenPuntStorage.MatchedSwap memory active =
             _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
 
@@ -348,24 +347,14 @@ contract FeeReceiverDistributionTest is FeeReceiverBase {
             _reportOnPositionWithAmounts(p.swapId, _noDutch(), active, p.preimage, reporter, 0, OA1, OA2);
         _advanceTimeAndBlocks(_secondsForBlocks(m.settlementTime) + 2, (_secondsForBlocks(m.settlementTime) + 2) / 2);
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
 
         assertEq(punt.swaps(p.swapId), bytes32(0), "the position is terminal");
         assertEq(receiver.code.length, 0, "the receiver was never deployed");
 
-        // The genuine settled opening state still authenticates deployment.
-        IOpenOracle2.OracleGame memory settled = abi.decode(abi.encode(g.game), (IOpenOracle2.OracleGame));
-        settled.settlementTimestamp = settledAt; // block mode: a BLOCK NUMBER
-        assertEq(
-            oracle.oracleGame(g.reportId),
-            keccak256(abi.encode(settled, g.helper)),
-            "the settled opening state is still the oracle's commitment"
-        );
-        Game memory settledGame = Game({reportId: g.reportId, game: settled, helper: g.helper});
-
         FeeBook memory before = _feeBook(receiver, address(tokenA), address(tokenB));
         (address deployed, uint256 fees1, uint256 fees2,) =
-            _deployAndDistribute(p.swapId, swapper, matcher, settledGame, outsider);
+            _deployAndDistribute(p.swapId, swapper, matcher, g, outsider);
 
         assertEq(deployed, receiver, "deployed permissionlessly after deletion");
         assertEq(fees1, fee, "all previously accrued fees distributed");
@@ -375,7 +364,7 @@ contract FeeReceiverDistributionTest is FeeReceiverBase {
 
         // idempotent
         FeeBook memory before2 = _feeBook(receiver, address(tokenA), address(tokenB));
-        (, uint256 again1, uint256 again2,) = _deployAndDistribute(p.swapId, swapper, matcher, settledGame, outsider);
+        (, uint256 again1, uint256 again2,) = _deployAndDistribute(p.swapId, swapper, matcher, g, outsider);
         assertEq(again1, 0, "repeat is a no-op");
         assertEq(again2, 0, "repeat is a no-op");
         _assertDistributed(before2, receiver, address(tokenA), address(tokenB), 0, 0, "idempotent repeat");

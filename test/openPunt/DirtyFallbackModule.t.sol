@@ -51,11 +51,11 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
     //   32    MatchedSwap     31 words -> 992
     //   1024  OracleGame      20 words -> 640
     //   1664  PreimageHelper  4 words  -> 128
-    //   1792  looseTiming     bool
+    //   1792  settlementTimestampSearchDepth  uint8
     uint256 internal constant EX_MATCHED_OFF = 32;
     uint256 internal constant EX_GAME_OFF = 1024;
     uint256 internal constant EX_HELPER_OFF = 1664;
-    uint256 internal constant EX_LOOSE_OFF = 1792;
+    uint256 internal constant EX_SEARCH_DEPTH_OFF = 1792;
 
     uint256 internal swapId;
     OpenPuntStorage.MatchedSwap internal active;
@@ -191,7 +191,7 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
     }
 
     function _cleanExecute(Eligible memory e) internal view returns (bytes memory) {
-        return abi.encodeCall(puntLifecycle.execute, (swapId, e.swap, e.game, e.helper, false));
+        return abi.encodeCall(puntLifecycle.execute, (swapId, e.swap, e.game, e.helper, 0));
     }
 
     function test_executeCalldataLayout() public {
@@ -279,13 +279,21 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
         assertEq(kind, R_EMPTY, "ABI decode failure");
     }
 
-    function test_execute_looseTimingTwo() public {
+    function test_execute_dirtySettlementSearchDepthIsAnAbiDecodeFailure() public {
         Eligible memory e = _eligible();
         bytes memory clean = _cleanExecute(e);
-        uint256 off = _argOffset(EX_LOOSE_OFF);
-        _assertCleanWord(clean, off, bytes32(uint256(0)), "execute.looseTiming");
-        (uint8 kind,) = _rejectExecute(_withWord(clean, off, bytes32(uint256(2))), e, "execute/looseTiming = 2");
-        assertEq(kind, R_EMPTY, "a non-Boolean looseTiming is an ABI decode failure");
+        uint256 off = _argOffset(EX_SEARCH_DEPTH_OFF);
+        _assertCleanWord(clean, off, bytes32(uint256(0)), "execute.settlementTimestampSearchDepth");
+        (uint8 kind,) = _rejectExecute(_withByte(clean, off, 0x01), e, "execute/search-depth padding");
+        assertEq(kind, R_EMPTY, "dirty uint8 padding is an ABI decode failure");
+    }
+
+    function test_executeSearchDepthAboveMaximumReachesValidation() public {
+        Eligible memory e = _eligible();
+        bytes memory clean = _cleanExecute(e);
+        uint256 off = _argOffset(EX_SEARCH_DEPTH_OFF);
+        (, bytes4 sel) = _rejectExecute(_withWord(clean, off, bytes32(uint256(201))), e, "execute/search depth 201");
+        assertEq(sel, PuntErrors.InvalidSettlementLookback.selector, "canonical uint8 reaches the depth bound");
     }
 
     /**
@@ -341,7 +349,7 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
         (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
 
         fc.clean = abi.encodeCall(
-            puntLifecycle.deployAndDistributeFeeReceiver, (p.swapId, swapper, matcher, mt.game, mt.helper)
+            puntLifecycle.deployAndDistributeFeeReceiver, (p.swapId, mt.game.token1, mt.game.token2, swapper, matcher)
         );
         fc.receiver = mt.game.protocolFeeRecipient;
         fc.swapId = p.swapId;
@@ -370,44 +378,31 @@ contract DirtyFallbackModuleTest is DirtyEntryPointsBase {
         assertGt(fc.receiver.code.length, 0, "and deploys the clone");
     }
 
+    function test_feeReceiver_dirtyTopLevelToken1Address() public {
+        FeeCase memory fc = _feeCase();
+        uint256 off = _argOffset(32);
+        _assertCleanWord(fc.clean, off, bytes32(uint256(uint160(address(tokenA)))), "deployAndDistribute.token1");
+        assertEq(_rejectFee(fc, _withByte(fc.clean, off + 4, 0x01), "fee/token1 padding"), R_EMPTY, "decode failure");
+    }
+
+    function test_feeReceiver_dirtyTopLevelToken2Address() public {
+        FeeCase memory fc = _feeCase();
+        uint256 off = _argOffset(64);
+        _assertCleanWord(fc.clean, off, bytes32(uint256(uint160(address(tokenB)))), "deployAndDistribute.token2");
+        assertEq(_rejectFee(fc, _withByte(fc.clean, off + 4, 0x01), "fee/token2 padding"), R_EMPTY, "decode failure");
+    }
+
     function test_feeReceiver_dirtyTopLevelSwapperAddress() public {
         FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(32); // top-level swapper
+        uint256 off = _argOffset(96);
         _assertCleanWord(fc.clean, off, bytes32(uint256(uint160(swapper))), "deployAndDistribute.swapper");
         assertEq(_rejectFee(fc, _withByte(fc.clean, off + 4, 0x01), "fee/swapper padding"), R_EMPTY, "decode failure");
     }
 
     function test_feeReceiver_dirtyTopLevelMatcherAddress() public {
         FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(64); // top-level matcher
+        uint256 off = _argOffset(128);
         _assertCleanWord(fc.clean, off, bytes32(uint256(uint160(matcher))), "deployAndDistribute.matcher");
         assertEq(_rejectFee(fc, _withByte(fc.clean, off + 4, 0x01), "fee/matcher padding"), R_EMPTY, "decode failure");
-    }
-
-    function test_feeReceiver_dirtyOracleTokenAddress() public {
-        FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(96 + 32 * 5); // OracleGame.token1
-        assertEq(_rejectFee(fc, _withByte(fc.clean, off + 2, 0x01), "fee/token1 padding"), R_EMPTY, "decode failure");
-    }
-
-    function test_feeReceiver_dirtyFeeRecipientAddress() public {
-        FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(96 + 32 * 9); // OracleGame.protocolFeeRecipient
-        _assertCleanWord(fc.clean, off, bytes32(uint256(uint160(fc.receiver))), "OracleGame.protocolFeeRecipient");
-        assertEq(_rejectFee(fc, _withByte(fc.clean, off + 1, 0x01), "fee/recipient padding"), R_EMPTY, "decode failure");
-    }
-
-    function test_feeReceiver_dirtyNarrowOracleField() public {
-        FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(96 + 32 * 12); // OracleGame.numReports, a uint24
-        assertEq(
-            _rejectFee(fc, _withByte(fc.clean, off + 28, 0x01), "fee/numReports padding"), R_EMPTY, "decode failure"
-        );
-    }
-
-    function test_feeReceiver_dirtyHelperCreator() public {
-        FeeCase memory fc = _feeCase();
-        uint256 off = _argOffset(96 + 20 * 32 + 32 * 1); // PreimageHelper.creator
-        assertEq(_rejectFee(fc, _withByte(fc.clean, off + 6, 0x01), "fee/creator padding"), R_EMPTY, "decode failure");
     }
 }

@@ -66,7 +66,7 @@ contract OpeningRefundModesTest is AssetModeBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(_hasBailoutLog(logs, OpenPuntStorage.SlippageBailout.selector, swapId), "slippage bailout");

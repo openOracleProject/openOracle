@@ -35,7 +35,15 @@ contract CloseWithLiveReportTest is CloseBase {
         vm.recordLogs();
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         (uint256 reportIdTopic, uint128 added) = _readCloseIntentSet(vm.getRecordedLogs(), swapId);
@@ -54,13 +62,29 @@ contract CloseWithLiveReportTest is CloseBase {
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
         punt.close{value: CLOSE_COMP - 1}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
         punt.close{value: CLOSE_COMP + 1}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         assertEq(punt.closeRequestBlock(swapId), 0, "rejected calls set no request");
@@ -74,7 +98,15 @@ contract CloseWithLiveReportTest is CloseBase {
 
         vm.prank(swapper);
         punt.close(
-            swapId, _dutchInput(), active, true, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            true,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         assertEq(_spendable(swapper, address(0)), ledgerBefore - CLOSE_COMP, "only compensation consumed");
         assertEq(punt.executionGasComp(mt.reportId), compBefore + CLOSE_COMP, "report topped up");
@@ -85,7 +117,9 @@ contract CloseWithLiveReportTest is CloseBase {
         uint256 compBefore = punt.executionGasComp(mt.reportId);
 
         vm.prank(swapper);
-        punt.close(swapId, _dutchInput(), active, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper());
+        punt.close(
+            swapId, _dutchInput(), active, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
+        );
         assertTrue(punt.closeRequestBlock(swapId) != 0, "request recorded");
         assertEq(punt.executionGasComp(mt.reportId), compBefore, "nothing added");
     }
@@ -94,13 +128,29 @@ contract CloseWithLiveReportTest is CloseBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,,) = _positionWithLiveReport();
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.CloseIntentLive.selector);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
     }
 
@@ -115,7 +165,7 @@ contract CloseWithLiveReportTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, nonsense, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, nonsense, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
         assertEq(_storedDutchState(swapId), bytes32(0), "no auction stored");
         assertEq(punt.executionGasComp(mt.reportId), REPORTER_COMP + CLOSE_COMP, "only comp changed");
@@ -127,7 +177,15 @@ contract CloseWithLiveReportTest is CloseBase {
         vm.prank(outsider);
         vm.expectRevert(PuntErrors.NotSwapper.selector);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         assertEq(punt.closeRequestBlock(swapId), 0, "no request");
     }
@@ -136,7 +194,15 @@ contract CloseWithLiveReportTest is CloseBase {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,, Matched memory mt) = _positionWithLiveReport();
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         Vm.Log[] memory logs = _executeReport(swapId, mt, closeExecutor);
@@ -157,13 +223,21 @@ contract CloseWithLiveReportTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _emptyPermit2(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         uint48 requestedAt = punt.closeRequestBlock(swapId);
         assertEq(requestedAt, first.game.reportTimestamp + first.game.settlementTime, "exact boundary");
 
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, first.swap, first.game, first.helper, false);
+        puntLifecycle.execute(swapId, first.swap, first.game, first.helper, 0);
         assertTrue(punt.swaps(swapId) != bytes32(0), "old report did not close");
         assertEq(punt.closeRequestBlock(swapId), requestedAt, "request preserved");
 

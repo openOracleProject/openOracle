@@ -187,47 +187,6 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  OracleGame + PreimageHelper through the routed fallback
-    //  deployAndDistributeFeeReceiver() — 437 + 12 padding bytes
-    // ══════════════════════════════════════════════════════════════════
-
-    function _feeSweep() internal returns (Sweep memory sw) {
-        (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
-            _tokenCfg(address(tokenA), address(tokenB), address(collat), false);
-        // a nonzero protocol fee is what makes matchSwap assign the counterfactual fee receiver;
-        // with protocolFee == 0 the game carries no recipient and the entry point is unreachable
-        m.protocolFee = 100_000; // 1e7 = 100%, so 1%
-        (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
-        assertTrue(mt.game.protocolFeeRecipient != address(0), "fixture: game carries a fee receiver");
-
-        sw = Sweep({
-            clean: abi.encodeCall(
-                puntLifecycle.deployAndDistributeFeeReceiver, (p.swapId, swapper, matcher, mt.game, mt.helper)
-            ),
-            structArgOffset: 96, // after swapId, swapper, matcher
-            swapId: p.swapId,
-            collatToken: s.collatToken,
-            caller: outsider,
-            value: 0
-        });
-        assertEq(sw.clean.length, 4 + 32 * 3 + 20 * 32 + 4 * 32, "deployAndDistributeFeeReceiver calldata length");
-        _assertCleanReaches(sw);
-    }
-
-    function test_oracleGamePaddingSweep() public {
-        Sweep memory sw = _feeSweep();
-        uint256 n = _sweepStruct(sw, _oracleGameFields(), "OracleGame");
-        assertEq(n, 437, "every OracleGame padding byte probed");
-    }
-
-    function test_preimageHelperPaddingSweep() public {
-        Sweep memory sw = _feeSweep();
-        sw.structArgOffset = 96 + 20 * 32;
-        uint256 n = _sweepStruct(sw, _preimageHelperFields(), "PreimageHelper");
-        assertEq(n, 12, "every PreimageHelper padding byte probed");
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  Booleans: 2 is neither true nor false
     // ══════════════════════════════════════════════════════════════════
 

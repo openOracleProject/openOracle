@@ -112,7 +112,7 @@ contract NoReturnCollateralTest is TokenCompatBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         (uint256 owedS, uint256 owedM) = _readPositionClosed(logs, p.swapId);
@@ -183,7 +183,7 @@ contract NoReturnCollateralTest is TokenCompatBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(_hasBailoutLog(logs, OpenPuntStorage.SlippageBailout.selector, p.swapId), "opening bailed out");
@@ -229,7 +229,7 @@ contract NoReturnCollateralTest is TokenCompatBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         (uint256 owedS, uint256 owedM) = _readPositionClosed(vm.getRecordedLogs(), p.swapId);
         assertEq(owedS, EXPECTED_OWED_SWAPPER, "hand-derived swapper entitlement");
         assertEq(_spendable(matcher, address(nrt)) - matcherIntBefore2, owedM, "matcher paid its own entitlement");

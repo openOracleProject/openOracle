@@ -62,7 +62,8 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
                     _emptyPermit2(),
                     CLOSE_COMP,
                     _emptyOracleGame(),
-                    _emptyOracleHelper()
+                    _emptyOracleHelper(),
+                    0
                 )
             )
         );
@@ -235,7 +236,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         hookToken.resetHook();
         hookToken.armHook(address(actor), abi.encodeCall(actor.exec, (address(punt), 0, payload)));
         vm.prank(closeExecutor);
-        puntLifecycle.execute(t.swapId, t.closing.swap, t.closing.game, t.closing.helper, false);
+        puntLifecycle.execute(t.swapId, t.closing.swap, t.closing.game, t.closing.helper, 0);
         hookToken.disarmHook();
         require(hookToken.hookCount() >= 1, "the terminal payout did not call back");
     }
@@ -254,8 +255,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
     function test_terminalCallbackCannotReplayExecute() public {
         Terminal memory t = _terminal();
         _armExecute(
-            t,
-            abi.encodeCall(puntLifecycle.execute, (t.swapId, t.closing.swap, t.closing.game, t.closing.helper, false))
+            t, abi.encodeCall(puntLifecycle.execute, (t.swapId, t.closing.swap, t.closing.game, t.closing.helper, 0))
         );
 
         _assertHookReverted(PuntErrors.WrongHash.selector, "inner execute replay");
@@ -271,7 +271,17 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
             t,
             abi.encodeCall(
                 punt.close,
-                (t.swapId, input, empty, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+                (
+                    t.swapId,
+                    input,
+                    empty,
+                    false,
+                    _emptyPermit2(),
+                    CLOSE_COMP,
+                    _emptyOracleGame(),
+                    _emptyOracleHelper(),
+                    0
+                )
             )
         );
 
@@ -291,7 +301,7 @@ contract ReentrancyRefundSurfacesTest is ReentrancyBase {
         hookToken.armHook(address(punt), abi.encodeWithSelector(bytes4(0xdeadbeef)));
         hookToken.setBubbleHookRevert(true);
         vm.prank(closeExecutor);
-        puntLifecycle.execute(t.swapId, t.closing.swap, t.closing.game, t.closing.helper, false);
+        puntLifecycle.execute(t.swapId, t.closing.swap, t.closing.game, t.closing.helper, 0);
         hookToken.disarmHook();
 
         assertEq(hookToken.balanceOf(address(actor)), extBefore, "no external collateral delivered");

@@ -172,7 +172,7 @@ contract EthDeliveryFallbackTest is TokenCompatBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         (uint256 owedS, uint256 owedM) = _readPositionClosed(logs, p.swapId);
@@ -219,7 +219,7 @@ contract EthDeliveryFallbackTest is TokenCompatBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         (uint256 owedS, uint256 owedM) = _readPositionClosed(vm.getRecordedLogs(), p.swapId);
         assertEq(owedS, EXPECTED_OWED_SWAPPER, "hand-derived swapper entitlement");
         assertTrue(owedS != owedM, "asymmetric, so the recipient is checkable");
@@ -251,7 +251,17 @@ contract EthDeliveryFallbackTest is TokenCompatBase {
             closeValue,
             abi.encodeCall(
                 punt.close,
-                (p.swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+                (
+                    p.swapId,
+                    input,
+                    active,
+                    false,
+                    _emptyPermit2(),
+                    CLOSE_COMP,
+                    _emptyOracleGame(),
+                    _emptyOracleHelper(),
+                    0
+                )
             )
         );
         OpenPuntStorage.CloseDutch memory dutch = _decodeCloseAuctionStarted(vm.getRecordedLogs(), p.swapId);

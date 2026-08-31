@@ -28,14 +28,17 @@ contract HappyLifecycleTest is OpenPuntBase {
     uint24 internal constant EXPECTED_FEE = uint24(uint32(FEE_AUCTION_START)); // 10_000 == 0.1%
     // notional * fee / 1e7 = 10_000e18 * 10_000 / 1e7 = 10e18
     uint128 internal constant EXPECTED_OPEN_FEE = 10e18;
+    uint128 internal constant EXPECTED_MAX_OPEN_FEE = 20e18;
+    uint128 internal constant EXPECTED_OPEN_FEE_REFUND = EXPECTED_MAX_OPEN_FEE - EXPECTED_OPEN_FEE;
     // Reported in the same block as close(), so zero Dutch rounds elapse.
     uint128 internal constant EXPECTED_DUTCH_REWARD = DUTCH_STARTING_REWARD; // 10e18
     uint128 internal constant EXPECTED_DUTCH_LEFTOVER = DUTCH_MAX_REWARD - DUTCH_STARTING_REWARD; // 40e18
 
-    uint128 internal constant EXPECTED_MARGIN_SWAPPER_OPEN = INITIAL_MARGIN_SWAPPER - EXPECTED_OPEN_FEE; // 990e18
-    uint256 internal constant EXPECTED_MARGIN_SUM = uint256(INITIAL_MARGIN_MATCHER) + EXPECTED_MARGIN_SWAPPER_OPEN; // 1990e18
+    uint128 internal constant EXPECTED_MARGIN_SWAPPER_MATCHED = INITIAL_MARGIN_SWAPPER - EXPECTED_OPEN_FEE_REFUND;
+    uint128 internal constant EXPECTED_MARGIN_SWAPPER_OPEN = INITIAL_MARGIN_SWAPPER - EXPECTED_MAX_OPEN_FEE;
+    uint256 internal constant EXPECTED_MARGIN_SUM = uint256(INITIAL_MARGIN_MATCHER) + EXPECTED_MARGIN_SWAPPER_OPEN;
     // zero funding + unchanged price => the opening margins return unchanged
-    uint256 internal constant EXPECTED_OWED_SWAPPER = EXPECTED_MARGIN_SWAPPER_OPEN; // 990e18
+    uint256 internal constant EXPECTED_OWED_SWAPPER = EXPECTED_MARGIN_SWAPPER_OPEN; // 980e18
     uint256 internal constant EXPECTED_OWED_MATCHER = EXPECTED_MARGIN_SUM - EXPECTED_OWED_SWAPPER; // 1000e18
 
     uint256 internal constant EXPECTED_TOTAL_ETH_IN = uint256(MATCHER_GAS_COMP) + SETTLER_REWARD + OPEN_EXEC_COMP;
@@ -119,6 +122,9 @@ contract HappyLifecycleTest is OpenPuntBase {
         assertEq(punt.swapIdToReportId(swapId), expectedReportId, "P2 sidecar points at opening game");
         assertFalse(openingGame.swap.active, "P2 not yet active");
         assertEq(openingGame.swap.fulfillmentFee, EXPECTED_FEE, "P2 fee fixed at auction start");
+        assertEq(
+            openingGame.swap.initialMarginSwapper, EXPECTED_MARGIN_SWAPPER_MATCHED, "P2 unused fee reserve removed"
+        );
         assertEq(openingGame.swap.fundingRate, 0, "P2 zero funding");
         assertEq(openingGame.swap.feeRecipient, address(0), "P2 no fee receiver at zero protocol fee");
         assertEq(
@@ -130,8 +136,13 @@ contract HappyLifecycleTest is OpenPuntBase {
         assertEq(_spendable(matcher, address(collat)), b.matcherCollatInt - INITIAL_MARGIN_MATCHER, "P2 matcher margin");
         assertEq(
             _spendable(address(punt), address(collat)),
-            uint256(INITIAL_MARGIN_SWAPPER) + INITIAL_MARGIN_MATCHER,
+            uint256(EXPECTED_MARGIN_SWAPPER_MATCHED) + INITIAL_MARGIN_MATCHER,
             "P2 punt holds both margins"
+        );
+        assertEq(
+            collat.balanceOf(swapper),
+            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER + EXPECTED_OPEN_FEE_REFUND,
+            "P2 unused fee reserve returned"
         );
         assertEq(_spendable(matcher, address(tokenA)), b.matcherAInt - INITIAL_LIQUIDITY, "P2 matcher posted leg1");
         assertEq(_spendable(matcher, address(tokenB)), b.matcherBInt - AMOUNT2, "P2 matcher posted leg2");
@@ -194,7 +205,7 @@ contract HappyLifecycleTest is OpenPuntBase {
 
         assertEq(
             collat.balanceOf(swapper),
-            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER - DUTCH_MAX_REWARD,
+            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER + EXPECTED_OPEN_FEE_REFUND - DUTCH_MAX_REWARD,
             "P4 swapper funded max dutch reward"
         );
         assertEq(
@@ -224,7 +235,8 @@ contract HappyLifecycleTest is OpenPuntBase {
         assertEq(_spendable(reporter, address(collat)), EXPECTED_DUTCH_REWARD, "P5 dutch reward paid to reporter");
         assertEq(
             collat.balanceOf(swapper),
-            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER - DUTCH_MAX_REWARD + EXPECTED_DUTCH_LEFTOVER,
+            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER + EXPECTED_OPEN_FEE_REFUND - DUTCH_MAX_REWARD
+                + EXPECTED_DUTCH_LEFTOVER,
             "P5 dutch remainder pushed back to swapper"
         );
         assertEq(_spendable(swapper, address(collat)), 0, "P5 external auction creates no internal credit");
@@ -251,7 +263,7 @@ contract HappyLifecycleTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, closingGame.swap, closingGame.game, closingGame.helper, false);
+        puntLifecycle.execute(swapId, closingGame.swap, closingGame.game, closingGame.helper, 0);
 
         (uint256 owedSwapper, uint256 owedMatcher) = _decodePositionClosed(vm.getRecordedLogs(), swapId);
 
@@ -276,8 +288,8 @@ contract HappyLifecycleTest is OpenPuntBase {
     function _finalLedgerReconciliation() internal view {
         assertEq(
             collat.balanceOf(swapper),
-            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER - DUTCH_MAX_REWARD + EXPECTED_DUTCH_LEFTOVER
-                + EXPECTED_OWED_SWAPPER,
+            b.swapperCollatExt - INITIAL_MARGIN_SWAPPER + EXPECTED_OPEN_FEE_REFUND - DUTCH_MAX_REWARD
+                + EXPECTED_DUTCH_LEFTOVER + EXPECTED_OWED_SWAPPER,
             "final swapper external collat"
         );
         assertEq(_spendable(swapper, address(collat)), 0, "final swapper internal collat");
@@ -358,7 +370,7 @@ contract HappyLifecycleTest is OpenPuntBase {
 
         _advanceToSettlementEligibility();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         reached[5] = punt.swaps(p.swapId) == bytes32(0);
 
         assertTrue(reached[0], "stage: proposed");
@@ -379,7 +391,7 @@ contract HappyLifecycleTest is OpenPuntBase {
         s.collatToken = address(collat);
         s.oracleToken1 = address(tokenA);
         s.oracleToken2 = address(tokenB);
-        s.initialMarginSwapper = INITIAL_MARGIN_SWAPPER;
+        s.initialMarginSwapper = EXPECTED_MARGIN_SWAPPER_MATCHED;
         s.initialMarginMatcher = INITIAL_MARGIN_MATCHER;
         s.maintenanceMarginSwapper = MAINTENANCE_MARGIN;
         s.notional = NOTIONAL;

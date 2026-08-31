@@ -56,7 +56,17 @@ contract ReentrancyCloseAutoExecuteTest is ReentrancyBase {
     function _closeData(AutoCloseCase memory c) internal view returns (bytes memory) {
         return abi.encodeCall(
             punt.close,
-            (c.swapId, _dutchInput(), c.report.swap, false, _emptyPermit2(), CLOSE_COMP, c.report.game, c.report.helper)
+            (
+                c.swapId,
+                _dutchInput(),
+                c.report.swap,
+                false,
+                _emptyPermit2(),
+                CLOSE_COMP,
+                c.report.game,
+                c.report.helper,
+                0
+            )
         );
     }
 
@@ -71,7 +81,8 @@ contract ReentrancyCloseAutoExecuteTest is ReentrancyBase {
                 _emptyPermit2(),
                 0,
                 _emptyOracleGame(),
-                _emptyOracleHelper()
+                _emptyOracleHelper(),
+                0
             )
         );
     }

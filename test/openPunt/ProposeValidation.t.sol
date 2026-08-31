@@ -174,11 +174,11 @@ contract ProposeValidationTest is OpenPuntBase {
         _proposeOk(s, _m(), "heartbeat disabled");
 
         s = _s();
-        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (30, 300);
-        _proposeOk(s, _m(), "heartbeat min 30 / max 300");
+        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (10, 300);
+        _proposeOk(s, _m(), "heartbeat min 10 / max 300");
 
         s = _s();
-        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (30, 31);
+        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (10, 11);
         _proposeOk(s, _m(), "heartbeat max just above min");
     }
 
@@ -192,8 +192,8 @@ contract ProposeValidationTest is OpenPuntBase {
         _proposeBad(s, _m(), PuntErrors.InvalidLiquidationHeartbeat.selector, "min set, max zero");
 
         s = _s();
-        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (29, 300);
-        _proposeBad(s, _m(), PuntErrors.InvalidLiquidationHeartbeat.selector, "min 29");
+        (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (9, 300);
+        _proposeBad(s, _m(), PuntErrors.InvalidLiquidationHeartbeat.selector, "min 9");
 
         s = _s();
         (s.liquidationHeartbeatMin, s.liquidationHeartbeatMax) = (30, 301);

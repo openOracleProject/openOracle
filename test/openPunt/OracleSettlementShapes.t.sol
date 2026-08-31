@@ -51,7 +51,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
 
     /// @dev Shape 1: nobody settled; execute() settles internally and forwards the reward.
     function test_unsettledPreimageIsSettledInternally() public {
-        (Proposal memory p, Matched memory mt) = _matchedAndEligible();
+        (, Matched memory mt) = _matchedAndEligible();
         bytes32 oracleHashBefore = oracle.oracleGame(mt.reportId);
 
         OpenPuntStorage.MatchedSwap memory active = _executeOpening(mt, executor);
@@ -75,7 +75,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, settled, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, settled, mt.helper, 0);
         OpenPuntStorage.MatchedSwap memory active =
             _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
 
@@ -86,20 +86,19 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         assertEq(_spendable(settler, address(0)), SETTLER_REWARD, "reward stays with the actual settler");
     }
 
-    /// @dev Shape 3: settle lands in the same block; the stale unsettled preimage is accepted
-    ///      only through the looseTiming form.
-    function test_sameBlockSettlementRaceAcceptedWithLooseTiming() public {
+    /// @dev Shape 3: settle lands in the same block; one candidate is enough to recover it.
+    function test_sameBlockSettlementRaceAcceptedWithOneCandidate() public {
         (Proposal memory p, Matched memory mt) = _matchedAndEligible();
 
         _settleDirect(mt, settler); // same block as the execute below
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, true);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 1);
         OpenPuntStorage.MatchedSwap memory active =
             _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
 
-        assertTrue(active.active, "opened through the loose form");
+        assertTrue(active.active, "opened through settlement lookback");
         assertEq(punt.tempHolding(executor), OPEN_EXEC_COMP, "executor compensated");
         assertEq(_spendable(executor, address(0)), 0, "no reward: the executor did not settle");
         assertEq(_spendable(settler, address(0)), SETTLER_REWARD, "reward stays with the actual settler");
@@ -114,7 +113,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         OpenPuntStorage.MatchedSwap memory position,
         IOpenOracle2.OracleGame memory g,
         IOpenOracle2.PreimageHelper memory h,
-        bool looseTiming,
+        uint8 settlementTimestampSearchDepth,
         bytes4 err,
         string memory what
     ) internal {
@@ -123,13 +122,13 @@ contract OracleSettlementShapesTest is OpenPuntBase {
 
         vm.prank(executor);
         vm.expectRevert(err);
-        puntLifecycle.execute(swapId, position, g, h, looseTiming);
+        puntLifecycle.execute(swapId, position, g, h, settlementTimestampSearchDepth);
 
         assertEq(punt.swaps(swapId), storedBefore, string.concat(what, ": position unchanged"));
         assertEq(punt.tempHolding(executor), tempBefore, string.concat(what, ": executor uncompensated"));
     }
 
-    function test_sameBlockSettlementRaceRejectedWithoutLooseTiming() public {
+    function test_sameBlockSettlementRaceRejectedWithoutLookback() public {
         (Proposal memory p, Matched memory mt) = _matchedAndEligible();
         _settleDirect(mt, settler);
 
@@ -138,15 +137,13 @@ contract OracleSettlementShapesTest is OpenPuntBase {
             mt.swap,
             mt.game,
             mt.helper,
-            false,
+            0,
             PuntErrors.WrongOracleHash.selector,
-            "same-block race without looseTiming"
+            "same-block race without lookback"
         );
     }
 
-    /// @dev looseTiming only rescues a settlement in the current block: once a block has passed,
-    ///      the stale preimage no longer reconstructs.
-    function test_stalePreimageAfterLaterBlockSettlementRejected() public {
+    function test_oneBlockOldSettlementRequiresTwoCandidates() public {
         (Proposal memory p, Matched memory mt) = _matchedAndEligible();
         _settleDirect(mt, settler);
 
@@ -157,19 +154,44 @@ contract OracleSettlementShapesTest is OpenPuntBase {
             mt.swap,
             mt.game,
             mt.helper,
-            true,
+            1,
             PuntErrors.WrongOracleHash.selector,
-            "stale preimage, later block"
+            "one candidate checks only the current block"
         );
+
+        vm.recordLogs();
+        vm.prank(executor);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 2);
+        OpenPuntStorage.MatchedSwap memory active =
+            _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
+        assertTrue(active.active, "second candidate recovered the prior-block settlement");
+    }
+
+    function test_searchDepthAboveMaximumRejectsBeforeExecution() public {
+        (Proposal memory p, Matched memory mt) = _matchedAndEligible();
         _assertExecuteRejects(
             p.swapId,
             mt.swap,
             mt.game,
             mt.helper,
-            false,
-            PuntErrors.WrongOracleHash.selector,
-            "stale preimage, strict form"
+            201,
+            PuntErrors.InvalidSettlementLookback.selector,
+            "search depth 201"
         );
+    }
+
+    function test_maximumSearchDepthFindsOldestIncludedCandidate() public {
+        (Proposal memory p, Matched memory mt) = _matchedAndEligible();
+        _settleDirect(mt, settler);
+
+        _advanceChain(398); // settlement is 199 blocks old; depth 200 checks current through current - 199
+
+        vm.recordLogs();
+        vm.prank(executor);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 200);
+        OpenPuntStorage.MatchedSwap memory active =
+            _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, p.swapId);
+        assertTrue(active.active, "maximum search depth includes the 200th candidate");
     }
 
     function test_wrongHelperCreatorRejected() public {
@@ -179,7 +201,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         h.creator = outsider;
 
         _assertExecuteRejects(
-            p.swapId, mt.swap, mt.game, h, false, PuntErrors.WrongOracleHash.selector, "wrong helper creator"
+            p.swapId, mt.swap, mt.game, h, 0, PuntErrors.WrongOracleHash.selector, "wrong helper creator"
         );
     }
 
@@ -190,7 +212,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         h.reportId = mt.reportId + 1;
 
         _assertExecuteRejects(
-            p.swapId, mt.swap, mt.game, h, false, PuntErrors.InvalidReportId.selector, "wrong helper reportId"
+            p.swapId, mt.swap, mt.game, h, 0, PuntErrors.InvalidReportId.selector, "wrong helper reportId"
         );
     }
 
@@ -201,7 +223,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         h.blockNumber = mt.helper.blockNumber + 1;
 
         _assertExecuteRejects(
-            p.swapId, mt.swap, mt.game, h, false, PuntErrors.WrongOracleHash.selector, "wrong helper blockNumber"
+            p.swapId, mt.swap, mt.game, h, 0, PuntErrors.WrongOracleHash.selector, "wrong helper blockNumber"
         );
     }
 
@@ -211,19 +233,19 @@ contract OracleSettlementShapesTest is OpenPuntBase {
         IOpenOracle2.OracleGame memory g1 = abi.decode(abi.encode(mt.game), (IOpenOracle2.OracleGame));
         g1.currentAmount2 = mt.game.currentAmount2 + 1; // a "better" price for the swapper
         _assertExecuteRejects(
-            p.swapId, mt.swap, g1, mt.helper, false, PuntErrors.WrongOracleHash.selector, "tampered amount2"
+            p.swapId, mt.swap, g1, mt.helper, 0, PuntErrors.WrongOracleHash.selector, "tampered amount2"
         );
 
         IOpenOracle2.OracleGame memory g2 = abi.decode(abi.encode(mt.game), (IOpenOracle2.OracleGame));
         g2.currentReporter = outsider;
         _assertExecuteRejects(
-            p.swapId, mt.swap, g2, mt.helper, false, PuntErrors.WrongOracleHash.selector, "tampered reporter"
+            p.swapId, mt.swap, g2, mt.helper, 0, PuntErrors.WrongOracleHash.selector, "tampered reporter"
         );
 
         IOpenOracle2.OracleGame memory g3 = abi.decode(abi.encode(mt.game), (IOpenOracle2.OracleGame));
         g3.settlerReward = mt.game.settlerReward + 1;
         _assertExecuteRejects(
-            p.swapId, mt.swap, g3, mt.helper, false, PuntErrors.WrongOracleHash.selector, "tampered settlerReward"
+            p.swapId, mt.swap, g3, mt.helper, 0, PuntErrors.WrongOracleHash.selector, "tampered settlerReward"
         );
 
         // ...and the genuine state still opens the position afterwards
@@ -244,7 +266,7 @@ contract OracleSettlementShapesTest is OpenPuntBase {
             mt.swap,
             mt.game,
             mt.helper,
-            false,
+            0,
             PuntErrors.OracleSettlementNotEligible.selector,
             "before eligibility"
         );

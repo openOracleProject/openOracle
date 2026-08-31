@@ -223,14 +223,14 @@ contract CloseFundingModesTest is CloseBase {
             vm.prank(swapper);
             vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
             punt.close{value: exact - 1}(
-                swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+                swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper(), 0
             );
         }
 
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.InvalidMsgValue.selector);
         punt.close{value: exact + 1}(
-            swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         _assertUnchanged(before, swapId, active.collatToken, what);
@@ -238,7 +238,7 @@ contract CloseFundingModesTest is CloseBase {
         // and the exact value works
         vm.prank(swapper);
         punt.close{value: exact}(
-            swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, d, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
         assertTrue(_storedDutchState(swapId) != bytes32(0), string.concat(what, ": exact value accepted"));
     }

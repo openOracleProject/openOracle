@@ -54,7 +54,7 @@ contract BlockCadenceModelsTest is OpenPuntBase {
 
     function _executeCadence(Proposal memory p, Matched memory mt) internal {
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
     }
 
     function _runCadence(uint16 msPerBlock, uint48 settlementTime, uint256 dt, uint256 blocks)
@@ -75,7 +75,7 @@ contract BlockCadenceModelsTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         logs = vm.getRecordedLogs();
         swapId = p.swapId;
     }

@@ -9,6 +9,10 @@ import {Errors as OracleErrors} from "../../src/libraries/Errors.sol";
  *         adapter-shaped path where msg.sender funds a different designated matcher.
  */
 contract MatchSwapTest is OpenPuntBase {
+    uint128 internal constant EXPECTED_OPEN_FEE = 10e18;
+    uint128 internal constant EXPECTED_MAX_OPEN_FEE = 20e18;
+    uint128 internal constant EXPECTED_FEE_REFUND = EXPECTED_MAX_OPEN_FEE - EXPECTED_OPEN_FEE;
+
     /// @dev Designated counterparty starts with no oracle balances, so the
     ///      adapter path can only work if the funder's temporary transfers really happen.
     address internal designated = address(0x2001);
@@ -40,6 +44,7 @@ contract MatchSwapTest is OpenPuntBase {
     // ══════════════════════════════════════════════════════════════════
 
     function test_matchSucceedsAndEmitsTheExactExpectedState() public {
+        uint256 swapperExternalBefore = collat.balanceOf(swapper);
         Proposal memory p = _propose();
         uint48 matchTs = uint48(vm.getBlockTimestamp());
         uint256 expectedReportId = oracle.nextReportId();
@@ -53,7 +58,7 @@ contract MatchSwapTest is OpenPuntBase {
         want.collatToken = address(collat);
         want.oracleToken1 = address(tokenA);
         want.oracleToken2 = address(tokenB);
-        want.initialMarginSwapper = INITIAL_MARGIN_SWAPPER;
+        want.initialMarginSwapper = INITIAL_MARGIN_SWAPPER - EXPECTED_FEE_REFUND;
         want.initialMarginMatcher = INITIAL_MARGIN_MATCHER;
         want.maintenanceMarginSwapper = MAINTENANCE_MARGIN;
         want.notional = NOTIONAL;
@@ -84,6 +89,99 @@ contract MatchSwapTest is OpenPuntBase {
         assertEq(mt.game.currentReporter, matcher, "matcher reports the opening game");
         assertEq(mt.game.currentAmount1, INITIAL_LIQUIDITY, "opening leg1");
         assertEq(mt.game.currentAmount2, AMOUNT2, "opening leg2");
+        assertEq(
+            collat.balanceOf(swapper),
+            swapperExternalBefore - INITIAL_MARGIN_SWAPPER + EXPECTED_FEE_REFUND,
+            "unused maximum-fee reserve returned at match"
+        );
+    }
+
+    function test_internalBalanceModeReturnsUnusedFeeReserveInternally() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        s.useInternalBalances = true;
+        _mintAndDeposit(collat, swapper, INITIAL_MARGIN_SWAPPER);
+        vm.prank(swapper);
+        oracle.approveInternal(address(punt), address(collat), type(uint256).max);
+        uint256 externalBefore = collat.balanceOf(swapper);
+        uint256 internalBefore = _spendable(swapper, address(collat));
+
+        Proposal memory p = _proposeWith(s, _defaultMatcherPreimage(), swapper);
+        Matched memory mt = _matchSwap(p);
+
+        assertEq(collat.balanceOf(swapper), externalBefore, "no external delivery in internal mode");
+        assertEq(
+            _spendable(swapper, address(collat)),
+            internalBefore - INITIAL_MARGIN_SWAPPER + EXPECTED_FEE_REFUND,
+            "unused reserve returned internally"
+        );
+        assertEq(
+            mt.swap.initialMarginSwapper,
+            INITIAL_MARGIN_SWAPPER - EXPECTED_FEE_REFUND,
+            "matched margin retains only the actual-fee reserve"
+        );
+    }
+
+    function test_fixedFeeModeHasNoUnusedReserveToReturn() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        OpenPuntStorage.MatcherPreimage memory m = _defaultMatcherPreimage();
+        s.auctionFunding = true;
+        s.fulfillmentFee = uint24(uint32(FEE_AUCTION_START));
+        s.fundingRate = 0;
+        m.auctionStart = -100;
+        m.auctionEnd = 100;
+
+        uint256 externalBefore = collat.balanceOf(swapper);
+        Proposal memory p = _proposeWith(s, m, swapper);
+        uint256 afterProposal = collat.balanceOf(swapper);
+        Matched memory mt = _matchSwap(p);
+
+        assertEq(afterProposal, externalBefore - INITIAL_MARGIN_SWAPPER, "proposal posts the gross margin");
+        assertEq(collat.balanceOf(swapper), afterProposal, "fixed fee leaves no unused reserve");
+        assertEq(mt.swap.initialMarginSwapper, INITIAL_MARGIN_SWAPPER, "matched margin remains gross");
+    }
+
+    function test_refundUsesTheDifferenceOfTheTwoIndependentlyFlooredFees() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        OpenPuntStorage.MatcherPreimage memory m = _defaultMatcherPreimage();
+        s.initialMarginSwapper = 10;
+        s.initialMarginMatcher = 1;
+        s.maintenanceMarginSwapper = 0;
+        s.notional = 2;
+        m.auctionStart = 4_000_000;
+        m.auctionEnd = 8_000_000;
+
+        uint256 externalBefore = collat.balanceOf(swapper);
+        Proposal memory p = _proposeWith(s, m, swapper);
+        Matched memory mt = _matchSwap(p);
+
+        // floor(2 * 80%)-floor(2 * 40%) == 1-0 == 1. Flooring the rate difference
+        // first would incorrectly produce floor(2 * 40%) == 0.
+        assertEq(collat.balanceOf(swapper), externalBefore - 9, "the exact one-unit excess was returned");
+        assertEq(mt.swap.initialMarginSwapper, 9, "matched margin retains the zero actual fee");
+
+        _advanceToSettlementEligibility();
+        OpenPuntStorage.MatchedSwap memory active = _executeOpening(mt, executor);
+        assertEq(active.initialMarginSwapper, 9, "zero actual fee removes nothing at execution");
+    }
+
+    function test_openingBailoutCompletesTheEarlierPartialRefund() public {
+        uint256 swapperBefore = collat.balanceOf(swapper);
+        uint256 matcherBefore = _spendable(matcher, address(collat));
+        Proposal memory p = _propose();
+        Matched memory mt = _matchSwap(p);
+
+        assertEq(
+            collat.balanceOf(swapper),
+            swapperBefore - INITIAL_MARGIN_SWAPPER + EXPECTED_FEE_REFUND,
+            "unused reserve returned at match"
+        );
+
+        vm.warp(uint256(mt.swap.start) + mt.swap.maxGameTime + 1);
+        vm.prank(outsider);
+        punt.bailOutOpen(p.swapId, mt.swap);
+
+        assertEq(collat.balanceOf(swapper), swapperBefore, "gross swapper margin restored across both refunds");
+        assertEq(_spendable(matcher, address(collat)), matcherBefore, "matcher collateral restored");
     }
 
     function test_reportIdsAreSequentialAcrossPositions() public {
@@ -269,8 +367,8 @@ contract MatchSwapTest is OpenPuntBase {
         );
         assertEq(
             _spendable(address(punt), address(collat)),
-            puntCollat0 + INITIAL_MARGIN_MATCHER,
-            "core received the matcher margin"
+            puntCollat0 + INITIAL_MARGIN_MATCHER - EXPECTED_FEE_REFUND,
+            "core received matcher margin and returned unused swapper reserve"
         );
 
         // gas comp accrues to the designated matcher, not the funder

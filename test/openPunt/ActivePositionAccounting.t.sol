@@ -435,7 +435,7 @@ contract ActivePositionAccountingTest is ActivePositionBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, second.swap, second.game, second.helper, false);
+        puntLifecycle.execute(swapId, second.swap, second.game, second.helper, 0);
 
         assertTrue(
             _hasLog(vm.getRecordedLogs(), OpenPuntStorage.PositionClosed.selector, swapId),

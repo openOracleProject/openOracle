@@ -87,7 +87,8 @@ contract BlockModeZeroElapsedTest is ActivePositionBase {
             _emptyPermit2(),
             CLOSE_EXEC_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
         (, uint48 requestedAt, bool intent) = _closeState(p.swapId);
         assertTrue(intent, "close intent applies to the live report");
@@ -105,7 +106,7 @@ contract BlockModeZeroElapsedTest is ActivePositionBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         // ── the transition happened, and no cadence bailout occurred ─────
@@ -157,13 +158,14 @@ contract BlockModeZeroElapsedTest is ActivePositionBase {
             _emptyPermit2(),
             CLOSE_EXEC_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
 
         _advanceTimeAndBlocks(2, 20);
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertFalse(

@@ -66,7 +66,8 @@ contract RealPermit2CloseTest is RealPermit2Base {
             _permitParams(z.nonce, z.deadline, z.sig),
             CLOSE_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
     }
 
@@ -259,7 +260,8 @@ contract RealPermit2CloseTest is RealPermit2Base {
             _permitParams(z.nonce, z.deadline, strangerSig),
             CLOSE_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
 
         assertEq(_storedDutchState(z.swapId), bytes32(0), "no auction created");

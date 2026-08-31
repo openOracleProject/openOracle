@@ -167,7 +167,7 @@ contract CadenceRecoveryTest is LivenessBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(
@@ -175,7 +175,7 @@ contract CadenceRecoveryTest is LivenessBase {
             "opening still bails out on a broken cadence"
         );
         assertEq(punt.swaps(p.swapId), bytes32(0), "proposal deleted");
-        assertEq(collat.balanceOf(swapper), swapperExt0 + INITIAL_MARGIN_SWAPPER, "swapper refunded");
+        assertEq(collat.balanceOf(swapper), swapperExt0 + mt.swap.initialMarginSwapper, "remaining margin refunded");
         assertEq(_spendable(matcher, address(collat)), matcherCollat0 + INITIAL_MARGIN_MATCHER, "matcher refunded");
     }
 

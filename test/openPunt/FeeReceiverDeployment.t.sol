@@ -79,7 +79,7 @@ contract FeeReceiverDeploymentTest is FeeReceiverBase {
         );
     }
 
-    function test_zeroProtocolFeeCommitsNoReceiverAndCannotDeployOne() public {
+    function test_zeroProtocolFeeCommitsNoReceiverButCounterfactualCloneRemainsPermissionless() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
             _feeCfg(Legs.BothErc20, address(collat), 0);
         (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
@@ -90,12 +90,13 @@ contract FeeReceiverDeploymentTest is FeeReceiverBase {
         address predicted = _predict(p.swapId, address(tokenA), address(tokenB), swapper, matcher, address(punt));
         assertEq(predicted.code.length, 0, "nothing deployed");
 
-        // and the zero-fee game cannot be used to deploy one
-        Game memory g = _gameOf(mt);
         vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(p.swapId, swapper, matcher, g.game, g.helper);
-        assertEq(predicted.code.length, 0, "still nothing deployed");
+        (address receiver, uint256 fees1, uint256 fees2) =
+            puntLifecycle.deployAndDistributeFeeReceiver(p.swapId, address(tokenA), address(tokenB), swapper, matcher);
+        assertEq(receiver, predicted, "the supplied tuple still has a deterministic receiver");
+        assertGt(predicted.code.length, 0, "permissionless empty clone deployed");
+        assertEq(fees1, 0, "no token1 fees");
+        assertEq(fees2, 0, "no token2 fees");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -134,21 +135,27 @@ contract FeeReceiverDeploymentTest is FeeReceiverBase {
         OpenPuntFeeReceiver(impl).distribute();
     }
 
-    /// @dev The module is not the deployer of core-created games, so a raw module call cannot
-    ///      deploy a receiver for one: `oracleHelper.creator != address(this)`.
-    function test_rawModuleCallCannotDeployForACoreCreatedGame() public {
+    /// @dev A raw module call uses the module as CREATE2 deployer and therefore cannot deploy the
+    ///      receiver whose address was derived relative to the core.
+    function test_rawModuleCallDeploysOnlyAtTheModuleRelativeAddress() public {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _defaultFeeCfg();
         (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
         Game memory g = _gameOf(mt);
         (g,) = _disputeForToken1Fee(g, disputer);
 
         address predicted = _predictForPosition(p.swapId, mt.swap);
+        address modulePredicted =
+            _predict(p.swapId, address(tokenA), address(tokenB), swapper, matcher, address(lifecycleModule));
 
         vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        lifecycleModule.deployAndDistributeFeeReceiver(p.swapId, swapper, matcher, g.game, g.helper);
+        (address receiver, uint256 fees1, uint256 fees2) =
+            lifecycleModule.deployAndDistributeFeeReceiver(p.swapId, address(tokenA), address(tokenB), swapper, matcher);
 
-        assertEq(predicted.code.length, 0, "nothing deployed by the raw module call");
+        assertEq(receiver, modulePredicted, "deployed relative to the module");
+        assertGt(modulePredicted.code.length, 0, "module-relative empty clone exists");
+        assertEq(fees1, 0, "module-relative clone has no token1 fees");
+        assertEq(fees2, 0, "module-relative clone has no token2 fees");
+        assertEq(predicted.code.length, 0, "core-relative receiver remains undeployed");
         assertEq(_spendable(predicted, address(tokenA)), FEE_PER_DISPUTE, "fees untouched");
     }
 

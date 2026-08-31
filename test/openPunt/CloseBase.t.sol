@@ -133,7 +133,7 @@ abstract contract CloseBase is ActivePositionBase {
         vm.recordLogs();
         vm.prank(swapper);
         punt.close{value: value}(
-            swapId, input, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, input, active, auctionInternal, _emptyPermit2(), comp, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
         Vm.Log[] memory logs = vm.getRecordedLogs();
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.CloseAuctionStarted.selector, swapId);
@@ -171,7 +171,7 @@ abstract contract CloseBase is ActivePositionBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(who);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         logs = vm.getRecordedLogs();
     }
 

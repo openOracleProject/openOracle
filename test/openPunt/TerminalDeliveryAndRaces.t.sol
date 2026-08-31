@@ -54,7 +54,7 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         Matched memory mt = _reportWithDutch(swapId, _noDutch(), active, p.preimage, reporter, REPORTER_COMP);
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         before = _ledger();
@@ -220,13 +220,13 @@ contract TerminalDeliveryAndRacesTest is CloseBase {
         vm.prank(swapper);
         vm.expectRevert(PuntErrors.WrongHash.selector);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, false, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         // stale execute
         vm.prank(executor);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
 
         // Stale cancellation: the auction was claimed, so its hash is gone.
         vm.prank(swapper);

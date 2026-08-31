@@ -27,6 +27,7 @@ contract OpeningExecutionTest is OpenPuntBase {
     uint128 internal constant LOWER = 909_090_909_090_909_090_909_090_909_090;
 
     uint128 internal constant EXPECTED_OPEN_FEE = 10e18; // 10_000e18 * 10_000 / 1e7
+    uint128 internal constant EXPECTED_MAX_OPEN_FEE = 20e18; // 10_000e18 * 20_000 / 1e7
 
     function setUp() public {
         _setUpAll();
@@ -63,7 +64,11 @@ contract OpeningExecutionTest is OpenPuntBase {
         // position shape
         assertTrue(active.active, "active");
         assertEq(punt.swapIdToReportId(p.swapId), 0, "reportId cleared");
-        assertEq(active.initialMarginSwapper, INITIAL_MARGIN_SWAPPER - EXPECTED_OPEN_FEE, "opening fee deducted once");
+        assertEq(
+            active.initialMarginSwapper,
+            INITIAL_MARGIN_SWAPPER - EXPECTED_MAX_OPEN_FEE,
+            "active margin excludes the maximum opening-fee reserve"
+        );
         assertEq(active.initialMarginMatcher, INITIAL_MARGIN_MATCHER, "matcher margin untouched");
         assertEq(active.oracleAmount1, INITIAL_LIQUIDITY, "opening amount1 recorded");
         assertEq(active.oracleAmount2, AMOUNT2, "opening amount2 recorded");
@@ -73,7 +78,7 @@ contract OpeningExecutionTest is OpenPuntBase {
 
         // hand-built expected active state
         OpenPuntStorage.MatchedSwap memory want = _copy(mt.swap);
-        want.initialMarginSwapper = INITIAL_MARGIN_SWAPPER - EXPECTED_OPEN_FEE;
+        want.initialMarginSwapper = INITIAL_MARGIN_SWAPPER - EXPECTED_MAX_OPEN_FEE;
         want.oracleAmount1 = INITIAL_LIQUIDITY;
         want.oracleAmount2 = AMOUNT2;
         want.start = reportTs + uint48(SETTLEMENT_SECONDS);
@@ -165,7 +170,7 @@ contract OpeningExecutionTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(
@@ -212,7 +217,7 @@ contract OpeningExecutionTest is OpenPuntBase {
         _advanceToSettlementEligibility();
 
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
 
         assertEq(punt.tempHolding(executor), OPEN_EXEC_COMP, "opening comp still credited");
         assertEq(_spendable(executor, address(0)), SETTLER_REWARD, "settler reward still forwarded");
@@ -257,7 +262,7 @@ contract OpeningExecutionTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         logs = vm.getRecordedLogs();
         swapId = p.swapId;
     }
@@ -328,7 +333,7 @@ contract OpeningExecutionTest is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(executor);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertTrue(_hasBailoutLog(logs, OpenPuntStorage.SlippageBailout.selector, p.swapId), "SlippageBailout emitted");

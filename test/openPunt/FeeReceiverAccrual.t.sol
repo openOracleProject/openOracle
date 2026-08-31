@@ -98,7 +98,7 @@ contract FeeReceiverAccrualTest is FeeReceiverBase {
 
         FeeBook memory before = _feeBook(receiver, address(tokenA), address(tokenB));
 
-        // The latest genuine state authenticates the deployment.
+        // The immutable tuple derives the receiver; no oracle preimage is needed to deploy it.
         (address deployed, uint256 fees1, uint256 fees2, Vm.Log[] memory logs) =
             _deployAndDistribute(p.swapId, swapper, matcher, g, outsider);
 

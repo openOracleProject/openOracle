@@ -392,7 +392,7 @@ abstract contract OpenPuntBase is Test {
     {
         vm.recordLogs();
         vm.prank(who);
-        puntLifecycle.execute(mt.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(mt.swapId, mt.swap, mt.game, mt.helper, 0);
         opened = _decodeSingleSwapState(vm.getRecordedLogs(), OpenPuntStorage.PositionOpened.selector, mt.swapId);
     }
 
@@ -416,7 +416,7 @@ abstract contract OpenPuntBase is Test {
         vm.recordLogs();
         vm.prank(swapper);
         punt.close{value: altGasCompExec}(
-            swapId, d, active, false, _emptyPermit2(), altGasCompExec, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, d, active, false, _emptyPermit2(), altGasCompExec, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
         emittedDutch = _decodeCloseAuctionStarted(vm.getRecordedLogs(), swapId);
     }
@@ -570,7 +570,9 @@ abstract contract OpenPuntBase is Test {
         returns (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m)
     {
         Vm.Log memory l = _findLog(logs, address(punt), OpenPuntStorage.SwapProposed.selector, swapId);
+        assertEq(l.topics.length, 3, "SwapProposed indexes swapId and swapper");
         (s, m) = abi.decode(l.data, (OpenPuntStorage.ProposedSwap, OpenPuntStorage.MatcherPreimage));
+        assertEq(address(uint160(uint256(l.topics[2]))), s.swapper, "indexed swapper matches proposal payload");
     }
 
     function _decodeSwapMatched(Vm.Log[] memory logs, uint256 swapId)

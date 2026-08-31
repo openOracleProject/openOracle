@@ -132,7 +132,7 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
 
         uint256 off = _argOffset(CLOSE_USE_INTERNAL_OFF);
@@ -155,7 +155,7 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
 
         uint256 off = _argOffset(CLOSE_ALT_COMP_OFF);
@@ -176,6 +176,28 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
         assertFalse(intent, "no close intent recorded");
     }
 
+    function test_close_dirtySettlementSearchDepthPadding() public {
+        (uint256 swapId, OpenPuntStorage.MatchedSwap memory active,) = _openIdle();
+        OpenPuntStorage.CloseDutch memory input = _dutchInput();
+        bytes memory clean = abi.encodeCall(
+            punt.close,
+            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
+        );
+
+        uint256 off = _argOffset(CLOSE_SEARCH_DEPTH_OFF);
+        _assertCleanWord(clean, off, bytes32(uint256(0)), "close.settlementTimestampSearchDepth");
+        _proveCleanThenDirty(
+            clean,
+            _withByte(clean, off, 0x01),
+            swapper,
+            CLOSE_COMP,
+            swapId,
+            active.collatToken,
+            "close/search-depth padding"
+        );
+        assertEq(_storedDutchState(swapId), bytes32(0), "no auction stored");
+    }
+
     function test_close_dirtyOracleGameNarrowIntegerPadding() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, OpenPuntStorage.MatcherPreimage memory preimage) =
             _openHeartbeatPosition();
@@ -183,8 +205,9 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
             _reportOnPositionWithAmounts(swapId, _noDutch(), active, preimage, reporter, REPORT_EXEC_COMP, A1, A2_OPEN);
         _advanceToSettlementEligibility();
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
-        bytes memory clean =
-            abi.encodeCall(punt.close, (swapId, input, mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper));
+        bytes memory clean = abi.encodeCall(
+            punt.close, (swapId, input, mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper, 0)
+        );
 
         uint256 off = _argOffset(CLOSE_GAME_OFF + 32 * 7); // OracleGame.settlementTime, uint48
         _assertCleanWord(clean, off, bytes32(uint256(mt.game.settlementTime)), "close.oracleState.settlementTime");
@@ -206,8 +229,9 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
             _reportOnPositionWithAmounts(swapId, _noDutch(), active, preimage, reporter, REPORT_EXEC_COMP, A1, A2_OPEN);
         _advanceToSettlementEligibility();
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
-        bytes memory clean =
-            abi.encodeCall(punt.close, (swapId, input, mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper));
+        bytes memory clean = abi.encodeCall(
+            punt.close, (swapId, input, mt.swap, false, _emptyPermit2(), CLOSE_COMP, mt.game, mt.helper, 0)
+        );
 
         uint256 off = _argOffset(CLOSE_HELPER_OFF + 32); // PreimageHelper.creator
         _assertCleanWord(clean, off, bytes32(uint256(uint160(mt.helper.creator))), "close.oracleHelper.creator");

@@ -182,7 +182,7 @@ abstract contract ActivePositionBase is OpenPuntBase {
 
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(swapId, closing.swap, closing.game, closing.helper, 0);
         logs = vm.getRecordedLogs();
     }
 

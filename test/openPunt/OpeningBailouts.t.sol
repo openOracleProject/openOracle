@@ -25,6 +25,12 @@ contract OpeningBailoutsTest is OpenPuntBase {
         assertEq(vm.getBlockTimestamp(), target, "sitting on the timeout boundary");
     }
 
+    function _proposalWithoutExecutionLatency() internal returns (Proposal memory p) {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        s.maxExecutionLatency = 0;
+        p = _proposeWith(s, _defaultMatcherPreimage(), swapper);
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  Rejections
     // ══════════════════════════════════════════════════════════════════
@@ -87,6 +93,53 @@ contract OpeningBailoutsTest is OpenPuntBase {
     // ══════════════════════════════════════════════════════════════════
     //  Success
     // ══════════════════════════════════════════════════════════════════
+
+    function test_executeAtExactOpeningTimeoutStillOpens() public {
+        Proposal memory p = _proposalWithoutExecutionLatency();
+        Matched memory mt = _matchSwap(p);
+        _warpToTimeoutBoundary(mt.swap);
+
+        vm.recordLogs();
+        vm.prank(executor);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        OpenPuntStorage.MatchedSwap memory active =
+            _decodeSingleSwapState(logs, OpenPuntStorage.PositionOpened.selector, p.swapId);
+        assertTrue(active.active, "strict timeout boundary still opens");
+        assertFalse(_hasBailoutLog(logs, OpenPuntStorage.OpeningBailedOut.selector, p.swapId), "no timeout bailout");
+    }
+
+    function test_executePastOpeningTimeoutSettlesAndRefunds() public {
+        uint256 swapperExt0 = collat.balanceOf(swapper);
+        uint256 matcherCollat0 = _spendable(matcher, address(collat));
+        uint256 matcherA0 = _spendable(matcher, address(tokenA));
+        uint256 matcherB0 = _spendable(matcher, address(tokenB));
+
+        Proposal memory p = _proposalWithoutExecutionLatency();
+        Matched memory mt = _matchSwap(p);
+        _warpToTimeoutBoundary(mt.swap);
+        _advanceChain(2);
+
+        vm.recordLogs();
+        vm.prank(outsider);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        _findLog(logs, address(punt), OpenPuntStorage.OpeningBailedOut.selector, p.swapId);
+        _findLog(logs, address(punt), OpenPuntStorage.PositionOpeningFailed.selector, p.swapId);
+        _findLog(logs, address(punt), OpenPuntStorage.SwapRefunded.selector, p.swapId);
+        assertFalse(_hasBailoutLog(logs, OpenPuntStorage.PositionOpened.selector, p.swapId), "position did not open");
+
+        assertEq(punt.swaps(p.swapId), bytes32(0), "swap terminated");
+        assertEq(punt.swapIdToReportId(p.swapId), 0, "opening report detached");
+        assertEq(collat.balanceOf(swapper), swapperExt0, "swapper margin refunded");
+        assertEq(_spendable(matcher, address(collat)), matcherCollat0, "matcher margin refunded");
+        assertEq(_spendable(matcher, address(tokenA)), matcherA0, "oracle token1 returned by settlement");
+        assertEq(_spendable(matcher, address(tokenB)), matcherB0, "oracle token2 returned by settlement");
+        assertEq(punt.tempHolding(outsider), OPEN_EXEC_COMP, "executor compensation paid");
+        assertEq(_spendable(outsider, address(0)), SETTLER_REWARD, "settler reward forwarded");
+    }
 
     function test_bailoutOneSecondPastTimeoutSucceedsForAnyone() public {
         uint256 swapperExt0 = collat.balanceOf(swapper);
@@ -168,7 +221,7 @@ contract OpeningBailoutsTest is OpenPuntBase {
         // the opening executor arrives late with a state that no longer exists
         vm.prank(executor);
         vm.expectRevert(PuntErrors.WrongHash.selector);
-        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(p.swapId, mt.swap, mt.game, mt.helper, 0);
 
         assertEq(punt.swaps(p.swapId), bytes32(0), "terminal phase not resurrected");
         assertEq(collat.balanceOf(swapper), swapperExt, "no second refund");

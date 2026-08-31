@@ -4,15 +4,12 @@ pragma solidity 0.8.28;
 import "./FeeReceiverBase.t.sol";
 
 /**
- * @notice Binding and authentication failures for `deployAndDistributeFeeReceiver`.
+ * @notice CREATE2 isolation for `deployAndDistributeFeeReceiver` argument tuples.
  *
- * @dev Check order in the source is: helper creator, then the oracle hash, then the predicted
- *      recipient. So a tampered game or helper fails as WrongOracleHash, while a genuine game
- *      paired with the wrong (swapId, swapper, matcher) tuple fails as InvalidFeeReceiver.
- *
- *      There is no separate caller-supplied asset parameter: token1 and token2 come out of the
- *      authenticated oracle state, so tampering with them fails at the hash, not at the
- *      receiver-address comparison.
+ * @dev The entry point deliberately does not authenticate position or oracle preimages. The receiver
+ *      address commits its swap identifier, assets, and beneficiaries in the clone init code. A wrong
+ *      tuple can therefore create only a distinct, empty clone; it cannot deploy or distribute from the
+ *      receiver to which a genuine oracle game credited fees.
  */
 contract FeeReceiverValidationTest is FeeReceiverBase {
     function setUp() public {
@@ -26,7 +23,6 @@ contract FeeReceiverValidationTest is FeeReceiverBase {
         uint256 fee;
     }
 
-    /// @dev A position with a genuine accrued token1 fee, receiver still undeployed.
     function _accrued() internal returns (Ctx memory c) {
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _defaultFeeCfg();
         (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
@@ -36,236 +32,111 @@ contract FeeReceiverValidationTest is FeeReceiverBase {
         (c.g, c.fee) = _disputeForToken1Fee(c.g, disputer);
     }
 
-    function _assertRejected(Ctx memory c, string memory what) internal view {
-        assertEq(c.receiver.code.length, 0, string.concat(what, ": no clone deployed"));
-        assertEq(_spendable(c.receiver, address(tokenA)), c.fee, string.concat(what, ": fees unmoved"));
-        assertEq(_spendable(c.receiver, address(tokenB)), 0, string.concat(what, ": token2 unmoved"));
+    function _deploy(
+        uint256 swapId,
+        address token1_,
+        address token2_,
+        address swapper_,
+        address matcher_,
+        address caller
+    ) internal returns (address receiver, uint256 fees1, uint256 fees2) {
+        vm.prank(caller);
+        return puntLifecycle.deployAndDistributeFeeReceiver(swapId, token1_, token2_, swapper_, matcher_);
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Oracle-state authentication
-    // ══════════════════════════════════════════════════════════════════
+    function _assertRealReceiverUntouched(Ctx memory c, string memory what) internal view {
+        assertEq(c.receiver.code.length, 0, string.concat(what, ": genuine clone remains undeployed"));
+        assertEq(_spendable(c.receiver, address(tokenA)), c.fee, string.concat(what, ": genuine fees remain"));
+        assertEq(_spendable(c.receiver, address(tokenB)), 0, string.concat(what, ": token2 remains empty"));
+    }
 
-    function test_perturbedOracleGameRejects() public {
+    function test_wrongSwapIdDeploysDistinctEmptyClone() public {
+        Ctx memory c = _accrued();
+        uint256 wrongId = c.swapId + 1;
+        address expected = _predict(wrongId, address(tokenA), address(tokenB), swapper, matcher, address(punt));
+
+        (address junk, uint256 fees1, uint256 fees2) =
+            _deploy(wrongId, address(tokenA), address(tokenB), swapper, matcher, outsider);
+
+        assertEq(junk, expected, "wrong tuple uses its own deterministic address");
+        assertTrue(junk != c.receiver, "wrong tuple cannot alias the genuine receiver");
+        assertGt(junk.code.length, 0, "empty junk clone may be deployed");
+        assertEq(fees1, 0, "junk has no token1 fees");
+        assertEq(fees2, 0, "junk has no token2 fees");
+        _assertRealReceiverUntouched(c, "wrong swapId");
+    }
+
+    function test_wrongTokenDeploysDistinctEmptyClone() public {
+        Ctx memory c = _accrued();
+        address wrongToken2 = address(collat);
+        address expected = _predict(c.swapId, address(tokenA), wrongToken2, swapper, matcher, address(punt));
+
+        (address junk, uint256 fees1, uint256 fees2) =
+            _deploy(c.swapId, address(tokenA), wrongToken2, swapper, matcher, outsider);
+
+        assertEq(junk, expected, "wrong asset tuple uses its own deterministic address");
+        assertTrue(junk != c.receiver, "wrong asset cannot alias the genuine receiver");
+        assertEq(fees1, 0, "junk has no token1 fees");
+        assertEq(fees2, 0, "junk has no token2 fees");
+        _assertRealReceiverUntouched(c, "wrong token");
+    }
+
+    function test_wrongBeneficiariesDeployDistinctEmptyClones() public {
         Ctx memory c = _accrued();
 
-        IOpenOracle2.OracleGame memory tampered = abi.decode(abi.encode(c.g.game), (IOpenOracle2.OracleGame));
-        tampered.currentAmount2 = c.g.game.currentAmount2 + 1;
+        (address wrongSwapper,,) = _deploy(c.swapId, address(tokenA), address(tokenB), outsider, matcher, outsider);
+        (address wrongMatcher,,) = _deploy(c.swapId, address(tokenA), address(tokenB), swapper, outsider, outsider);
 
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.WrongOracleHash.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, tampered, c.g.helper);
-        _assertRejected(c, "tampered game");
+        assertTrue(wrongSwapper != c.receiver, "wrong swapper is isolated");
+        assertTrue(wrongMatcher != c.receiver, "wrong matcher is isolated");
+        assertTrue(wrongSwapper != wrongMatcher, "each immutable tuple is isolated");
+        _assertRealReceiverUntouched(c, "wrong beneficiaries");
     }
 
-    /// @dev Tampering with an asset fails at the hash, not at the receiver comparison: the
-    ///      oracle state is what authenticates token1 and token2.
-    function test_perturbedAssetInTheOracleStateRejectsAtTheHash() public {
+    function test_junkDeploymentCannotBlockTheCorrectReceiver() public {
         Ctx memory c = _accrued();
+        _deploy(c.swapId + 1, address(tokenA), address(tokenB), swapper, matcher, outsider);
+        _deploy(c.swapId, address(tokenA), address(collat), swapper, matcher, outsider);
+        _deploy(c.swapId, address(tokenA), address(tokenB), outsider, matcher, outsider);
 
-        IOpenOracle2.OracleGame memory tampered = abi.decode(abi.encode(c.g.game), (IOpenOracle2.OracleGame));
-        tampered.token2 = address(collat);
+        (address receiver, uint256 fees1, uint256 fees2) =
+            _deploy(c.swapId, address(tokenA), address(tokenB), swapper, matcher, outsider);
 
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.WrongOracleHash.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, tampered, c.g.helper);
-        _assertRejected(c, "tampered asset");
+        assertEq(receiver, c.receiver, "correct tuple reaches the genuine receiver");
+        assertEq(fees1, c.fee, "genuine token1 fees distributed");
+        assertEq(fees2, 0, "no token2 fees");
+        assertGt(receiver.code.length, 0, "genuine receiver deployed normally");
     }
 
-    function test_perturbedHelperReportIdRejects() public {
-        Ctx memory c = _accrued();
-
-        IOpenOracle2.PreimageHelper memory h = abi.decode(abi.encode(c.g.helper), (IOpenOracle2.PreimageHelper));
-        h.reportId = c.g.reportId + 1;
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.WrongOracleHash.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, c.g.game, h);
-        _assertRejected(c, "wrong report id");
-    }
-
-    function test_perturbedHelperCreatorRejects() public {
-        Ctx memory c = _accrued();
-
-        IOpenOracle2.PreimageHelper memory h = abi.decode(abi.encode(c.g.helper), (IOpenOracle2.PreimageHelper));
-        h.creator = outsider;
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, c.g.game, h);
-        _assertRejected(c, "wrong creator");
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  Tuple binding
-    // ══════════════════════════════════════════════════════════════════
-
-    function test_wrongSwapIdRejects() public {
-        Ctx memory c = _accrued();
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId + 1, swapper, matcher, c.g.game, c.g.helper);
-        _assertRejected(c, "wrong swapId");
-    }
-
-    function test_wrongSwapperRejects() public {
-        Ctx memory c = _accrued();
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, outsider, matcher, c.g.game, c.g.helper);
-        _assertRejected(c, "wrong swapper");
-    }
-
-    function test_wrongMatcherRejects() public {
-        Ctx memory c = _accrued();
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, outsider, c.g.game, c.g.helper);
-        _assertRejected(c, "wrong matcher");
-    }
-
-    /// @dev Position A's oracle state paired with position B's swapId: the state authenticates,
-    ///      but the derived receiver no longer matches the recipient the game committed.
-    function test_crossingTwoPositionsRejects() public {
+    function test_crossPositionTupleDeploysOnlyAThirdEmptyReceiver() public {
         Ctx memory a = _accrued();
         Ctx memory b = _accrued();
-        assertTrue(a.swapId != b.swapId, "two distinct positions");
-        assertTrue(a.receiver != b.receiver, "two distinct receivers");
+        address crossed = _predict(b.swapId, address(tokenA), address(tokenB), swapper, outsider, address(punt));
 
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(b.swapId, swapper, matcher, a.g.game, a.g.helper);
+        (address receiver, uint256 fees1, uint256 fees2) =
+            _deploy(b.swapId, address(tokenA), address(tokenB), swapper, outsider, outsider);
 
-        _assertRejected(a, "crossed positions: A");
-        _assertRejected(b, "crossed positions: B");
+        assertEq(receiver, crossed, "crossed tuple has its own address");
+        assertTrue(receiver != a.receiver && receiver != b.receiver, "neither genuine receiver is reachable");
+        assertEq(fees1, 0, "crossed receiver has no token1 fees");
+        assertEq(fees2, 0, "crossed receiver has no token2 fees");
+        _assertRealReceiverUntouched(a, "crossed tuple A");
+        _assertRealReceiverUntouched(b, "crossed tuple B");
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Outside games and zero-fee games
-    // ══════════════════════════════════════════════════════════════════
-
-    /// @dev An outsider's own oracle report, even one configured with a plausible predicted
-    ///      recipient, cannot be swept: its helper creator is the outsider, not the core.
-    function test_outsiderCreatedGameRejects() public {
-        (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) = _defaultFeeCfg();
-        (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
-        address plausible = _predictForPosition(p.swapId, mt.swap);
-
-        // an entirely independent oracle game created BY the outsider, naming that address
-        // the outsider funds its own report: reporter == msg.sender, so no allowance is needed
-        vm.startPrank(outsider);
-        _mintAndDepositAs(tokenA, outsider, 100e18);
-        _mintAndDepositAs(tokenB, outsider, 100e18);
-        vm.stopPrank();
-
-        IOpenOracle2.OracleGame memory params = IOpenOracle2.OracleGame({
-            currentAmount1: OA1,
-            currentAmount2: OA2,
-            currentReporter: outsider,
-            reportTimestamp: 0,
-            settlementTimestamp: 0,
-            token1: address(tokenA),
-            lastReportOppoTime: 0,
-            settlementTime: 300,
-            escalationHalt: 100e18,
-            protocolFeeRecipient: plausible,
-            settlerReward: 0,
-            token2: address(tokenB),
-            numReports: 0,
-            disputeDelay: 5,
-            feePercentage: 0,
-            multiplier: 110,
-            callbackContract: address(0),
-            callbackGasLimit: 0,
-            protocolFee: PROTO_FEE,
-            flags: 1
-        });
-
-        vm.recordLogs();
-        vm.prank(outsider);
-        uint256 rogueId = IOpenOracle2(address(oracle)).report(params, true, true, _noTiming());
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        (IOpenOracle2.OracleGame memory rg, IOpenOracle2.PreimageHelper memory rh) =
-            _decodeReportSubmitted(logs, rogueId);
-
-        assertEq(rh.creator, outsider, "the rogue game's creator is the outsider");
-        assertEq(rg.protocolFeeRecipient, plausible, "and it names the plausible receiver");
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(p.swapId, swapper, matcher, rg, rh);
-        assertEq(plausible.code.length, 0, "no clone deployed from an outsider-created game");
-    }
-
-    function _mintAndDepositAs(MintableERC20 token, address who, uint128 amount) internal {
-        token.mint(who, amount);
-        token.approve(address(oracle), type(uint256).max);
-        oracle.deposit(address(token), amount, who);
-    }
-
-    function test_zeroProtocolFeeGameRejects() public {
-        (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
-            _feeCfg(Legs.BothErc20, address(collat), 0);
-        (Proposal memory p, Matched memory mt) = _matchAsset(s, m);
-        Game memory g = _gameOf(mt);
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(p.swapId, swapper, matcher, g.game, g.helper);
-
-        assertEq(_predictForPosition(p.swapId, mt.swap).code.length, 0, "nothing deployed");
-    }
-
-    function test_rawModuleCallRejects() public {
+    function test_rawModuleCallDeploysOnlyTheModuleRelativeReceiver() public {
         Ctx memory c = _accrued();
+        address moduleReceiver =
+            _predict(c.swapId, address(tokenA), address(tokenB), swapper, matcher, address(lifecycleModule));
 
         vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        lifecycleModule.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, c.g.game, c.g.helper);
-        _assertRejected(c, "raw module call");
-    }
+        (address receiver, uint256 fees1, uint256 fees2) =
+            lifecycleModule.deployAndDistributeFeeReceiver(c.swapId, address(tokenA), address(tokenB), swapper, matcher);
 
-    // ══════════════════════════════════════════════════════════════════
-    //  After the clone exists
-    // ══════════════════════════════════════════════════════════════════
-
-    /// @dev A wrong tuple or state must not be able to trigger distribution from the valid clone.
-    function test_wrongCallsStillRejectOnceTheCloneExists() public {
-        Ctx memory c = _accrued();
-
-        // deploy for real, then accrue again so there is something worth stealing
-        _deployAndDistribute(c.swapId, swapper, matcher, c.g, outsider);
-        assertGt(c.receiver.code.length, 0, "clone exists");
-        uint256 newFee;
-        (c.g, newFee) = _disputeForToken1Fee(c.g, disputer2);
-        assertEq(_spendable(c.receiver, address(tokenA)), newFee, "fresh fees waiting");
-
-        uint256 swapper1 = _spendable(swapper, address(tokenA));
-        uint256 matcher1 = _spendable(matcher, address(tokenA));
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, outsider, matcher, c.g.game, c.g.helper);
-
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.InvalidFeeReceiver.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId + 1, swapper, matcher, c.g.game, c.g.helper);
-
-        IOpenOracle2.OracleGame memory tampered = abi.decode(abi.encode(c.g.game), (IOpenOracle2.OracleGame));
-        tampered.currentAmount1 = c.g.game.currentAmount1 + 1;
-        vm.prank(outsider);
-        vm.expectRevert(PuntErrors.WrongOracleHash.selector);
-        puntLifecycle.deployAndDistributeFeeReceiver(c.swapId, swapper, matcher, tampered, c.g.helper);
-
-        assertEq(_spendable(c.receiver, address(tokenA)), newFee, "fees still sitting in the clone");
-        assertEq(_spendable(swapper, address(tokenA)), swapper1, "swapper unchanged");
-        assertEq(_spendable(matcher, address(tokenA)), matcher1, "matcher unchanged");
-
-        // and the correct call still works
-        (, uint256 fees1,,) = _deployAndDistribute(c.swapId, swapper, matcher, c.g, outsider);
-        assertEq(fees1, newFee, "the genuine call distributes");
+        assertEq(receiver, moduleReceiver, "raw call uses module as CREATE2 deployer");
+        assertTrue(receiver != c.receiver, "module-relative clone cannot alias core-relative clone");
+        assertEq(fees1, 0, "module-relative receiver has no token1 fees");
+        assertEq(fees2, 0, "module-relative receiver has no token2 fees");
+        _assertRealReceiverUntouched(c, "raw module call");
     }
 }

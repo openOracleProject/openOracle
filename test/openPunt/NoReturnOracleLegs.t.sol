@@ -93,7 +93,7 @@ contract NoReturnOracleLegsTest is TokenCompatBase {
         _advanceToSettlementEligibility();
         vm.recordLogs();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertTrue(_hasLog(logs, OpenPuntStorage.LiquidationFailed.selector, p.swapId), "reusable, pre-maturity");
 
@@ -171,7 +171,7 @@ contract NoReturnOracleLegsTest is TokenCompatBase {
 
         _advanceToSettlementEligibility();
         vm.prank(closeExecutor);
-        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, false);
+        puntLifecycle.execute(p.swapId, closing.swap, closing.game, closing.helper, 0);
 
         assertEq(_spendable(designated, address(nrt)), OA1, "settlement paid the no-return leg to the REPORTER");
         assertEq(_spendable(designated, other), OA2, "and the vanilla leg too");

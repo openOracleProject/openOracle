@@ -81,7 +81,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  7b. execute()'s loose-timing branch: the one canonicalizing word
+    //  7b. execute()'s settlement-lookback branch: the one canonicalizing word
     // ══════════════════════════════════════════════════════════════════
 
     function _sameBlockRace()
@@ -99,22 +99,22 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
     }
 
     /**
-     * @notice The loose-timing retry rewrites `settlementTimestamp` on the memory copy before
+     * @notice Settlement lookback rewrites `settlementTimestamp` on the memory copy before
      *         re-hashing, so it is the one branch where dirty bytes could conceivably have been
      *         erased rather than committed. They cannot be: the whole struct is decoder-validated
      *         during the copy, so a dirty payload never reaches the branch at all.
      *
      * @dev This was the outcome flagged as needing the most scrutiny — dirty input canonicalized
      *      into a successful authenticated transition. It does not occur. Rejection happens
-     *      strictly before loose timing can canonicalize or re-hash anything, which is why the
+     *      strictly before lookback can canonicalize or re-hash anything, which is why the
      *      assertions below check the position hash, the oracle state and the compensation as well
      *      as the revert category.
      */
-    function test_looseTimingCannotEraseDirtyBytesInTheOverwrittenWord() public {
-        // ── clean control: the loose branch really is reachable ──────────
+    function test_settlementLookbackCannotEraseDirtyBytesInTheOverwrittenWord() public {
+        // ── clean control: the lookback branch really is reachable ───────
         uint256 snap = vm.snapshotState();
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory pos, Matched memory mt) = _sameBlockRace();
-        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
+        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
 
         (bool okClean,) = _rawCallPunt(executor, 0, clean);
         assertTrue(okClean, "clean loose execute opens the position through the rescue branch");
@@ -122,7 +122,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
 
         // ── every padding byte of the rewritten member ───────────────────
         (swapId, pos, mt) = _sameBlockRace();
-        clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
+        clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
         uint256 stOff = _argOffset(1024 + 32 * 4); // OracleGame.settlementTimestamp, a uint48
         _assertCleanWord(clean, stOff, bytes32(uint256(0)), "OracleGame.settlementTimestamp is the stale zero");
 
@@ -133,7 +133,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         for (uint256 p = 0; p < 26; p++) {
             uint256 s2 = vm.snapshotState();
             (bool ok, bytes memory ret) = _rawCallPunt(executor, 0, _withByte(clean, stOff + p, 0x01));
-            _assertRevertedEmpty(ok, ret, "looseTiming/settlementTimestamp padding");
+            _assertRevertedEmpty(ok, ret, "settlementLookback/settlementTimestamp padding");
             assertEq(punt.swaps(swapId), storedBefore, "position unchanged");
             assertEq(punt.tempHolding(executor), tempBefore, "executor uncompensated");
             assertEq(oracle.oracleGame(mt.reportId), oracleBefore, "oracle state unchanged");
@@ -142,17 +142,17 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
     }
 
     /**
-     * @notice Under looseTiming, dirty padding anywhere in OracleGame or PreimageHelper is
+     * @notice During settlement lookback, dirty padding anywhere in OracleGame or PreimageHelper is
      *         rejected during the memory copy — uniformly, with no member-by-member exceptions.
      *
-     * @dev Sweeps every paddable word of both structs while the loose-timing rescue branch is
+     * @dev Sweeps every paddable word of both structs while the settlement-lookback branch is
      *      armed, which is the most permissive configuration `execute()` has. Every one fails
      *      closed with an empty decode revert, and the position hash, the stored oracle state and
      *      the executor's compensation are reconciled on every iteration.
      */
-    function test_looseTimingRejectsDirtyPaddingInEveryOracleWord() public {
+    function test_settlementLookbackRejectsDirtyPaddingInEveryOracleWord() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory pos, Matched memory mt) = _sameBlockRace();
-        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
+        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
 
         bytes32 storedBefore = punt.swaps(swapId);
         uint256 tempBefore = punt.tempHolding(executor);
@@ -175,7 +175,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         );
 
         // 437 OracleGame padding bytes + 12 PreimageHelper padding bytes
-        assertEq(rejected, 449, "every padding byte of both oracle structs rejected under looseTiming");
+        assertEq(rejected, 449, "every padding byte of both oracle structs rejected during lookback");
     }
 
     function _sweepOracleStruct(
@@ -206,7 +206,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
     }
 
     /**
-     * @notice Canonical loose-timing input still behaves exactly as before the hashing change.
+     * @notice Canonical settlement-lookback input still authenticates the actual settled game.
      *
      * @dev Guards the rewrite itself: the rescue branch must still open the position, still pay
      *      the executor, and still leave the settler reward with the actual settler rather than
@@ -214,24 +214,24 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
      *      canonical but different oracle value, which must still reach `WrongOracleHash` rather
      *      than being rejected by the decoder.
      */
-    function test_canonicalLooseTimingStillOpensThePositionAndStillRejectsWrongState() public {
+    function test_canonicalSettlementLookbackOpensThePositionAndStillRejectsWrongState() public {
         uint256 snap = vm.snapshotState();
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory pos, Matched memory mt) = _sameBlockRace();
-        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
+        bytes memory clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
 
         (bool okClean,) = _rawCallPunt(executor, 0, clean);
-        assertTrue(okClean, "canonical loose-timing input still opens the position");
+        assertTrue(okClean, "canonical settlement-lookback input opens the position");
         assertTrue(punt.swaps(swapId) != bytes32(0), "position still stored");
         assertEq(punt.tempHolding(executor), pos.openExecutionComp, "executor still compensated");
         // The reward belongs to whoever actually settled, not to the executor who rescued the
-        // stale preimage through the loose branch; both ledgers are checked separately
+        // stale preimage through settlement lookback; both ledgers are checked separately
         assertEq(_spendable(settler, address(0)), SETTLER_REWARD, "settler keeps the settler reward");
         assertEq(_spendable(executor, address(0)), 0, "the executor is not paid the settler reward");
         vm.revertToState(snap);
 
         // A well-formed but different oracle value still fails through the commitment.
         (swapId, pos, mt) = _sameBlockRace();
-        clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, true));
+        clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
         uint256 off = _argOffset(1024 + 32 * 0); // OracleGame.currentAmount1, a uint128
 
         bytes32 storedBefore = punt.swaps(swapId);
@@ -298,7 +298,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         OpenPuntStorage.CloseDutch memory input = _dutchInput();
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, input, active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
 
         Book memory before = _book(swapId, active.collatToken);
@@ -360,7 +360,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
 
         bytes memory clean = abi.encodeCall(
             punt.close,
-            (swapId, junk, reporting, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (swapId, junk, reporting, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
 
         uint256 oracleCustodyBefore = _rawBalanceOf(active.collatToken, address(oracle));

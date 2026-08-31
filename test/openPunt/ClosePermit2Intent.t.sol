@@ -78,7 +78,7 @@ contract ClosePermit2IntentTest is CloseBase {
     ) internal {
         vm.prank(who);
         punt.close{value: CLOSE_COMP}(
-            swapId, input, active, false, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, input, active, false, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
     }
 
@@ -263,7 +263,15 @@ contract ClosePermit2IntentTest is CloseBase {
 
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapIdA, _dutchInput(), activeA, true, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapIdA,
+            _dutchInput(),
+            activeA,
+            true,
+            _permitParams(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
         assertEq(_permit2().callCount(), calls0, "internal auction funding never calls Permit2");
 
@@ -279,7 +287,8 @@ contract ClosePermit2IntentTest is CloseBase {
             _permitParams(),
             CLOSE_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
         assertEq(_permit2().callCount(), calls0, "native ETH auction funding never calls Permit2");
     }
@@ -300,7 +309,15 @@ contract ClosePermit2IntentTest is CloseBase {
         vm.prank(swapper);
         vm.expectRevert();
         punt.close{value: CLOSE_COMP}(
-            swapId, _dutchInput(), active, false, _permitParams(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            swapId,
+            _dutchInput(),
+            active,
+            false,
+            _permitParams(),
+            CLOSE_COMP,
+            _emptyOracleGame(),
+            _emptyOracleHelper(),
+            0
         );
 
         _assertUnchanged(before, swapId, active.collatToken, "failed reward pull");

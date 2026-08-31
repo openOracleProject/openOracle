@@ -146,7 +146,7 @@ abstract contract LivenessBase is CloseBase {
     function _executeNow(uint256 swapId, Matched memory mt, address who) internal returns (Vm.Log[] memory logs) {
         vm.recordLogs();
         vm.prank(who);
-        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, false);
+        puntLifecycle.execute(swapId, mt.swap, mt.game, mt.helper, 0);
         logs = vm.getRecordedLogs();
     }
 

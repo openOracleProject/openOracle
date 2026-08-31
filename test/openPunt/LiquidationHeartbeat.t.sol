@@ -524,7 +524,7 @@ contract LiquidationHeartbeatTest is LivenessBase {
 
         vm.prank(swapper);
         punt.close{value: 0}(
-            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper()
+            swapId, _dutchInput(), mt.swap, true, _emptyPermit2(), 0, _emptyOracleGame(), _emptyOracleHelper(), 0
         );
 
         _advanceValid(_secondsForBlocks(c.settlementTime) + 2);

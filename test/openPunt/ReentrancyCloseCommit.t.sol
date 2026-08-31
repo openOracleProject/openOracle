@@ -48,7 +48,7 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
     {
         return abi.encodeCall(
             punt.close,
-            (p.swapId, input, p.active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper())
+            (p.swapId, input, p.active, false, _emptyPermit2(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0)
         );
     }
 
@@ -399,7 +399,8 @@ contract ReentrancyCloseCommitTest is ReentrancyBase {
                             _emptyPermit2(),
                             CLOSE_COMP,
                             _emptyOracleGame(),
-                            _emptyOracleHelper()
+                            _emptyOracleHelper(),
+                            0
                         )
                     )
                 )

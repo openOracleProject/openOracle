@@ -95,7 +95,8 @@ contract ActiveBlockCadenceTest is LivenessBase {
             _emptyPermit2(),
             CLOSE_COMP,
             _emptyOracleGame(),
-            _emptyOracleHelper()
+            _emptyOracleHelper(),
+            0
         );
 
         Matched memory mt = _reportLive(swapId, _noDutch(), active, p.preimage, reporter, LIVE_COMP, A2_HEALTHY);
