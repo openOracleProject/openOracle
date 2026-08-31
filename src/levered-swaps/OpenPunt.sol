@@ -121,7 +121,7 @@ contract openPunt is OpenPuntStorage {
         if (
             !heartbeatDisabled
                 && (
-                    s.liquidationHeartbeatMin < 30 seconds || s.liquidationHeartbeatMax > 5 minutes
+                    s.liquidationHeartbeatMin < 10 seconds || s.liquidationHeartbeatMax > 5 minutes
                         || s.liquidationHeartbeatMax <= s.liquidationHeartbeatMin
                 )
         ) revert Errors.InvalidLiquidationHeartbeat();
@@ -201,7 +201,7 @@ contract openPunt is OpenPuntStorage {
         }
 
         swaps[swapId] = swapHash; // CEI inversion: swap becomes live only after funding succeeds.
-        emit SwapProposed(swapId, swap, mp);
+        emit SwapProposed(swapId, swap.swapper, swap, mp);
     }
 
     /**
@@ -293,6 +293,12 @@ contract openPunt is OpenPuntStorage {
             s.fundingRate = _swap.fundingRate;
         }
 
+        uint256 maximumFeeRate =
+            _swap.auctionFunding ? uint256(_swap.fulfillmentFee) : uint256(uint32(preimage.auctionEnd));
+        uint128 openingFeeRefund =
+            uint128(Math.mulDiv(s.notional, maximumFeeRate, 1e7) - Math.mulDiv(s.notional, s.fulfillmentFee, 1e7));
+        s.initialMarginSwapper -= openingFeeRefund;
+
         s.matcher = matcher;
         s.start = uint48(block.timestamp);
 
@@ -320,6 +326,11 @@ contract openPunt is OpenPuntStorage {
         // pull collateral from msg.sender
         oracle.internalTransferFrom(matcherFunder, address(this), collatToken, initialMarginMatcher);
         emit SwapMatched(swapId, reportId, s);
+
+        // Deliberately last: a refund callback observes the completely matched position.
+        if (openingFeeRefund != 0) {
+            _refundSwapper(collatToken, s.swapper, openingFeeRefund, s.useInternalBalances);
+        }
     }
 
     /**
@@ -368,6 +379,7 @@ contract openPunt is OpenPuntStorage {
      * @param altGasCompExec ETH-denominated compensation offered to the relevant report executor.
      * @param oracleState Optional current oracle-game preimage used to execute an eligible live report.
      * @param oracleHelper Optional helper preimage; reportId zero disables automatic execution.
+     * @param settlementTimestampSearchDepth Candidate settlement blocks checked by automatic execution.
      */
     function close(
         uint256 swapId,
@@ -377,7 +389,8 @@ contract openPunt is OpenPuntStorage {
         Permit2Params calldata permit2,
         uint128 altGasCompExec,
         IOpenOracle2.OracleGame calldata oracleState,
-        IOpenOracle2.PreimageHelper calldata oracleHelper
+        IOpenOracle2.PreimageHelper calldata oracleHelper,
+        uint8 settlementTimestampSearchDepth
     ) external payable {
         MatchedSwap memory s = swapState;
         bytes32 passedSwapHash = keccak256(abi.encode(swapState));
@@ -406,7 +419,7 @@ contract openPunt is OpenPuntStorage {
 
         uint256 providedReportId = oracleHelper.reportId;
         if (providedReportId != 0 && reportId == providedReportId && !reportLive) {
-            _executeFromClose(swapId, swapState, oracleState, oracleHelper);
+            _executeFromClose(swapId, swapState, oracleState, oracleHelper, settlementTimestampSearchDepth);
 
             // A terminal execution must persist, so return any close funding that was never used.
             if (swaps[swapId] == bytes32(0)) {
@@ -532,10 +545,14 @@ contract openPunt is OpenPuntStorage {
         uint256 swapId,
         MatchedSwap calldata swapState,
         IOpenOracle2.OracleGame calldata oracleState,
-        IOpenOracle2.PreimageHelper calldata oracleHelper
+        IOpenOracle2.PreimageHelper calldata oracleHelper,
+        uint8 settlementTimestampSearchDepth
     ) internal {
         (bool success, bytes memory returndata) = lifecycleModule.delegatecall(
-            abi.encodeCall(OpenPuntLifecycle.execute, (swapId, swapState, oracleState, oracleHelper, true))
+            abi.encodeCall(
+                OpenPuntLifecycle.execute,
+                (swapId, swapState, oracleState, oracleHelper, settlementTimestampSearchDepth)
+            )
         );
 
         if (!success) {
@@ -592,12 +609,8 @@ contract openPunt is OpenPuntStorage {
         }
         if (caller == msg.sender && callerPiece > 0) tempHolding[caller] += callerPiece;
 
-        if (s.useInternalBalances) {
-            oracle.internalTransferFrom(address(this), swapper, collatToken, initialMarginSwapper);
-        } else {
-            oracle.pushOrCredit(collatToken, swapper, initialMarginSwapper);
-            payEth(swapper, swapperPiece + settlerReward);
-        }
+        _refundSwapper(collatToken, swapper, initialMarginSwapper, s.useInternalBalances);
+        if (!s.useInternalBalances) payEth(swapper, swapperPiece + settlerReward);
 
         emit SwapCancelled(swapId);
     }
@@ -764,12 +777,16 @@ contract openPunt is OpenPuntStorage {
         address matcher,
         bool useInternalBalances
     ) internal {
-        if (useInternalBalances) {
-            oracle.internalTransferFrom(address(this), swapper, collatToken, initialMarginSwapper);
-        } else {
-            oracle.pushOrCredit(collatToken, swapper, initialMarginSwapper);
-        }
+        _refundSwapper(collatToken, swapper, initialMarginSwapper, useInternalBalances);
         oracle.internalTransferFrom(address(this), matcher, collatToken, initialMarginMatcher);
+    }
+
+    function _refundSwapper(address collatToken, address swapper, uint128 amount, bool useInternalBalances) internal {
+        if (useInternalBalances) {
+            oracle.internalTransferFrom(address(this), swapper, collatToken, amount);
+        } else {
+            oracle.pushOrCredit(collatToken, swapper, amount);
+        }
     }
 
     // -------------------------------------------------------------------------
