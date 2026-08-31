@@ -170,14 +170,16 @@ interface IOpenOracle2 {
 
     /**
      * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
-     *         Falls back to crediting `to`'s internal balance if the push fails.
+     *         Fallback to `to`'s internal balance is provided for unsuccessful low-level calls and
+     *         canonical `false` returns under the supported-token policy.
      * @dev For ETH pushes, forwards the oracle default gas amount.
      */
     function pushOrCredit(address token, address to, uint128 amount) external;
 
     /**
      * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
-     *         Falls back to crediting `to`'s internal balance if the push fails.
+     *         Fallback to `to`'s internal balance is provided for unsuccessful low-level calls and
+     *         canonical `false` returns under the supported-token policy.
      * @dev For ETH pushes, forwards `gasLimit` gas. ERC20 pushes ignore `gasLimit`.
      */
     function pushOrCredit(address token, address to, uint128 amount, uint32 gasLimit) external;
