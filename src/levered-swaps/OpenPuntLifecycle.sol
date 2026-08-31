@@ -9,6 +9,8 @@ import {OpenPuntFeeReceiver} from "./OpenPuntFeeReceiver.sol";
 import {OpenPuntStorage} from "./OpenPuntStorage.sol";
 
 contract OpenPuntLifecycle is OpenPuntStorage {
+    uint8 internal constant MAX_SETTLEMENT_TIMESTAMP_SEARCH_DEPTH = 200;
+
     address public immutable feeReceiverImpl;
 
     struct DutchResolution {
@@ -27,13 +29,15 @@ contract OpenPuntLifecycle is OpenPuntStorage {
      * @notice Starts a new oracle report for an active position.
      * @dev The designated `reporter` must approve OpenPunt in OpenOracle for both oracle-token
      *      amounts. The caller funds the ETH execution compensation directly. If `msg.sender != reporter`,
-     *      the caller must also approve the oracle-token amounts transferred to the reporter.
+     *      the caller must also approve the oracle-token amounts transferred to the reporter. A reporter
+     *      claiming a Dutch auction should use `timing` bounds that prevent inclusion at or after the
+     *      auction expiration, when the report would be submitted without claiming the auction reward.
      * @param swapId Position identifier.
      * @param expectedDutchHash Exact current auction hash required by the reporter, or zero to accept
      *                          and claim whatever auction is present.
      * @param swapState Current active MatchedSwap preimage committed in swaps[swapId].
      * @param preimage MatcherPreimage committed when the position was proposed.
-     * @param timing OpenOracle timing bounds for the new report.
+     * @param timing OpenOracle timing bounds for the new report, accounting for any Dutch-expiration deadline.
      * @param reporter Account recorded as reporter; may differ from msg.sender, which supplies funding.
      * @param amount1 Token1 liquidity supplied to the report.
      * @param amount2 Token2 liquidity supplied to the report.
@@ -166,14 +170,15 @@ contract OpenPuntLifecycle is OpenPuntStorage {
      *                    block-number mode, reportTimestamp and settlementTime are measured in blocks,
      *                    while lastReportOppoTime supplies the report's wall-clock timestamp
      * @param oracleHelper Oracle preimage helper matching the stored oracle hash.
-     * @param looseTiming If true, reconstruct a settlement performed earlier in the current block.
+     * @param settlementTimestampSearchDepth Number of candidate settlement blocks to try, beginning
+     *                                       with the current block; zero disables stale-settlement recovery.
      */
     function execute(
         uint256 swapId,
         MatchedSwap calldata swapState,
         IOpenOracle2.OracleGame calldata oracleState,
         IOpenOracle2.PreimageHelper calldata oracleHelper,
-        bool looseTiming
+        uint8 settlementTimestampSearchDepth
     ) external payable {
         MatchedSwap memory s = swapState;
         bytes32 passedSwapHash = keccak256(abi.encode(s));
@@ -185,6 +190,9 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         if (reportId == 0) revert Errors.NoOracleGame();
         if (oracleHelper.reportId != reportId) revert Errors.InvalidReportId();
         bytes32 oracleHash = oracle.oracleGame(reportId);
+        if (settlementTimestampSearchDepth > MAX_SETTLEMENT_TIMESTAMP_SEARCH_DEPTH) {
+            revert Errors.InvalidSettlementLookback();
+        }
 
         IOpenOracle2.OracleGame memory oracleStateMem = oracleState;
         IOpenOracle2.PreimageHelper memory oracleHelperMem = oracleHelper;
@@ -194,12 +202,27 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         bool alreadySettled;
         bool active = s.active;
 
-        // loose hash if settle beat you in the same block
-        if (!matches && oracleStateMem.settlementTimestamp == 0 && looseTiming) {
-            oracleStateMem.settlementTimestamp = _getBlockNumber();
-            passedHash = keccak256(abi.encode(oracleStateMem, oracleHelperMem));
-            matches = oracleHash == passedHash;
-            alreadySettled = true;
+        // Recover when settlement changed only settlementTimestamp after the caller built its preimage.
+        // Encode once, mutate that single word, and hash the same buffer for every candidate block.
+        if (!matches && oracleStateMem.settlementTimestamp == 0 && settlementTimestampSearchDepth != 0) {
+            bytes memory encodedOracleState = abi.encode(oracleStateMem, oracleHelperMem);
+            uint256 currentBlock = _getBlockNumber();
+            uint256 attempts = settlementTimestampSearchDepth;
+            for (uint256 i; i < attempts; ++i) {
+                uint256 candidate = currentBlock - i;
+                bytes32 candidateHash;
+                assembly ("memory-safe") {
+                    // ABI word 4 of OracleGame is settlementTimestamp. `bytes` begins with its length.
+                    mstore(add(encodedOracleState, 0xa0), candidate)
+                    candidateHash := keccak256(add(encodedOracleState, 0x20), mload(encodedOracleState))
+                }
+                if (candidateHash == oracleHash) {
+                    oracleStateMem.settlementTimestamp = uint48(candidate);
+                    matches = true;
+                    alreadySettled = true;
+                    break;
+                }
+            }
         }
 
         if (!matches) revert Errors.WrongOracleHash();
@@ -274,8 +297,9 @@ contract OpenPuntLifecycle is OpenPuntStorage {
             && block.timestamp > uint256(syntheticEligibilityTimestamp) + s.maxExecutionLatency;
 
         bool slippageBailoutForOpen = !slippageOk && !active;
+        bool openingGameTimedOut = !active && block.timestamp > uint256(s.start) + s.maxGameTime;
         // decide if position-opening oracle games should bail out and refund
-        bool shouldRefundOnOpen = slippageBailoutForOpen || !blockCadenceOk || executionTooLate;
+        bool shouldRefundOnOpen = openingGameTimedOut || slippageBailoutForOpen || !blockCadenceOk || executionTooLate;
 
         // decide if close or liquidation oracle games should bail out:
         bool shouldBailoutCloseOrLiq = !blockCadenceOk || executionTooLate;
@@ -287,6 +311,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 delete swaps[swapId];
                 _deleteReportId(swapId);
                 refund(collatToken, initialMarginSwapper, swapper, initialMarginMatcher, matcher, s.useInternalBalances);
+                if (openingGameTimedOut) emit OpeningBailedOut(swapId);
                 if (slippageBailoutForOpen) emit SlippageBailout(swapId);
                 if (!blockCadenceOk) emit ImpliedMillisecondsPerBlockBailout(swapId);
                 if (executionTooLate) emit MaxExecutionLatencyBailout(swapId);
@@ -466,34 +491,28 @@ contract OpenPuntLifecycle is OpenPuntStorage {
 
     /**
      * @notice Deploys a position's fee receiver if needed, then distributes its accrued oracle fees.
-     * @dev The receiver address is committed into each hash-mode oracle game before the clone exists.
-     *      The current oracle preimage proves both that OpenPunt created the game and that its fee
-     *      recipient is the receiver derived from the supplied position parties and assets. Deployment
-     *      is permissionless and may occur before fees accrue; an empty distribution is a no-op.
+     * @dev CREATE2 binds the receiver address to all five immutable arguments. Incorrect arguments
+     *      therefore deploy a distinct empty receiver and cannot redirect fees committed to the genuine
+     *      receiver. Deployment is permissionless and may occur before fees accrue; an empty distribution
+     *      is a no-op.
      * @param swapId Position identifier used as the deterministic deployment salt.
+     * @param token1 First oracle token encoded into the receiver.
+     * @param token2 Second oracle token encoded into the receiver.
      * @param swapper Swapper encoded into the receiver and used for its token split.
      * @param matcher Matcher encoded into the receiver and used for its token split.
-     * @param oracleState Oracle-game preimage committing the receiver as protocolFeeRecipient.
-     * @param oracleHelper Oracle helper preimage proving the game was created by OpenPunt.
      * @return feeReceiver Deployed or previously deployed receiver address.
      * @return fees1 Amount of token1 distributed in this call.
      * @return fees2 Amount of token2 distributed in this call.
      */
     function deployAndDistributeFeeReceiver(
         uint256 swapId,
+        address token1,
+        address token2,
         address swapper,
-        address matcher,
-        IOpenOracle2.OracleGame calldata oracleState,
-        IOpenOracle2.PreimageHelper calldata oracleHelper
+        address matcher
     ) external nonReentrant returns (address feeReceiver, uint256 fees1, uint256 fees2) {
-        if (oracleHelper.creator != address(this)) revert Errors.InvalidFeeReceiver();
-        if (keccak256(abi.encode(oracleState, oracleHelper)) != oracle.oracleGame(oracleHelper.reportId)) {
-            revert Errors.WrongOracleHash();
-        }
-
-        bytes memory args = abi.encodePacked(swapId, oracleState.token1, oracleState.token2, swapper, matcher);
+        bytes memory args = abi.encodePacked(swapId, token1, token2, swapper, matcher);
         feeReceiver = LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(swapId), address(this));
-        if (oracleState.protocolFeeRecipient != feeReceiver) revert Errors.InvalidFeeReceiver();
 
         if (feeReceiver.code.length == 0) {
             feeReceiver = LibClone.cloneDeterministic(feeReceiverImpl, args, bytes32(swapId));
