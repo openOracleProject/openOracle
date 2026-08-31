@@ -26,10 +26,9 @@ import {PackedDecoder} from "../../utils/PackedDecoder.sol";
  *      covers the full ETH / internal / external / no-return matrix, and multiplying the stateful
  *      campaign across asset modes would add sequence length without adding reachable states.
  *
- *      The fulfillment fee is fixed at zero throughout, so the margin pool a position owns is
- *      exactly the two posted margins. This is a fixture simplification, not a protocol assumption:
- *      the protocol: it keeps the conservation model exact without cloning `calcFee` or the PnL
- *      arithmetic, which the deterministic suite already pins.
+ *      Positions alternate between a zero fixed fee and an auctioned opening fee. The model never
+ *      clones `calcFee`: it derives the unused reserve from the independently known maximum and the
+ *      emitted matched fee, then derives the paid fee from the matched-to-active margin delta.
  */
 contract OpenPuntHandler {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
@@ -259,7 +258,7 @@ contract OpenPuntHandler {
     //  arguments a caller genuinely chooses at propose time
     // ══════════════════════════════════════════════════════════════════
 
-    function _swapCfg(bool heartbeatOn, uint16 latency, bool token1PerToken2)
+    function _swapCfg(bool heartbeatOn, uint16 latency, bool token1PerToken2, bool feeAuction)
         internal
         view
         returns (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m)
@@ -273,7 +272,7 @@ contract OpenPuntHandler {
         s.notional = NOTIONAL;
         s.isLong = true;
         s.pnlUsesToken1PerToken2 = token1PerToken2;
-        s.auctionFunding = true; // funding auctioned, fulfillment fee fixed at zero
+        s.auctionFunding = !feeAuction;
         s.fulfillmentFee = 0;
         s.fundingRate = 0;
         s.priceTolerated = PRICE_TOLERATED;
@@ -295,8 +294,8 @@ contract OpenPuntHandler {
         m.disputeDelay = 1;
         m.multiplier = 110;
         m.protocolFee = 0;
-        m.auctionStart = 0;
-        m.auctionEnd = 1;
+        m.auctionStart = feeAuction ? int32(10_000) : int32(0);
+        m.auctionEnd = feeAuction ? int32(20_000) : int32(1);
         m.roundLength = 60;
         m.maxRounds = 5;
         m.growthRate = 15_000;
@@ -507,8 +506,9 @@ contract OpenPuntHandler {
         bool heartbeatOn = seed % 2 == 0;
         uint16 latency = seed % 4 == 0 ? 60 : 0;
         bool token1PerToken2 = (seed >> 2) % 2 == 1;
+        bool feeAuction = (seed >> 3) % 2 == 1;
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
-            _swapCfg(heartbeatOn, latency, token1PerToken2);
+            _swapCfg(heartbeatOn, latency, token1PerToken2, feeAuction);
         uint256 value = uint256(s.matcherGasComp) + s.settlerReward + s.openExecutionComp;
 
         vm.recordLogs();
@@ -519,6 +519,11 @@ contract OpenPuntHandler {
             require(found, "handler: SwapProposed missing");
             (OpenPuntStorage.ProposedSwap memory es, OpenPuntStorage.MatcherPreimage memory em) =
                 abi.decode(l.data, (OpenPuntStorage.ProposedSwap, OpenPuntStorage.MatcherPreimage));
+            require(l.topics.length == 3, "handler: SwapProposed topics");
+            require(
+                address(uint160(uint256(l.topics[2]))) == es.swapper,
+                "handler: indexed proposal swapper does not match payload"
+            );
 
             ids.push(swapId);
             Pos storage q = pos[swapId];
@@ -607,6 +612,20 @@ contract OpenPuntHandler {
             q.reportId = punt.swapIdToReportId(id);
             (q.game, q.helper) = _readOracle(logs, q.reportId);
             q.phase = Phase.OpeningReport;
+
+            uint256 maximumFeeRate =
+                q.proposed.auctionFunding ? q.proposed.fulfillmentFee : uint256(uint32(q.preimage.auctionEnd));
+            uint256 maximumFee = uint256(q.proposed.notional) * maximumFeeRate / 1e7;
+            uint256 actualFee = uint256(q.proposed.notional) * ms.fulfillmentFee / 1e7;
+            uint256 feeRefund = maximumFee - actualFee;
+            _violation(
+                ms.initialMarginSwapper == q.proposed.initialMarginSwapper - feeRefund,
+                "matched margin does not equal gross margin minus unused fee reserve"
+            );
+            q.marginPool -= feeRefund;
+            expectedCollat -= feeRefund;
+            modelSwapperPlusReporterCollat += int256(feeRefund);
+
             q.marginPool += ms.initialMarginMatcher;
             expectedCollat += ms.initialMarginMatcher;
             modelMatcherCollat -= int256(uint256(ms.initialMarginMatcher));
@@ -646,12 +665,16 @@ contract OpenPuntHandler {
 
         vm.recordLogs();
         vm.prank(executor);
-        try puntLifecycle.execute(id, q.matched, q.game, q.helper, false) {
+        try puntLifecycle.execute(id, q.matched, q.game, q.helper, 0) {
             Vm.Log[] memory logs = vm.getRecordedLogs();
             if (_has(logs, OpenPuntStorage.PositionOpened.selector, id)) {
+                uint128 matchedSwapperMargin = q.matched.initialMarginSwapper;
                 q.matched = _readSingleState(logs, OpenPuntStorage.PositionOpened.selector, id);
                 q.reportId = 0;
                 q.phase = Phase.ActiveIdle;
+                uint256 paidOpeningFee = uint256(matchedSwapperMargin) - q.matched.initialMarginSwapper;
+                expectedCollat -= paidOpeningFee;
+                modelMatcherCollat += int256(paidOpeningFee);
                 q.marginPool = uint256(q.matched.initialMarginSwapper) + q.matched.initialMarginMatcher;
                 modelTemp[executor] += q.proposed.openExecutionComp;
                 reservedRawEth -= q.proposed.openExecutionComp;
@@ -726,7 +749,7 @@ contract OpenPuntHandler {
         vm.recordLogs();
         vm.prank(swapper);
         try punt.close{value: CLOSE_COMP}(
-            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0
         ) {
             Vm.Log[] memory logs = vm.getRecordedLogs();
             (bool f, Vm.Log memory l) = _find(logs, OpenPuntStorage.CloseAuctionStarted.selector, id);
@@ -796,7 +819,7 @@ contract OpenPuntHandler {
         vm.recordLogs();
         vm.prank(swapper);
         try punt.close{value: CLOSE_COMP}(
-            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper()
+            id, input, q.matched, false, _emptyPermit(), CLOSE_COMP, _emptyOracleGame(), _emptyOracleHelper(), 0
         ) {
             q.closeIntent = true;
             q.closeRequestBlock = uint48(block.number);
@@ -960,7 +983,7 @@ contract OpenPuntHandler {
 
         vm.recordLogs();
         vm.prank(executor);
-        try puntLifecycle.execute(id, q.matched, q.game, q.helper, false) {
+        try puntLifecycle.execute(id, q.matched, q.game, q.helper, 0) {
             Vm.Log[] memory logs = vm.getRecordedLogs();
             modelTemp[executor] += 0; // opening comp only; closing execution pays via the oracle ledger
             q.assignedComp = 0; // execution consumes the assigned tranche exactly once

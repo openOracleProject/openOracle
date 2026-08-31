@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "./OpenPuntInvariantBase.t.sol";
+import {OpenPuntHandler} from "./OpenPuntHandler.sol";
 
 /**
  * @notice Deterministic proof that the handler actions the campaigns rely on are genuinely
@@ -22,7 +23,7 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         }
     }
 
-    /// @dev seed 0: heartbeat enabled, latency disabled. seed 1: heartbeat off, latency off.
+    /// @dev seed 0: heartbeat and latency enabled. seed 1: heartbeat and latency disabled.
     ///      seed 4: heartbeat and latency enabled.
     function _openPosition(uint256 seed) internal {
         handler.propose(seed);
@@ -59,6 +60,17 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         }
         handler.bailOutOpening(0);
         _need("bailOutOpening");
+    }
+
+    function test_reach_openingTimeoutRefundThroughExecute() public {
+        handler.propose(1); // execution latency disabled, isolating maxGameTime
+        handler.matchSwap(1);
+        // clockValidHop(59) advances 120 seconds at the configured cadence.
+        for (uint256 i = 0; i < 51; i++) {
+            handler.clockValidHop(59);
+        }
+        handler.executeOpening(1);
+        _need("executeOpeningRefund");
     }
 
     function test_reach_proposalCancellationBothWays() public {
@@ -315,6 +327,16 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         handler.recordHeartbeat(0);
         handler.clockCrossHeartbeatMin(0);
         _need("clockCrossHeartbeatMin");
+    }
+
+    function test_reach_matchTimeOpeningFeeRefund() public {
+        handler.propose(8); // bit 3 selects the opening-fee auction
+        handler.matchSwap(8);
+        uint256 id = handler.ids(0);
+        OpenPuntHandler.Pos memory q = handler.get(id);
+
+        assertEq(uint8(q.phase), uint8(OpenPuntHandler.Phase.OpeningReport), "position reached the opening report");
+        assertLt(q.matched.initialMarginSwapper, q.proposed.initialMarginSwapper, "unused fee reserve was returned");
     }
 
     /// @dev Reports the full counter table so selector weighting can be judged.
