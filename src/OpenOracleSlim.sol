@@ -647,8 +647,8 @@ contract OpenOracle {
 
     /**
      * @notice Debits caller's internal balance and pushes `amount` of `token` externally to `to`.
-     *         On push failure (ETH call revert / ERC20 non-standard return / ETH xfer OOG within `gasLimit`),
-     *         falls back to crediting `to`'s internal balance instead.
+     *         Fallback to `to`'s internal balance is provided for unsuccessful low-level calls and
+     *         canonical `false` returns under the supported-token policy.
      * @dev Caller's slot preserves the 1-unit sentinel.
      */
     function _pushOrCredit(address token, address to, uint128 amount, uint32 gasLimit) internal {
