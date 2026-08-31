@@ -90,7 +90,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         address oracleToken1; // token1 used in every oracle game for the position
         address oracleToken2; // token2 used in every oracle game for the position
         // Margin and position economics
-        uint128 initialMarginSwapper; // swapper collateral; reduced by the opening fee when activated
+        uint128 initialMarginSwapper; // swapper collateral; reduced by unused fee reserve at match and actual fee at opening
         uint128 initialMarginMatcher; // amount of collatToken the matcher must post to match
         uint128 maintenanceMarginSwapper; // swapper equity below this amount is liquidatable
         uint128 notional; // position notional denominated in collatToken
@@ -251,7 +251,9 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     event MaxExecutionLatencyBailout(uint256 indexed swapId);
     event LiquidationHeartbeatSet(uint256 indexed swapId, uint128 indexed reportId, uint48 timestamp);
     event LiquidationHeartbeatBailout(uint256 indexed swapId, uint128 indexed reportId);
-    event SwapProposed(uint256 indexed swapId, ProposedSwap swapState, MatcherPreimage matcherPreimage);
+    event SwapProposed(
+        uint256 indexed swapId, address indexed swapper, ProposedSwap swapState, MatcherPreimage matcherPreimage
+    );
     event SwapMatched(uint256 indexed swapId, uint256 indexed reportId, MatchedSwap swapState);
     event PositionReportStarted(
         uint256 indexed swapId, uint256 indexed reportId, address indexed reporter, MatchedSwap swapState
