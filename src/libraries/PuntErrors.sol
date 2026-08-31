@@ -38,6 +38,7 @@ library PuntErrors {
     error InvalidMargin();
     error InvalidFundingRate();
     error InvalidReportId();
+    error InvalidSettlementLookback();
     error NoOracleGame();
     error OracleGameInProgress();
     error CloseIntentLive();
