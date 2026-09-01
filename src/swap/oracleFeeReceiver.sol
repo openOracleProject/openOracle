@@ -2,62 +2,85 @@
 pragma solidity 0.8.28;
 
 import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
 
-/* ------------ Oracle Fee Receiver (Compatible with Clone) ------------ */
-
+/// @title OpenSwapFeeReceiver
+/// @notice Counterfactual, permissionlessly deployed fee receiver for one OpenSwap.
+/// @dev Clone immutable args are packed as:
+///      `swapId | token1 | token2 | swapper | matcher`.
 contract oracleFeeReceiver {
-    error FeesExceedUint128();
+    IOpenOracle2 public immutable ORACLE;
+    address private immutable SELF;
 
-    IOpenOracle2 public oracle;
+    event FeesDistributed(uint256 indexed swapId, uint256 fees1, uint256 fees2);
 
-    address public swapper;
-    address public matcher;
-    address public token1;
-    address public token2;
-    uint128 public gameId;
-    bool private initialized;
+    error NotClone();
 
-    constructor() {
-        initialized = true;
+    /// @dev Deploys the implementation and binds the OpenOracle instance used by every clone.
+    /// @param oracle_ OpenOracle contract holding the receiver's internal fee balances.
+    constructor(IOpenOracle2 oracle_) {
+        ORACLE = oracle_;
+        SELF = address(this);
     }
 
-    function initialize(
-        uint128 _gameId,
-        address _oracle,
-        address _token1,
-        address _token2,
-        address _swapper,
-        address _matcher
-    ) external {
-        require(!initialized);
-        initialized = true;
-        gameId = _gameId;
-        oracle = IOpenOracle2(_oracle);
-        token1 = _token1;
-        token2 = _token2;
-        swapper = _swapper;
-        matcher = _matcher;
+    /// @notice Returns the swap identifier encoded in this clone.
+    /// @return Swap identifier.
+    function swapId() public view returns (uint256) {
+        return uint256(bytes32(LibClone.argsOnClone(address(this), 0, 32)));
     }
 
-    /**
-     * @notice Distributes oracle-game protocol fees 50/50 between swapper and matcher.
-     *         Permissionless. Uses internal transfers only.
-     *         Recipients withdraw from their oracle internal balance on their own schedule.
-     */
+    /// @notice Returns the first oracle token encoded in this clone.
+    /// @return First oracle token.
+    function token1() public view returns (address) {
+        return address(bytes20(LibClone.argsOnClone(address(this), 32, 52)));
+    }
+
+    /// @notice Returns the second oracle token encoded in this clone.
+    /// @return Second oracle token.
+    function token2() public view returns (address) {
+        return address(bytes20(LibClone.argsOnClone(address(this), 52, 72)));
+    }
+
+    /// @notice Returns the swapper encoded in this clone.
+    /// @return Swapper address.
+    function swapper() public view returns (address) {
+        return address(bytes20(LibClone.argsOnClone(address(this), 72, 92)));
+    }
+
+    /// @notice Returns the matcher encoded in this clone.
+    /// @return Matcher address.
+    function matcher() public view returns (address) {
+        return address(bytes20(LibClone.argsOnClone(address(this), 92, 112)));
+    }
+
+    /// @notice Splits all currently spendable oracle fees equally between swapper and matcher.
+    /// @dev Permissionless. A uint128-sized tranche is distributed per token per call, and the
+    ///      oracle's virtual one-unit balance sentinel is preserved.
+    /// @return fees1 Amount of token1 distributed in this call.
+    /// @return fees2 Amount of token2 distributed in this call.
     function distribute() external returns (uint256 fees1, uint256 fees2) {
-        fees1 = _distributeToken(token1);
-        fees2 = _distributeToken(token2);
+        if (address(this) == SELF) revert NotClone();
+
+        fees1 = _distributeToken(token1());
+        fees2 = _distributeToken(token2());
+        if (fees1 != 0 || fees2 != 0) emit FeesDistributed(swapId(), fees1, fees2);
     }
 
-    function _distributeToken(address token) internal returns (uint256) {
-        uint256 bal = oracle.tokenHolder(address(this), token);
-        if (bal <= 1) return 0;
-        uint256 spendable = bal - 1;
-        uint256 swapperPiece = spendable / 2;
-        uint256 matcherPiece = spendable - swapperPiece;
-        if (matcherPiece > type(uint128).max) revert FeesExceedUint128();
-        oracle.internalTransferFrom(address(this), swapper, token, uint128(swapperPiece));
-        oracle.internalTransferFrom(address(this), matcher, token, uint128(matcherPiece));
-        return spendable;
+    /// @dev Distributes one uint128-sized tranche of a token, with odd units assigned to the matcher.
+    /// @param token Oracle-ledger token to distribute.
+    /// @return collected Total amount distributed for the token.
+    function _distributeToken(address token) internal returns (uint256 collected) {
+        uint256 balance = ORACLE.tokenHolder(address(this), token);
+        if (balance <= 1) return 0;
+
+        uint256 spendable = balance - 1;
+        collected = spendable > type(uint128).max ? type(uint128).max : spendable;
+
+        uint256 swapperPiece = collected / 2;
+        uint256 matcherPiece = collected - swapperPiece;
+        if (swapperPiece != 0) {
+            ORACLE.internalTransferFrom(address(this), swapper(), token, uint128(swapperPiece));
+        }
+        ORACLE.internalTransferFrom(address(this), matcher(), token, uint128(matcherPiece));
     }
 }
