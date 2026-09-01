@@ -4,10 +4,10 @@ pragma solidity 0.8.28;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
 import {oracleFeeReceiver} from "./oracleFeeReceiver.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISignatureTransfer} from "../interfaces/ISignatureTransfer.sol";
 import {Errors} from "../libraries/Errors.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
 
 /**
  * @title openSwap
@@ -33,7 +33,7 @@ contract openSwapV2 is ReentrancyGuard {
 
     constructor(address oracle_) {
         oracle = IOpenOracle2(oracle_);
-        feeReceiverImpl = address(new oracleFeeReceiver());
+        feeReceiverImpl = address(new oracleFeeReceiver(IOpenOracle2(oracle_)));
     }
 
     mapping(uint256 => bytes32) public swaps;
@@ -120,17 +120,9 @@ contract openSwapV2 is ReentrancyGuard {
     event SwapRefunded(uint256 swapId, address indexed swapper, address indexed matcher);
     event SwapExecuted(uint256 swapId);
     event SwapMatched(uint256 indexed swapId, bytes packed);
-    event FeesTransferred(
-        address indexed swapper,
-        address indexed matcher,
-        address buyToken,
-        address sellToken,
-        uint128 feesBuyToken,
-        uint128 feesSellToken,
-        address feeRecipientContract
-    );
     event SlippageBailout(uint256 swapId);
     event ImpliedBlocksPerSecondBailout(uint256 swapId);
+    event MaxGameTimeBailout(uint256 swapId);
 
     /**
      * @notice Creates a swap, routing sellAmt of sellToken into openOracle's internal accounting
@@ -324,10 +316,10 @@ contract openSwapV2 is ReentrancyGuard {
         tempHolding[matcher] += matcherGasComp;
 
         if (preimage.protocolFee > 0) {
-            address feeReceiver = Clones.clone(feeReceiverImpl);
-            s.feeRecipient = feeReceiver;
+            s.feeRecipient = _predictFeeReceiver(swapId, sellToken, buyToken, s.swapper, matcher);
         }
-        s.reportId = uint128(oracle.nextReportId());
+        uint128 currentId = uint128(oracle.nextReportId());
+        s.reportId = currentId;
 
         uint256 matchedMem;
         bytes32 matchedHash;
@@ -337,12 +329,9 @@ contract openSwapV2 is ReentrancyGuard {
         }
         swaps[swapId] = matchedHash;
 
-        if (s.feeRecipient != address(0)) {
-            oracleFeeReceiver(s.feeRecipient).initialize(
-                uint128(swapId), address(oracle), sellToken, buyToken, s.swapper, matcher
-            );
-        }
-        oracleGame(s, preimage, timing, amount2, matcher, settlerReward);
+        uint256 returnedId = oracleGame(s, preimage, timing, amount2, matcher, settlerReward);
+        if (returnedId != currentId) revert Errors.InvalidID();
+
         oracle.internalTransferFrom(matcher, address(this), buyToken, minFulfillLiquidity);
 
         uint256 packedLen = _packMem(matchedMem, 2);
@@ -606,7 +595,6 @@ contract openSwapV2 is ReentrancyGuard {
         address matcher = s.matcher;
         address buyToken = s.buyToken;
         address sellToken = s.sellToken;
-        address feeRecipient = s.feeRecipient;
         uint128 minFulfillLiquidity = s.minFulfillLiquidity;
         uint128 sellAmt = s.sellAmt;
         uint24 fulfillmentFee = s.fulfillmentFee;
@@ -622,10 +610,12 @@ contract openSwapV2 is ReentrancyGuard {
         bool blocksPerSecondOk =
             impliedBlocksPerSecond(oracleState.reportTimestamp, oracleState.lastReportOppoTime, blocksPerSecond);
         bool slippageBailout = fulfillAmt > minFulfillLiquidity || !slippageOk;
-        bool shouldRefund = slippageBailout || !blocksPerSecondOk;
+        bool maxGameTimePassed = block.timestamp > uint256(s.start) + s.maxGameTime;
+        bool shouldRefund = slippageBailout || !blocksPerSecondOk || maxGameTimePassed;
 
         if (slippageBailout) emit SlippageBailout(swapId);
         if (!blocksPerSecondOk) emit ImpliedBlocksPerSecondBailout(swapId);
+        if (maxGameTimePassed) emit MaxGameTimeBailout(swapId);
 
         if (shouldRefund) {
             refund(sellToken, sellAmt, swapper, buyToken, minFulfillLiquidity, matcher, s.useInternalBalances);
@@ -641,10 +631,37 @@ contract openSwapV2 is ReentrancyGuard {
             }
             emit SwapExecuted(swapId);
         }
+    }
 
-        if (feeRecipient != address(0)) {
-            grabOracleGameFees(s);
+    /**
+     * @notice Deploys a swap's fee receiver if needed, then distributes its accrued oracle fees.
+     * @dev CREATE2 binds the receiver address to all five immutable arguments.
+     *              Deployment is permissionless and may occur before fees accrue; an empty distribution
+     *              is a no-op.
+     * @param swapId Swap identifier used as the deterministic deployment salt.
+     * @param token1 First oracle token encoded into the receiver.
+     * @param token2 Second oracle token encoded into the receiver.
+     * @param swapper Swapper encoded into the receiver and used for its token split.
+     * @param matcher Matcher encoded into the receiver and used for its token split.
+     * @return feeReceiver Deployed or previously deployed receiver address.
+     * @return fees1 Amount of token1 distributed in this call.
+     * @return fees2 Amount of token2 distributed in this call.
+     */
+    function deployAndDistributeFeeReceiver(
+        uint256 swapId,
+        address token1,
+        address token2,
+        address swapper,
+        address matcher
+    ) external nonReentrant returns (address feeReceiver, uint256 fees1, uint256 fees2) {
+        bytes memory args = abi.encodePacked(swapId, token1, token2, swapper, matcher);
+        feeReceiver = LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(swapId), address(this));
+
+        if (feeReceiver.code.length == 0) {
+            feeReceiver = LibClone.cloneDeterministic(feeReceiverImpl, args, bytes32(swapId));
         }
+
+        (fees1, fees2) = oracleFeeReceiver(feeReceiver).distribute();
     }
 
     function refund(
@@ -725,18 +742,17 @@ contract openSwapV2 is ReentrancyGuard {
         }
     }
 
-    function grabOracleGameFees(MatchedSwap memory s) internal {
-        try oracleFeeReceiver(s.feeRecipient).distribute() returns (uint256 feesSellToken, uint256 feesBuyToken) {
-            emit FeesTransferred(
-                s.swapper,
-                s.matcher,
-                s.buyToken,
-                s.sellToken,
-                uint128(feesBuyToken),
-                uint128(feesSellToken),
-                s.feeRecipient
-            );
-        } catch {}
+    /// @dev Predicts the swap's counterfactual fee receiver. The clone is deployed lazily by
+    ///      `deployAndDistributeFeeReceiver`; distributing an empty receiver is a no-op.
+    function _predictFeeReceiver(
+        uint256 swapId,
+        address token1,
+        address token2,
+        address swapper,
+        address matcher
+    ) internal view returns (address) {
+        bytes memory args = abi.encodePacked(swapId, token1, token2, swapper, matcher);
+        return LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(swapId), address(this));
     }
 
     /**
