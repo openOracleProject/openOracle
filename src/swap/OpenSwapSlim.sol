@@ -6,7 +6,7 @@ import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
 import {oracleFeeReceiver} from "./oracleFeeReceiver.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISignatureTransfer} from "../interfaces/ISignatureTransfer.sol";
-import {Errors} from "../libraries/Errors.sol";
+import {SwapErrors as Errors} from "../libraries/SwapErrors.sol";
 import {LibClone} from "solady/utils/LibClone.sol";
 
 /**
