@@ -208,6 +208,23 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
 
     // ── Test 7: Per-swap conservation across mixed states ────────────────
 
+    function _completeHappySwap() internal returns (uint256 fulfillAmt) {
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
+            _buildSwapAndPreimage(swapId, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
+
+        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        _settle(reportId, og, ph);
+        _execute(swapId, sPost, og, ph, address(0x99));
+
+        fulfillAmt = (uint256(SELL_AMT) * 2000e18) / INITIAL_LIQUIDITY;
+        fulfillAmt -= (fulfillAmt * STARTING_FEE) / 1e7;
+    }
+
     function testInvariant_MixedFlows_NoLeak() public {
         // Three swaps: one cancelled, one bailed-out, one completed.
         // Snapshot ALL relevant balances before any swap, and after all are resolved.
@@ -227,23 +244,14 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         (uint256 swapB, uint48 expB) = _propose();
         (, , openSwapV2.MatchedSwap memory sBpost) = _match(swapB, 2000e18, expB);
 
-        // swap C: full happy path
-        (uint256 swapC, uint48 expC) = _propose();
-        (openSwapV2.ProposedSwap memory sC, openSwapV2.MatcherPreimage memory mC) =
-            _buildSwapAndPreimage(swapC, expC);
-        (uint128 rC,, openSwapV2.MatchedSwap memory sCpost) = _match(swapC, 2000e18, expC);
-        IOpenOracle2.OracleGame memory ogC = _buildOracleGameAtReport(sC, mC, 2000e18);
-        IOpenOracle2.PreimageHelper memory phC = _buildPreimageHelper(rC);
-
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
 
         // swap B bailout (maxGameTime exceeded)
         swapContract.bailOut(swapB, sBpost);
 
-        // swap C settle + execute
-        _settle(rC, ogC, phC);
-        _execute(swapC, sCpost, ogC, phC, address(0x99));
+        // swap C: full happy path, matched after B's timeout so C is still inside its own maxGameTime.
+        uint256 fulfillAmt = _completeHappySwap();
 
         // openSwap should hold no external tokens
         assertEq(sellToken.balanceOf(address(swapContract)), 0, "openSwap sellToken == 0");
@@ -254,9 +262,6 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         assertEq(_spendable(address(swapContract), address(buyToken)), 0, "openSwap internal buyToken drained");
 
         // Swap C: swapper got fulfillAmt of buyToken; matcher got sellAmt sellToken + leftover buyToken
-        uint256 fulfillAmt = (uint256(SELL_AMT) * 2000e18) / INITIAL_LIQUIDITY;
-        fulfillAmt -= (fulfillAmt * STARTING_FEE) / 1e7;
-
         // Net token deltas across all three swaps:
         // - swap A cancel: net zero on tokens (sellToken refunded)
         // - swap B bailout: net zero on swapper sellToken (refunded), matcher's amount2 stays in oracle game, minFulfillLiquidity returned

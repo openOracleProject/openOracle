@@ -44,15 +44,25 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         reportId; // silence
     }
 
-    // ── Clone creation & metadata ──────────────────────────────────────
-
-    function testProtocolFees_FeeReceiverDeployedWhenPositive() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
-        assertTrue(feeReceiver != address(0), "feeReceiver deployed");
-        assertTrue(feeReceiver.code.length > 0, "feeReceiver is a contract");
+    function _deployAndDistribute(uint256 swapId, openSwapV2.MatchedSwap memory sPost, address caller)
+        internal
+        returns (address feeReceiver, uint256 fees1, uint256 fees2)
+    {
+        vm.prank(caller);
+        return swapContract.deployAndDistributeFeeReceiver(
+            swapId, sPost.sellToken, sPost.buyToken, sPost.swapper, sPost.matcher
+        );
     }
 
-    function testProtocolFees_FeeReceiverNotDeployedWhenZero() public {
+    // ── Clone creation & metadata ──────────────────────────────────────
+
+    function testProtocolFees_FeeReceiverPredictedButNotDeployedWhenPositive() public {
+        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        assertTrue(feeReceiver != address(0), "feeReceiver predicted");
+        assertEq(feeReceiver.code.length, 0, "feeReceiver deploys lazily");
+    }
+
+    function testProtocolFees_ZeroProtocolFeeCommitsNoReceiver() public {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.protocolFee = 0;
         proposeTs = uint48(block.timestamp);
@@ -73,15 +83,29 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
         openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
-        assertEq(sPost.feeRecipient, address(0), "no clone when protocolFee = 0");
+        assertEq(sPost.feeRecipient, address(0), "no receiver when protocolFee = 0");
+        assertEq(swapContract.swaps(swapId), keccak256(abi.encode(sPost)), "zero-fee matched hash");
+
+        address predicted =
+            _predictSwapFeeReceiver(swapId, s.sellToken, s.buyToken, s.swapper, matcher);
+        vm.prank(address(0xDEAD));
+        (address deployed, uint256 fees1, uint256 fees2) = swapContract.deployAndDistributeFeeReceiver(
+            swapId, s.sellToken, s.buyToken, s.swapper, matcher
+        );
+        assertEq(deployed, predicted, "tuple still has a deterministic receiver");
+        assertGt(deployed.code.length, 0, "permissionless empty receiver deployed");
+        assertEq(fees1, 0, "no token1 fees");
+        assertEq(fees2, 0, "no token2 fees");
     }
 
     function testProtocolFees_FeeReceiverMetadata() public {
         (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address frAddr) = _proposeAndMatchWithFees();
+        (address deployed,,) = _deployAndDistribute(swapId, sPost, address(0xDEAD));
+        assertEq(deployed, frAddr, "deployed at committed address");
         oracleFeeReceiver fr = oracleFeeReceiver(frAddr);
 
-        assertEq(uint256(fr.gameId()), swapId, "gameId = swapId");
-        assertEq(address(fr.oracle()), address(oracle), "oracle reference");
+        assertEq(fr.swapId(), swapId, "swapId");
+        assertEq(address(fr.ORACLE()), address(oracle), "oracle reference");
         assertEq(fr.token1(), address(sellToken), "token1 = sellToken");
         assertEq(fr.token2(), address(buyToken), "token2 = buyToken");
         assertEq(fr.swapper(), swapper, "swapper");
@@ -95,6 +119,54 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         assertTrue(fr1 != fr2, "different clones");
     }
 
+    function testProtocolFees_PredeploymentBeforeMatchIsHarmless() public {
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s,) = _buildSwapAndPreimage(swapId, expiration);
+        address predicted = _predictSwapFeeReceiver(swapId, s.sellToken, s.buyToken, s.swapper, matcher);
+
+        vm.prank(address(0xDEAD));
+        (address deployed, uint256 fees1, uint256 fees2) = swapContract.deployAndDistributeFeeReceiver(
+            swapId, s.sellToken, s.buyToken, s.swapper, matcher
+        );
+        assertEq(deployed, predicted, "predeployed at the future committed address");
+        assertEq(fees1, 0, "no token1 fees before match");
+        assertEq(fees2, 0, "no token2 fees before match");
+
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        assertEq(sPost.feeRecipient, predicted, "match commits the predeployed receiver");
+        assertGt(predicted.code.length, 0, "predeployed code remains usable");
+        assertEq(swapContract.swaps(swapId), keccak256(abi.encode(sPost)), "matched hash remains canonical");
+    }
+
+    function testProtocolFees_ImplementationRejectsDistribution() public {
+        address implementation = swapContract.feeReceiverImpl();
+        vm.expectRevert(oracleFeeReceiver.NotClone.selector);
+        oracleFeeReceiver(implementation).distribute();
+    }
+
+    function testProtocolFees_WrongTupleCannotDrainCommittedReceiver() public {
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
+        _simulateFees(feeReceiver, 100e18, 0);
+
+        address wrongMatcher = address(0xBAD);
+        address wrongPrediction =
+            _predictSwapFeeReceiver(swapId, sPost.sellToken, sPost.buyToken, sPost.swapper, wrongMatcher);
+        vm.prank(address(0xDEAD));
+        (address wrongReceiver, uint256 wrongFees1, uint256 wrongFees2) =
+            swapContract.deployAndDistributeFeeReceiver(
+                swapId, sPost.sellToken, sPost.buyToken, sPost.swapper, wrongMatcher
+            );
+
+        assertEq(wrongReceiver, wrongPrediction, "wrong tuple deploys only its own receiver");
+        assertTrue(wrongReceiver != feeReceiver, "wrong tuple cannot address the committed receiver");
+        assertEq(wrongFees1, 0, "wrong receiver has no token1 fees");
+        assertEq(wrongFees2, 0, "wrong receiver has no token2 fees");
+        assertEq(_spendable(feeReceiver, address(sellToken)), 100e18, "committed fees remain untouched");
+
+        (, uint256 fees1,) = _deployAndDistribute(swapId, sPost, address(0xCAFE));
+        assertEq(fees1, 100e18, "correct tuple drains the committed receiver");
+    }
+
     // ── Distribute mechanics (using direct deposit to simulate fees) ────
 
     function _simulateFees(address feeReceiver, uint128 sellAmount, uint128 buyAmount) internal {
@@ -103,21 +175,26 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     }
 
     function testProtocolFees_FiftyFiftySplit() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         uint128 fees = 100e18;
         _simulateFees(feeReceiver, fees, 0);
 
         uint256 swapperBefore = _spendable(swapper, address(sellToken));
         uint256 matcherBefore = _spendable(matcher, address(sellToken));
 
-        oracleFeeReceiver(feeReceiver).distribute();
+        vm.expectEmit(true, false, false, true, feeReceiver);
+        emit oracleFeeReceiver.FeesDistributed(swapId, fees, 0);
+        (address deployed, uint256 fees1, uint256 fees2) = _deployAndDistribute(swapId, sPost, address(0xDEAD));
 
+        assertEq(deployed, feeReceiver, "deployed at prediction");
+        assertEq(fees1, fees, "returned token1 fees");
+        assertEq(fees2, 0, "no token2 fees");
         assertEq(_spendable(swapper, address(sellToken)), swapperBefore + fees / 2, "swapper got half");
         assertEq(_spendable(matcher, address(sellToken)), matcherBefore + (fees - fees / 2), "matcher got half");
     }
 
     function testProtocolFees_BothTokensSplit() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         _simulateFees(feeReceiver, 100e18, 200e18);
 
         uint256 swapperSellBefore = _spendable(swapper, address(sellToken));
@@ -125,7 +202,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint256 matcherSellBefore = _spendable(matcher, address(sellToken));
         uint256 matcherBuyBefore = _spendable(matcher, address(buyToken));
 
-        oracleFeeReceiver(feeReceiver).distribute();
+        _deployAndDistribute(swapId, sPost, address(0xDEAD));
 
         assertEq(_spendable(swapper, address(sellToken)), swapperSellBefore + 50e18, "swapper sell half");
         assertEq(_spendable(matcher, address(sellToken)), matcherSellBefore + 50e18, "matcher sell half");
@@ -134,13 +211,13 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     }
 
     function testProtocolFees_OddAmountRounding() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         _simulateFees(feeReceiver, 101, 0); // odd
 
         uint256 swapperBefore = _spendable(swapper, address(sellToken));
         uint256 matcherBefore = _spendable(matcher, address(sellToken));
 
-        oracleFeeReceiver(feeReceiver).distribute();
+        _deployAndDistribute(swapId, sPost, address(0xDEAD));
 
         // 101 / 2 = 50 to swapper; 101 - 50 = 51 to matcher (matcher gets the remainder)
         assertEq(_spendable(swapper, address(sellToken)), swapperBefore + 50, "swapper got 50");
@@ -148,49 +225,77 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     }
 
     function testProtocolFees_ZeroFeesNoOp() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         // No simulated fees
-        (uint256 f1, uint256 f2) = oracleFeeReceiver(feeReceiver).distribute();
+        vm.recordLogs();
+        (address deployed, uint256 f1, uint256 f2) = _deployAndDistribute(swapId, sPost, address(0xDEAD));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(deployed, feeReceiver, "empty receiver still deploys");
+        assertGt(feeReceiver.code.length, 0, "clone deployed");
         assertEq(f1, 0, "fees1 zero");
         assertEq(f2, 0, "fees2 zero");
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length == 0) continue;
+            assertTrue(
+                logs[i].topics[0] != oracleFeeReceiver.FeesDistributed.selector,
+                "empty distribution emits no FeesDistributed event"
+            );
+        }
     }
 
     function testProtocolFees_DoubleCallNoDoubleDistribution() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         _simulateFees(feeReceiver, 100e18, 0);
 
-        oracleFeeReceiver(feeReceiver).distribute();
+        _deployAndDistribute(swapId, sPost, address(0xDEAD));
 
         uint256 swapperAfterFirst = _spendable(swapper, address(sellToken));
 
-        // Second call drains nothing — balance left is just the sentinel
-        (uint256 f1, uint256 f2) = oracleFeeReceiver(feeReceiver).distribute();
+        // The routed helper recognizes the existing clone and drains nothing.
+        (address again, uint256 f1, uint256 f2) = _deployAndDistribute(swapId, sPost, address(0xBEEF));
+        assertEq(again, feeReceiver, "same clone returned");
         assertEq(f1, 0, "second call distributes 0");
         assertEq(f2, 0, "second call distributes 0");
         assertEq(_spendable(swapper, address(sellToken)), swapperAfterFirst, "swapper unchanged");
     }
 
+    function testProtocolFees_AmountsAboveUint128DrainInTwoTranches() public {
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
+        uint128 tranche = type(uint128).max;
+        deal(address(sellToken), address(this), 2 * uint256(tranche), true);
+
+        oracle.deposit(address(sellToken), tranche, feeReceiver);
+        oracle.deposit(address(sellToken), tranche, feeReceiver);
+        assertEq(_spendable(feeReceiver, address(sellToken)), 2 * uint256(tranche), "two tranches accrued");
+
+        (, uint256 firstOut,) = _deployAndDistribute(swapId, sPost, address(0xDEAD));
+        assertEq(firstOut, tranche, "first call is capped at uint128 max");
+        assertEq(_spendable(feeReceiver, address(sellToken)), tranche, "one tranche remains");
+
+        (, uint256 secondOut,) = _deployAndDistribute(swapId, sPost, address(0xBEEF));
+        assertEq(secondOut, tranche, "second call drains the remainder");
+        assertEq(_spendable(feeReceiver, address(sellToken)), 0, "receiver drained to sentinel");
+    }
+
     function testProtocolFees_AnyoneCanDistribute() public {
-        (, , address feeReceiver) = _proposeAndMatchWithFees();
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) = _proposeAndMatchWithFees();
         _simulateFees(feeReceiver, 100e18, 0);
 
         uint256 swapperBefore = _spendable(swapper, address(sellToken));
         uint256 matcherBefore = _spendable(matcher, address(sellToken));
 
         // Permissionless: any caller can trigger distribution
-        vm.prank(address(0xDEAD));
-        oracleFeeReceiver(feeReceiver).distribute();
+        _deployAndDistribute(swapId, sPost, address(0xDEAD));
 
         assertEq(_spendable(swapper, address(sellToken)), swapperBefore + 50e18, "swapper got half");
         assertEq(_spendable(matcher, address(sellToken)), matcherBefore + 50e18, "matcher got half");
     }
 
     /// @notice After a swap is terminal (hash deleted), distribute() still works on the
-    ///         orphaned feeReceiver clone. Locks in the design that fee recovery does not
+    ///         counterfactual feeReceiver. Locks in the design that fee recovery does not
     ///         depend on swap-hash authentication.
     function testProtocolFees_DistributeWorksAfterTerminalDelete() public {
-        // 1) Run full propose → match → settle → execute. execute internally calls
-        //    grabOracleGameFees, but with no real disputes there are no fees yet.
+        // 1) Run full propose → match → settle → execute without deploying the receiver.
         (uint256 swapId, uint48 expiration) = _propose();
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
@@ -206,6 +311,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
 
         // 2) Swap is terminal — hash deleted.
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap hash deleted post-execute");
+        assertEq(feeReceiver.code.length, 0, "execute does not deploy fee receiver");
 
         // 3) Simulate fees arriving at the feeReceiver after terminal state (e.g. some
         //    late dispute or external accrual). distribute() should still partition them.
@@ -213,14 +319,16 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint256 swapperBefore = _spendable(swapper, address(sellToken));
         uint256 matcherBefore = _spendable(matcher, address(sellToken));
 
-        // 4) Anyone can call distribute() directly on the clone — no swap hash needed.
-        vm.prank(address(0xBEEF));
-        oracleFeeReceiver(feeReceiver).distribute();
+        // 4) Anyone can deploy and distribute — no live swap hash is needed.
+        (address deployed, uint256 fees1, uint256 fees2) = _deployAndDistribute(swapId, sPost, address(0xBEEF));
 
+        assertEq(deployed, feeReceiver, "terminal receiver deployed at prediction");
+        assertEq(fees1, 200e18, "all late token1 fees distributed");
+        assertEq(fees2, 0, "no token2 fees");
         assertEq(_spendable(swapper, address(sellToken)), swapperBefore + 100e18, "swapper got half post-terminal");
         assertEq(_spendable(matcher, address(sellToken)), matcherBefore + 100e18, "matcher got half post-terminal");
 
-        // 5) Idempotent: second call returns zero, no double distribution.
+        // 5) Once deployed, direct calls remain permissionless and idempotent.
         vm.prank(address(0xBEEF));
         (uint256 f1, uint256 f2) = oracleFeeReceiver(feeReceiver).distribute();
         assertEq(f1, 0, "second call no-ops");
@@ -269,8 +377,11 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         // Distribute — swapper + matcher get half each, credited to internal balance
         uint256 swapperSellBefore = _spendable(swapper, address(sellToken));
         uint256 matcherSellBefore = _spendable(matcher, address(sellToken));
-        oracleFeeReceiver(feeReceiver).distribute();
+        (address deployed, uint256 fees1, uint256 fees2) = _deployAndDistribute(swapId, sPost, address(0xCAFE));
 
+        assertEq(deployed, feeReceiver, "deployed at committed address");
+        assertEq(fees1, expectedFee, "helper returned accrued fee");
+        assertEq(fees2, 0, "no token2 fee");
         assertEq(_spendable(swapper, address(sellToken)), swapperSellBefore + expectedFee / 2, "swapper got half");
         assertEq(
             _spendable(matcher, address(sellToken)),
@@ -319,15 +430,25 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildEthBuySwap(sellAmt, minFulfill, mgc, egc, slip);
 
-        // Predict the feeReceiver clone
-        address feeReceiver = vm.computeCreateAddress(address(swapContract), vm.getNonce(address(swapContract)));
+        // Predict the counterfactual fee receiver from the exact immutable arguments.
+        address feeReceiver =
+            _predictSwapFeeReceiver(swapId, s.sellToken, s.buyToken, s.swapper, address(rejecter));
 
         // Match — rejecter calls matchSwap directly
         reportTs = uint48(block.timestamp);
         reportBn = uint48(block.number);
         rejecter.doMatch(swapContract, swapId, uint128(2 ether), s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        // Sanity: feeReceiver records rejecter as matcher, and token2 is ETH (address(0))
+        assertEq(feeReceiver.code.length, 0, "receiver remains counterfactual after match");
+
+        // Materialize the receiver through the permissionless core path.
+        vm.prank(address(0xCAFE));
+        (address deployed,,) = swapContract.deployAndDistributeFeeReceiver(
+            swapId, s.sellToken, s.buyToken, s.swapper, address(rejecter)
+        );
+        assertEq(deployed, feeReceiver, "receiver deployed at prediction");
+
+        // Sanity: feeReceiver records rejecter as matcher, and token2 is ETH (address(0)).
         assertEq(oracleFeeReceiver(feeReceiver).matcher(), address(rejecter), "matcher = rejecter");
         assertEq(oracleFeeReceiver(feeReceiver).token2(), address(0), "token2 = ETH");
 

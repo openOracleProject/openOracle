@@ -169,13 +169,88 @@ contract OpenSwapExecuteFlowsTest is SlimTestBase {
         vm.warp(block.timestamp + MAX_GAME_TIME + 1);
         vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
 
-        // execute goes first — succeeds because mature-unsettled state matches og directly
+        // execute goes first. Because maxGameTime has passed, execute itself refunds the swap.
         _executeRaw(swapId, sPost, og, ph, false, address(0x99));
 
         // After execute, openSwap deleted the stored hash.
         // bailOut against zero storage: hash mismatch.
         vm.expectRevert(Errors.WrongHash.selector);
         swapContract.bailOut(swapId, sPost);
+    }
+
+    function testExecute_AtExactMaxGameTime_ExecutesNormally() public {
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
+            _buildSwapAndPreimage(swapId, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
+
+        vm.warp(uint256(sPost.start) + sPost.maxGameTime);
+        vm.roll(uint256(reportBn) + sPost.maxGameTime / 2);
+        _settle(reportId, og, ph);
+        og.settlementTimestamp = uint48(block.timestamp);
+
+        uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
+        vm.expectEmit(false, false, false, true, address(swapContract));
+        emit openSwapV2.SwapExecuted(swapId);
+        _executeRaw(swapId, sPost, og, ph, false, address(0x99));
+
+        assertGt(buyToken.balanceOf(swapper), swapperBuyBefore, "strict boundary still executes");
+        assertEq(swapContract.swaps(swapId), bytes32(0), "swap terminal");
+    }
+
+    function testExecute_AfterMaxGameTime_RefundsInsteadOfSwapping() public {
+        uint256 swapperSellBefore = sellToken.balanceOf(swapper);
+        uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
+
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
+            _buildSwapAndPreimage(swapId, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
+
+        vm.warp(uint256(sPost.start) + sPost.maxGameTime + 1);
+        vm.roll(uint256(reportBn) + (sPost.maxGameTime + 1) / 2);
+        _settle(reportId, og, ph);
+        og.settlementTimestamp = uint48(block.timestamp);
+
+        vm.expectEmit(false, false, false, true, address(swapContract));
+        emit openSwapV2.MaxGameTimeBailout(swapId);
+        vm.expectEmit(false, true, true, true, address(swapContract));
+        emit openSwapV2.SwapRefunded(swapId, swapper, matcher);
+        _executeRaw(swapId, sPost, og, ph, false, address(0x99));
+
+        assertEq(sellToken.balanceOf(swapper), swapperSellBefore, "swapper sell token refunded");
+        assertEq(buyToken.balanceOf(swapper), swapperBuyBefore, "swapper receives no fill");
+        assertEq(swapContract.tempHolding(address(0x99)), EXECUTOR_GAS_COMP, "executor still compensated");
+        assertEq(swapContract.swaps(swapId), bytes32(0), "swap terminal");
+    }
+
+    function testExecute_SettledBeforeDeadlineButCalledAfterDeadline_Refunds() public {
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
+            _buildSwapAndPreimage(swapId, expiration);
+        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
+        IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
+
+        vm.warp(uint256(sPost.start) + SETTLEMENT_TIME + 1);
+        vm.roll(uint256(reportBn) + (SETTLEMENT_TIME + 1) / 2);
+        _settle(reportId, og, ph);
+        og.settlementTimestamp = uint48(block.timestamp);
+
+        vm.warp(uint256(sPost.start) + sPost.maxGameTime + 1);
+        vm.roll(uint256(reportBn) + (sPost.maxGameTime + 1) / 2);
+
+        vm.expectEmit(false, false, false, true, address(swapContract));
+        emit openSwapV2.MaxGameTimeBailout(swapId);
+        vm.expectEmit(false, true, true, true, address(swapContract));
+        emit openSwapV2.SwapRefunded(swapId, swapper, matcher);
+        _executeRaw(swapId, sPost, og, ph, false, address(0x99));
+
+        assertEq(swapContract.swaps(swapId), bytes32(0), "late execution refunds settled game");
     }
 
     // ── 4. Reentrancy regression: delete-as-terminal-lock blocks re-execute ──

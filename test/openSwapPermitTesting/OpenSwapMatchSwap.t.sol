@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Errors} from "../../src/libraries/Errors.sol";
+import {SwapErrors as Errors} from "../../src/libraries/SwapErrors.sol";
 
 import "../utils/SlimTestBase.sol";
 
@@ -183,6 +183,27 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
 
         assertEq(reportId1, 1, "first reportId");
         assertEq(uint256(oracle.nextReportId()), 3, "nextReportId after 2 matches");
+    }
+
+    function testMatchSwap_RevertsIfOracleReturnsDifferentReportId() public {
+        (uint256 swapId, uint48 expiration) = _propose();
+        (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
+            _buildSwapAndPreimage(swapId, expiration);
+        bytes32 proposedHash = swapContract.swaps(swapId);
+        uint256 actualNextId = oracle.nextReportId();
+
+        vm.mockCall(
+            address(oracle),
+            abi.encodeCall(IOpenOracle2.nextReportId, ()),
+            abi.encode(actualNextId + 1)
+        );
+        vm.prank(matcher);
+        vm.expectRevert(Errors.InvalidID.selector);
+        swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
+        vm.clearMockedCalls();
+
+        assertEq(oracle.nextReportId(), actualNextId, "oracle report creation rolled back");
+        assertEq(swapContract.swaps(swapId), proposedHash, "proposal remains matchable");
     }
 
     // ── Failure modes ────────────────────────────────────────────────────
