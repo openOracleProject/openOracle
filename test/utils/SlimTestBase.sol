@@ -2,13 +2,14 @@
 pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
-import "../../src/OpenOracleSlim.sol";
-import "../../src/swap/OpenSwapSlim.sol";
+import {OpenOracle} from "../../src/OpenOracleSlim.sol";
+import {openSwapV2} from "../../src/swap/OpenSwapSlim.sol";
 import "../../src/interfaces/IOpenOracle2.sol";
 import "../../src/interfaces/ISignatureTransfer.sol";
 import "./MockERC20.sol";
 import "./MockPermit2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
 import {SwapCompat} from "../openSwapPermitTesting/SwapCompat.sol";
 
 abstract contract SlimTestBase is Test {
@@ -163,8 +164,9 @@ abstract contract SlimTestBase is Test {
     }
 
     function _proposeWith(bool useInternalBalances) internal returns (uint256 swapId, uint48 expiration) {
-        expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        uint48 currentTimestamp = uint48(vm.getBlockTimestamp());
+        expiration = currentTimestamp + 1 hours;
+        proposeTs = currentTimestamp;
         proposeUseInternal = useInternalBalances;
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
@@ -196,12 +198,13 @@ abstract contract SlimTestBase is Test {
             _buildSwapAndPreimage(swapId, expiration);
         IOpenOracle2.TimingBoundaries memory timing = IOpenOracle2.TimingBoundaries(0, 0, 0, 0);
 
-        reportTs = uint48(block.timestamp);
-        reportBn = uint48(block.number);
+        reportTs = uint48(vm.getBlockTimestamp());
+        reportBn = uint48(vm.getBlockNumber());
         reportId = uint128(oracle.nextReportId());
 
-        address predictedClone =
-            m.protocolFee > 0 ? vm.computeCreateAddress(address(swapContract), vm.getNonce(address(swapContract))) : address(0);
+        address predictedClone = m.protocolFee > 0
+            ? _predictSwapFeeReceiver(swapId, s.sellToken, s.buyToken, s.swapper, matcher)
+            : address(0);
 
         vm.prank(matcher);
         swapContract.matchSwap(swapId, amount2, s, m, timing);
@@ -209,6 +212,19 @@ abstract contract SlimTestBase is Test {
         fulfillmentFee = _calcFulfillFee();
         sPost = _postMatchSwap(s, reportId, fulfillmentFee, reportTs);
         sPost.feeRecipient = predictedClone;
+    }
+
+    function _predictSwapFeeReceiver(
+        uint256 swapId,
+        address token1,
+        address token2,
+        address receiverSwapper,
+        address receiverMatcher
+    ) internal view returns (address) {
+        bytes memory args = abi.encodePacked(swapId, token1, token2, receiverSwapper, receiverMatcher);
+        return LibClone.predictDeterministicAddress(
+            swapContract.feeReceiverImpl(), args, bytes32(swapId), address(swapContract)
+        );
     }
 
     /// @dev Mirror of openSwap's calcFee for tests that need to know what fee will be applied at match time.
