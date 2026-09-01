@@ -148,16 +148,16 @@ contract OpenOracleGGValidationTest is BaseGGTest {
 
     function testReport_RevertsFlagsAboveMax() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
-        p.flags = 0x20; // bit 5 is undefined
+        p.flags = 0x80; // bit 7 is undefined
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidMode.selector);
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());
     }
 
     function testReport_AcceptsFlagsAtMax() public {
-        // All five defined flag bits combined (0x1F) should be accepted.
+        // All seven defined flag bits combined (0x7F) should be accepted.
         CompatTypes.CreateReportParams memory p = _defaultParams();
-        p.flags = 0x1F;
+        p.flags = 0x7F;
         vm.prank(alice);
         // Should not revert with InvalidMode (will pass through to the rest of report).
         CompatTypes.reportRaw(oracle, p.settlerReward, p, 1e18, 2000e18, alice, false, false, _emptyTiming());

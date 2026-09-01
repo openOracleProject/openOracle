@@ -30,6 +30,8 @@ abstract contract BaseGGTest is Test {
     uint8 internal constant FLAG_STORE_ALL = 1 << 2;
     uint8 internal constant FLAG_STORE_PRICE = 1 << 3;
     uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4;
+    uint8 internal constant FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6;
 
     // ETH side sentinel (matches Slim.ETH_SENTINEL).
     address internal constant ETH_SENTINEL = address(0);

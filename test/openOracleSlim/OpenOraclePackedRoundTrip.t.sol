@@ -36,7 +36,7 @@ contract OpenOraclePackedRoundTripTest is BaseGGTest {
         //   - feePercentage + protocolFee <= 1e7
         //   - multiplier >= 100 (MULTIPLIER_PRECISION)
         //   - reportTimestamp / settlementTimestamp / lastReportOppoTime / numReports = 0 at input
-        //   - flags <= FLAGS_MAX (0x1F)
+        //   - flags <= FLAGS_MAX (0x7F)
         g.currentAmount1 = uint128(0x010203040506070809); // ~7.4e19 wei
         g.currentAmount2 = uint128(0x1112131415161718191a); // ~7.9e22 wei, distinct
         g.currentReporter = alice;
@@ -57,7 +57,7 @@ contract OpenOraclePackedRoundTripTest is BaseGGTest {
         g.callbackContract = address(0);
         g.callbackGasLimit = uint32(0xdeadbeef);
         g.protocolFee = uint24(0x002328); // 9_000 ; sum 19k <= 1e7 ✓
-        g.flags = uint8(FLAG_TIME_TYPE | FLAG_TRACK_DISPUTES | FLAG_STORE_SETTLEMENT_ELIGIBILITY); // 0x13
+        g.flags = 0x7F;
     }
 
     function _findPackedLog(Vm.Log[] memory logs, bytes32 sig)

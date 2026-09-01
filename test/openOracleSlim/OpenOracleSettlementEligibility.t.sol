@@ -112,12 +112,12 @@ contract OpenOracleSettlementEligibilityTest is BaseGGTest {
 
     function testAllFlagsComposeAndTheSidecarDoesNotChangeTheCommittedPreimage() public {
         CompatTypes.CreateReportParams memory p = _defaultParams();
-        p.flags = 0x1F;
+        p.flags = 0x7F;
 
         vm.prank(alice);
         ReportContext memory ctx = _report(p, 1e18, 2000e18, alice, false, false);
 
-        assertEq(ctx.game.flags, 0x1F, "all flags committed");
+        assertEq(ctx.game.flags, 0x7F, "all flags committed");
         assertEq(_hashOracle(ctx.game, ctx.helper), oracle.oracleGame(ctx.reportId), "all-flags preimage reconstructs");
         assertEq(
             oracle.settlementEligibility(ctx.reportId),
