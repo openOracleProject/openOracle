@@ -31,6 +31,8 @@ contract OracleLocalityHandler is Test {
 
     uint96 internal constant SETTLER_REWARD = 0.001 ether;
     uint8 internal constant FLAG_TIME_TYPE = 1 << 0;
+    uint8 internal constant FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6;
     address internal constant PFR = address(0xFEE);
 
     struct ReportState {
@@ -145,7 +147,7 @@ contract OracleLocalityHandler is Test {
         g.token1 = t1;
         g.token2 = t2;
         g.settlementTime = 300;
-        g.escalationHalt = type(uint128).max;
+        g.escalationHalt = uint128(uint256(a1) * (1 + (uint256(a2Seed) % 4)));
         g.protocolFeeRecipient = withFee ? PFR : address(0);
         g.settlerReward = SETTLER_REWARD;
         g.disputeDelay = 5;
@@ -153,6 +155,8 @@ contract OracleLocalityHandler is Test {
         g.multiplier = 110;
         g.protocolFee = withFee ? 1000 : 0;
         g.flags = FLAG_TIME_TYPE;
+        if ((a1Seed & 1) != 0) g.flags |= FLAG_FEES_ONLY_AT_HALT;
+        if ((a1Seed & 2) != 0) g.flags |= FLAG_FLEXIBLE_ESCALATION;
 
         uint256 ethSide;
         if (t1 == address(0)) ethSide += a1;
@@ -172,7 +176,9 @@ contract OracleLocalityHandler is Test {
             _check("report");
             g.reportTimestamp = uint48(ts);
             g.lastReportOppoTime = uint48(bn);
-            reports.push(ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false}));
+            reports.push(
+                ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false})
+            );
             totalReports += 1;
         } catch {}
     }
@@ -189,8 +195,16 @@ contract OracleLocalityHandler is Test {
 
         uint128 oldA1 = g.currentAmount1;
         uint128 oldA2 = g.currentAmount2;
-        uint256 nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
-        if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
+        uint256 nextA1Raw;
+        if (oldA1 >= g.escalationHalt) {
+            nextA1Raw = uint256(oldA1) + 1;
+        } else {
+            nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
+            if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
+            if ((g.flags & FLAG_FLEXIBLE_ESCALATION) != 0) {
+                nextA1Raw = bound(uint256(newA2Seed), nextA1Raw, uint256(g.escalationHalt));
+            }
+        }
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 nextA1 = uint128(nextA1Raw);
         uint256 thresholdA2 = uint256(nextA1) * oldA2 / oldA1;

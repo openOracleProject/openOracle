@@ -57,6 +57,8 @@ contract OracleSystemHandler is Test {
     uint96 internal constant SETTLER_REWARD = 0.001 ether;
     uint8 internal constant FLAG_TIME_TYPE = 1 << 0;
     uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1;
+    uint8 internal constant FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6;
 
     constructor(OpenOracle _oracle, AdversarialCallback _callback) {
         oracle = _oracle;
@@ -165,7 +167,7 @@ contract OracleSystemHandler is Test {
 
         uint128 amt1 = uint128(bound(uint256(amt1Seed), 1, 1e21));
         uint128 amt2 = uint128(bound(uint256(amt2Seed), 1, 1e21));
-        uint8 flags = uint8(bound(uint256(flagSeed), 0, 0x1F));
+        uint8 flags = uint8(bound(uint256(flagSeed), 0, 0x7F));
         bool useCallback = (cbSeed & 1) == 1;
 
         // Param window: contract constraints are settlementTime > disputeDelay, multiplier ≥ 100,
@@ -254,6 +256,9 @@ contract OracleSystemHandler is Test {
         } else {
             uint256 scaled = (uint256(oldA1) * uint256(g.multiplier)) / 100;
             nextA1Raw = scaled > uint256(g.escalationHalt) ? uint256(g.escalationHalt) : scaled;
+            if ((g.flags & FLAG_FLEXIBLE_ESCALATION) != 0) {
+                nextA1Raw = bound(uint256(newAmt2Seed), nextA1Raw, uint256(g.escalationHalt));
+            }
         }
         if (nextA1Raw > type(uint128).max) return;
 
@@ -292,7 +297,8 @@ contract OracleSystemHandler is Test {
 
         // Precompute protocol fee burn (if applicable).
         uint256 oldSideAmt = token2Side ? oldA2 : oldA1;
-        uint256 protocolFee = (oldSideAmt * g.protocolFee) / 1e7;
+        bool chargeFees = (g.flags & FLAG_FEES_ONLY_AT_HALT) == 0 || oldA1 >= g.escalationHalt;
+        uint256 protocolFee = chargeFees ? (oldSideAmt * g.protocolFee) / 1e7 : 0;
         bool burns = protocolFee > 0 && g.protocolFeeRecipient == address(0);
 
         vm.prank(disputer);

@@ -36,6 +36,8 @@ contract OracleEntitlementHandler is Test {
 
     uint96 internal constant SETTLER_REWARD = 0.001 ether;
     uint8 internal constant FLAG_TIME_TYPE = 1 << 0;
+    uint8 internal constant FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6;
     uint24 internal constant FEE_PCT = 3000; // /1e7
     uint24 internal constant PROTO_FEE = 1000; // /1e7
     uint256 internal constant PCT_PREC = 1e7;
@@ -56,6 +58,9 @@ contract OracleEntitlementHandler is Test {
     uint256 public totalReports;
     uint256 public totalDisputes;
     uint256 public totalSettles;
+    uint256 public totalFlexibleJumps;
+    uint256 public totalFeeSuppressedDisputes;
+    uint256 public totalHaltFeeDisputes;
 
     constructor(OpenOracle _oracle, address _vA, address _vB) {
         oracle = _oracle;
@@ -127,7 +132,7 @@ contract OracleEntitlementHandler is Test {
         g.token1 = t1;
         g.token2 = t2;
         g.settlementTime = 300;
-        g.escalationHalt = type(uint128).max;
+        g.escalationHalt = uint128(uint256(a1) * (1 + (uint256(a2Seed) % 4)));
         g.protocolFeeRecipient = PFR;
         g.settlerReward = SETTLER_REWARD;
         g.disputeDelay = 5;
@@ -135,6 +140,8 @@ contract OracleEntitlementHandler is Test {
         g.multiplier = MULT;
         g.protocolFee = PROTO_FEE;
         g.flags = FLAG_TIME_TYPE;
+        if ((extraSeed & 1) != 0) g.flags |= FLAG_FEES_ONLY_AT_HALT;
+        if ((extraSeed & 2) != 0) g.flags |= FLAG_FLEXIBLE_ESCALATION;
 
         // settlerReward + ETH-side amounts (= contract's ethRequired) + fuzzer-chosen overpayment.
         uint256 ethValue = uint256(SETTLER_REWARD) + (t1 == ETH ? a1 : 0) + (t2 == ETH ? a2 : 0) + extra;
@@ -148,7 +155,9 @@ contract OracleEntitlementHandler is Test {
             if (extra > 0) entitled[reporter][ETH] += extra;
             g.reportTimestamp = uint48(ts);
             g.lastReportOppoTime = uint48(bn);
-            reports.push(ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false}));
+            reports.push(
+                ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false})
+            );
             totalReports += 1;
         } catch {}
     }
@@ -166,7 +175,19 @@ contract OracleEntitlementHandler is Test {
 
         uint128 oldA1 = g.currentAmount1;
         uint128 oldA2 = g.currentAmount2;
-        uint256 nextA1Raw = (uint256(oldA1) * MULT) / 100;
+        uint256 nextA1Raw;
+        uint256 minimumA1;
+        if (oldA1 >= g.escalationHalt) {
+            nextA1Raw = uint256(oldA1) + 1;
+            minimumA1 = nextA1Raw;
+        } else {
+            nextA1Raw = (uint256(oldA1) * MULT) / 100;
+            if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
+            minimumA1 = nextA1Raw;
+            if ((g.flags & FLAG_FLEXIBLE_ESCALATION) != 0) {
+                nextA1Raw = bound(uint256(newA2Seed), nextA1Raw, uint256(g.escalationHalt));
+            }
+        }
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 newA1 = uint128(nextA1Raw);
         uint256 thresholdA2 = uint256(newA1) * oldA2 / oldA1;
@@ -189,6 +210,7 @@ contract OracleEntitlementHandler is Test {
         }
         uint48 ct = uint48(block.timestamp);
         bool isSelf = (disputer == prev);
+        bool chargeFees = (g.flags & FLAG_FEES_ONLY_AT_HALT) == 0 || oldA1 >= g.escalationHalt;
 
         // Exact ETH the contract requires for the ETH-sided funding legs, plus a fuzzer-chosen
         // overpayment when ETH is in play. The excess is credited to the disputer — bring that
@@ -197,14 +219,12 @@ contract OracleEntitlementHandler is Test {
         bool ethSide = (g.token1 == ETH || g.token2 == ETH);
         uint256 extra = ethSide ? bound(uint256(extraSeed), 0, 5 ether) : 0;
         uint256 ethValue =
-            _disputeEthRequired(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA1, newA2, isSelf) + extra;
+            _disputeEthRequired(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA1, newA2, isSelf, chargeFees) + extra;
         if (ethValue > 0) vm.deal(disputer, disputer.balance + ethValue);
 
         vm.prank(disputer);
-        try oracle.dispute{value: ethValue}(
-            r.id, newA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()
-        ) {
-            _mirrorDispute(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA2, disputer, prev, isSelf);
+        try oracle.dispute{value: ethValue}(r.id, newA1, newA2, disputer, false, false, g, r.helper, _emptyTiming()) {
+            _mirrorDispute(tokenToSwap, g.token1, g.token2, oldA1, oldA2, newA2, disputer, prev, isSelf, chargeFees);
             if (extra > 0) entitled[disputer][ETH] += extra;
             g.currentAmount1 = newA1;
             g.currentAmount2 = newA2;
@@ -213,6 +233,13 @@ contract OracleEntitlementHandler is Test {
             g.lastReportOppoTime = uint48(block.number);
             r.game = g;
             totalDisputes += 1;
+            if ((g.flags & FLAG_FLEXIBLE_ESCALATION) != 0 && newA1 > minimumA1) {
+                totalFlexibleJumps += 1;
+            }
+            if ((g.flags & FLAG_FEES_ONLY_AT_HALT) != 0) {
+                if (chargeFees) totalHaltFeeDisputes += 1;
+                else totalFeeSuppressedDisputes += 1;
+            }
         } catch {}
     }
 
@@ -227,17 +254,18 @@ contract OracleEntitlementHandler is Test {
         uint128 newA2,
         address disputer,
         address prev,
-        bool isSelf
+        bool isSelf,
+        bool chargeFees
     ) internal {
         if (tokenToSwap == t1) {
-            uint256 fee = (uint256(oldA1) * FEE_PCT) / PCT_PREC;
-            uint256 pf = (uint256(oldA1) * PROTO_FEE) / PCT_PREC;
+            uint256 fee = chargeFees ? (uint256(oldA1) * FEE_PCT) / PCT_PREC : 0;
+            uint256 pf = chargeFees ? (uint256(oldA1) * PROTO_FEE) / PCT_PREC : 0;
             if (pf > 0) entitled[PFR][t1] += pf;
             if (newA2 < oldA2) entitled[disputer][t2] += uint256(oldA2) - newA2; // netToken2Receive
             if (!isSelf) entitled[prev][t1] += 2 * uint256(oldA1) + fee;
         } else {
-            uint256 fee = (uint256(oldA2) * FEE_PCT) / PCT_PREC;
-            uint256 pf = (uint256(oldA2) * PROTO_FEE) / PCT_PREC;
+            uint256 fee = chargeFees ? (uint256(oldA2) * FEE_PCT) / PCT_PREC : 0;
+            uint256 pf = chargeFees ? (uint256(oldA2) * PROTO_FEE) / PCT_PREC : 0;
             if (pf > 0) entitled[PFR][t2] += pf;
             if (isSelf) {
                 uint256 token2Needed = uint256(newA2) + pf;
@@ -259,18 +287,19 @@ contract OracleEntitlementHandler is Test {
         uint128 oldA2,
         uint128 newA1,
         uint128 newA2,
-        bool isSelf
+        bool isSelf,
+        bool chargeFees
     ) internal pure returns (uint256 ethReq) {
         if (tokenToSwap == t1) {
-            uint256 pf = (uint256(oldA1) * PROTO_FEE) / PCT_PREC;
-            uint256 fee = (uint256(oldA1) * FEE_PCT) / PCT_PREC;
+            uint256 pf = chargeFees ? (uint256(oldA1) * PROTO_FEE) / PCT_PREC : 0;
+            uint256 fee = chargeFees ? (uint256(oldA1) * FEE_PCT) / PCT_PREC : 0;
             if (t2 == ETH && newA2 >= oldA2) ethReq += uint256(newA2) - oldA2; // netToken2Contribution
             if (t1 == ETH) {
                 ethReq += isSelf ? (uint256(newA1) - oldA1 + pf) : (uint256(newA1) + oldA1 + fee + pf);
             }
         } else {
-            uint256 pf = (uint256(oldA2) * PROTO_FEE) / PCT_PREC;
-            uint256 fee = (uint256(oldA2) * FEE_PCT) / PCT_PREC;
+            uint256 pf = chargeFees ? (uint256(oldA2) * PROTO_FEE) / PCT_PREC : 0;
+            uint256 fee = chargeFees ? (uint256(oldA2) * FEE_PCT) / PCT_PREC : 0;
             if (t1 == ETH && newA1 > oldA1) ethReq += uint256(newA1) - oldA1; // netToken1Contribution
             if (t2 == ETH) {
                 if (isSelf) {

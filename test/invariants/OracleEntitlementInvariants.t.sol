@@ -94,6 +94,33 @@ contract OracleEntitlementInvariantsTest is StdInvariant, Test {
         assertGt(handler.totalSettles(), 0, "no settles exercised");
     }
 
+    /// @notice Pins the exact-entitlement mirror across a non-minimum flexible escalation while
+    ///         fees are suppressed before the halt. This deterministic witness avoids making the
+    ///         invariant campaign's non-vacuity depend on random report/dispute ordering.
+    function test_CombinedModes_FlexiblePreHaltExactEntitlement() public {
+        // pairSeed 0 selects vanillaA/vanillaB. The +2 makes escalationHalt == 3 * amount1;
+        // extraSeed 3 enables both mode bits without adding ETH overpayment to this ERC20 pair.
+        handler.actReport(0, 0, 1e18, 2e18 + 2, 3);
+        handler.actDispute(1, 0, true, 2e18, 0);
+
+        assertEq(handler.totalFlexibleJumps(), 1, "non-minimum flexible escalation exercised");
+        assertEq(handler.totalFeeSuppressedDisputes(), 1, "pre-halt fee suppression exercised");
+        invariant_withdrawableEqualsEntitlement();
+    }
+
+    /// @notice Pins the exact-entitlement mirror across a dispute against a report that starts at
+    ///         the halt with both new modes enabled. Random campaigns reliably cover flexible jumps
+    ///         and suppressed fees, but reaching this charged post-halt branch is ordering-sensitive.
+    function test_CombinedModes_ExactEntitlementAtHalt() public {
+        // pairSeed 0 selects vanillaA/vanillaB. 2000e18 % 4 == 0 makes escalationHalt == amount1;
+        // extraSeed 3 enables both mode bits without adding ETH overpayment to this ERC20 pair.
+        handler.actReport(0, 0, 1e18, 2000e18, 3);
+        handler.actDispute(1, 0, true, 2000e18, 0);
+
+        assertEq(handler.totalHaltFeeDisputes(), 1, "charged post-halt dispute exercised");
+        invariant_withdrawableEqualsEntitlement();
+    }
+
     /// @notice Deterministic ETH-on-one-side lifecycle: report (token1 = ETH), dispute swapping the
     ///         ETH side, then settle — and the per-actor entitlement equality must hold throughout,
     ///         including the ETH credits (previousReporter ETH payout, currentReporter ETH at

@@ -37,6 +37,8 @@ contract OracleArmedReentrancyHandler is Test {
 
     uint96 internal constant SETTLER_REWARD = 0.001 ether;
     uint8 internal constant FLAG_TIME_TYPE = 1 << 0;
+    uint8 internal constant FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6;
     address internal constant PFR = address(0xFEE);
 
     uint256 public totalReports;
@@ -114,14 +116,22 @@ contract OracleArmedReentrancyHandler is Test {
         } else if (kind == 6 && reports.length > 0) {
             ReportState storage r = reports[uint256(seed) % reports.length];
             OpenOracle.OracleGame memory dg = r.game;
-            uint256 nA1 = (uint256(dg.currentAmount1) * dg.multiplier) / 100;
+            uint256 nA1;
+            if (dg.currentAmount1 >= dg.escalationHalt) {
+                nA1 = uint256(dg.currentAmount1) + 1;
+            } else {
+                nA1 = (uint256(dg.currentAmount1) * dg.multiplier) / 100;
+                if (nA1 > dg.escalationHalt) nA1 = dg.escalationHalt;
+                if ((dg.flags & FLAG_FLEXIBLE_ESCALATION) != 0 && (seed & 0x20) != 0) {
+                    nA1 = dg.escalationHalt;
+                }
+            }
             if (r.settled || nA1 > type(uint128).max || nA1 == dg.currentAmount1) {
                 armToken.disarm();
                 return;
             }
             payload = abi.encodeCall(
-                oracle.dispute,
-                (r.id, uint128(nA1), uint128(1e18), actor, true, true, dg, r.helper, _emptyTiming())
+                oracle.dispute, (r.id, uint128(nA1), uint128(1e18), actor, true, true, dg, r.helper, _emptyTiming())
             );
         } else if (kind == 7) {
             payload = abi.encodeCall(oracle.report, (_reentrantReportGame(actor), true, true, _emptyTiming()));
@@ -143,14 +153,14 @@ contract OracleArmedReentrancyHandler is Test {
         g.token1 = tokens[1]; // vanillaA
         g.token2 = address(armToken);
         g.settlementTime = 300;
-        g.escalationHalt = type(uint128).max;
+        g.escalationHalt = 2e18;
         g.protocolFeeRecipient = address(0);
         g.settlerReward = 0;
         g.disputeDelay = 5;
         g.feePercentage = 0;
         g.multiplier = 110;
         g.protocolFee = 0;
-        g.flags = FLAG_TIME_TYPE;
+        g.flags = FLAG_TIME_TYPE | FLAG_FEES_ONLY_AT_HALT | FLAG_FLEXIBLE_ESCALATION;
     }
 
     function _nonArmToken(uint8 seed) internal view returns (address) {
@@ -185,9 +195,15 @@ contract OracleArmedReentrancyHandler is Test {
         _runReport(_pickActor(actorSeed), t1, t2, a1Seed, a2Seed, (armSeed % 7) + 1, armSeed);
     }
 
-    function _runReport(address reporter, address t1, address t2, uint128 a1Seed, uint128 a2Seed, uint8 kind, uint8 armSeed)
-        internal
-    {
+    function _runReport(
+        address reporter,
+        address t1,
+        address t2,
+        uint128 a1Seed,
+        uint128 a2Seed,
+        uint8 kind,
+        uint8 armSeed
+    ) internal {
         if (t1 == t2) return;
 
         // Bounded small so the reentrant disputer can always fund the grown amounts from its
@@ -202,7 +218,7 @@ contract OracleArmedReentrancyHandler is Test {
         g.token1 = t1;
         g.token2 = t2;
         g.settlementTime = 300;
-        g.escalationHalt = type(uint128).max;
+        g.escalationHalt = uint128(uint256(a1) * (1 + (uint256(a2Seed) % 4)));
         g.protocolFeeRecipient = PFR;
         g.settlerReward = SETTLER_REWARD;
         // Vary disputeDelay INCLUDING 0: with disputeDelay == 0 a reentrant dispute can land on a
@@ -213,6 +229,8 @@ contract OracleArmedReentrancyHandler is Test {
         g.multiplier = 110;
         g.protocolFee = 1000;
         g.flags = FLAG_TIME_TYPE;
+        if ((a1Seed & 1) != 0) g.flags |= FLAG_FEES_ONLY_AT_HALT;
+        if ((a1Seed & 2) != 0) g.flags |= FLAG_FLEXIBLE_ESCALATION;
 
         uint256 ethSide;
         if (t1 == address(0)) ethSide += a1;
@@ -228,7 +246,9 @@ contract OracleArmedReentrancyHandler is Test {
         try oracle.report{value: ethValue}(g, false, false, _emptyTiming()) returns (uint256 reportId) {
             g.reportTimestamp = uint48(ts);
             g.lastReportOppoTime = uint48(bn);
-            reports.push(ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false}));
+            reports.push(
+                ReportState({id: reportId, game: g, helper: _helper(reportId, reporter, ts, bn), settled: false})
+            );
             totalReports += 1;
         } catch {}
         _afterArmedCall();
@@ -245,8 +265,16 @@ contract OracleArmedReentrancyHandler is Test {
 
         uint128 oldA1 = g.currentAmount1;
         uint128 oldA2 = g.currentAmount2;
-        uint256 nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
-        if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
+        uint256 nextA1Raw;
+        if (oldA1 >= g.escalationHalt) {
+            nextA1Raw = uint256(oldA1) + 1;
+        } else {
+            nextA1Raw = (uint256(oldA1) * g.multiplier) / 100;
+            if (nextA1Raw > g.escalationHalt) nextA1Raw = g.escalationHalt;
+            if ((g.flags & FLAG_FLEXIBLE_ESCALATION) != 0) {
+                nextA1Raw = bound(uint256(newA2Seed), nextA1Raw, uint256(g.escalationHalt));
+            }
+        }
         if (nextA1Raw > type(uint128).max || nextA1Raw == oldA1) return;
         uint128 nextA1 = uint128(nextA1Raw);
         uint256 thresholdA2 = uint256(nextA1) * oldA2 / oldA1;
@@ -371,9 +399,8 @@ contract OracleArmedReentrancyHandler is Test {
             // Arm a dispute against the just-created report (fresh hash, in-window, disputeDelay 0).
             uint128 nA1 = uint128((uint256(g.currentAmount1) * g.multiplier) / 100);
             uint128 nA2 = swapArmSide ? uint128(1e18) : uint128(2e18);
-            bytes memory payload = abi.encodeCall(
-                oracle.dispute, (reportId, nA1, nA2, disputer, true, true, g, h, _emptyTiming())
-            );
+            bytes memory payload =
+                abi.encodeCall(oracle.dispute, (reportId, nA1, nA2, disputer, true, true, g, h, _emptyTiming()));
             armToken.arm(address(oracle), payload, false);
             lastArmKind = 6;
 
