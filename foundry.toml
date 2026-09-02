@@ -13,4 +13,8 @@ skip = ["test/disabled/**/*"]
 # For storage aware fuzz inputs
 extra_output = ["storageLayout"]
 
+# Helper tests read authentic Uniswap venue artifacts built by the isolated
+# project under `uniswap-venues/`.
+fs_permissions = [{ access = "read", path = "./uniswap-venues" }]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
