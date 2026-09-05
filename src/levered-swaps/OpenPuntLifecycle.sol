@@ -16,6 +16,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
     struct DutchResolution {
         uint128 inheritedExecutionComp;
         uint128 leftover;
+        uint128 bountyPaid;
         bool useInternalBalances;
     }
 
@@ -109,6 +110,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         uint256 createdReportId = oracleGame(s, preimage, timing, amount2, reporter, 0, amount1);
         if (createdReportId != reportId) revert Errors.InvalidReportId(); // sanity check
         emit PositionReportStarted(swapId, reportId, reporter, s);
+        emit ReportBountyPaid(swapId, reportId, dutchResolution.bountyPaid);
 
         if (dutchResolution.leftover > 0) {
             if (dutchResolution.useInternalBalances) {
@@ -155,6 +157,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
             );
         }
         resolution.leftover = dutch.maxReward - reward;
+        resolution.bountyPaid = reward;
         if (reward != 0) oracle.internalTransferFrom(address(this), reporter, collatToken, reward);
     }
 
