@@ -329,6 +329,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                 _clearReportId(swapId);
                 swaps[swapId] = keccak256(abi.encode(s));
                 oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(openFee));
+                _setOpenedBlock(swapId);
                 emit PositionOpened(swapId, s);
             }
         } else {
@@ -426,6 +427,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
 
                     // matcher gets all the collateral
                     oracle.internalTransferFrom(address(this), matcher, collatToken, uint128(marginSum));
+                    _setTerminalBlock(swapId);
                     emit PositionLiquidated(swapId, reportId, marginSum);
                 } else if (intendedClose || maturityPassed) {
                     // if either maturity passed or the swapper wanted to close
@@ -452,6 +454,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
                     } else {
                         oracle.pushOrCredit(collatToken, swapper, uint128(owedToSwapper));
                     }
+                    _setTerminalBlock(swapId);
                     emit PositionClosed(swapId, reportId, owedToSwapper, owedToMatcher);
                 } else {
                     // effectively a liquidation failure: the report passed cadence and latency checks,
