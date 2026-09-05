@@ -200,6 +200,13 @@ contract openPunt is OpenPuntStorage {
             }
         }
 
+        uint256 swapperIndex = numSwapsBySwapper[swap.swapper];
+
+        swapperSwapData[swap.swapper][swapperIndex] =
+            (swapId << 48) | uint256(_getBlockNumber());
+
+        numSwapsBySwapper[swap.swapper] = swapperIndex + 1;
+
         swaps[swapId] = swapHash; // CEI inversion: swap becomes live only after funding succeeds.
         emit SwapProposed(swapId, swap.swapper, swap, mp);
     }
