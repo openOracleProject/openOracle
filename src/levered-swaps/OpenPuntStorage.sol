@@ -38,11 +38,22 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint48 timestamp; // original wall-clock notice time; preserved across an unauthorized liquidation
     }
 
+    // additive storage helper so UIs can quickly calculate live positions and trade history with targeted logs
+    struct RecoveryBlocks {
+        uint48 openedBlock;
+        uint48 terminalBlock;
+        uint48 reportStartBlock;
+    }
+
     mapping(uint256 => bytes32) public swaps;
     mapping(uint256 swapId => StoredDutch) public closeAuctions;
     mapping(uint256 reportId => uint128 amount) public executionGasComp;
     mapping(uint256 swapId => LiquidationHeartbeat) public liquidationHeartbeats;
     uint256 public nextSwapId = 1;
+
+    mapping(address swapper => uint256 count) public numSwapsBySwapper;
+    mapping(address swapper => mapping(uint256 index => uint256 packedSwapData)) public swapperSwapData;
+    mapping(uint256 swapId => RecoveryBlocks blocks) public recoveryBlocks;
 
     mapping(address => uint256) public tempHolding;
     mapping(uint256 swapId => PositionControl) private _positionControl;
@@ -62,16 +73,19 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     function _setReportId(uint256 swapId, uint256 reportId) internal {
         if (reportId >= type(uint128).max) revert Errors.InvalidReportId();
         _positionControl[swapId].reportIdPlusOne = uint128(reportId + 1);
+        recoveryBlocks[swapId].reportStartBlock = _getBlockNumber();
     }
 
     /// @dev Marks an existing swap as having no live report without zeroing its report-state slot.
     function _clearReportId(uint256 swapId) internal {
         _positionControl[swapId].reportIdPlusOne = 1;
+        recoveryBlocks[swapId].reportStartBlock = 0;
     }
 
     /// @dev Removes report state when the swap terminates.
     function _deleteReportId(uint256 swapId) internal {
         delete _positionControl[swapId];
+        recoveryBlocks[swapId].reportStartBlock = 0;
     }
 
     function _setCloseRequest(uint256 swapId) internal {
@@ -80,6 +94,14 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
 
     function _clearCloseRequest(uint256 swapId) internal {
         _positionControl[swapId].closeRequestBlock = 0;
+    }
+
+    function _setOpenedBlock(uint256 swapId) internal {
+        recoveryBlocks[swapId].openedBlock = _getBlockNumber();
+    }
+
+    function _setTerminalBlock(uint256 swapId) internal {
+        recoveryBlocks[swapId].terminalBlock = _getBlockNumber();
     }
 
     struct MatchedSwap {
