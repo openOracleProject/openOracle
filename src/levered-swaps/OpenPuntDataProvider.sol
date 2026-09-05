@@ -157,6 +157,17 @@ contract OpenPuntDataProvider {
         }
     }
 
+    /// @notice Returns oracle settlement eligibility for each report ID, preserving order and duplicates.
+    /// @dev IDs are oracle report IDs, not swap IDs; terminal report IDs can be recovered from logs.
+    ///      Returns zero when the oracle has no eligibility sidecar for a report (including openings).
+    ///      Values are eligibility clocks, not proof of settlement; OpenPunt uses block numbers.
+    function getSettlementEligibilities(uint256[] calldata reportIds) external view returns (uint48[] memory result) {
+        result = new uint48[](reportIds.length);
+        for (uint256 i; i < reportIds.length; ++i) {
+            result[i] = oracle.settlementEligibility(reportIds[i]);
+        }
+    }
+
     /// @notice Returns a swapper's proposal entry by zero-based index, including inactive entries.
     /// @dev Reverts for an index >= numSwapsBySwapper(swapper).
     function getSwapperSwap(address swapper, uint256 index) external view returns (SwapperSwapView memory) {
