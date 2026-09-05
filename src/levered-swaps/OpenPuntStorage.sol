@@ -280,6 +280,8 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     event PositionReportStarted(
         uint256 indexed swapId, uint256 indexed reportId, address indexed reporter, MatchedSwap swapState
     );
+    /// @notice Actual collateral bounty paid to the reporter; emitted even when zero.
+    event ReportBountyPaid(uint256 indexed swapId, uint256 indexed reportId, uint128 amount);
     event CloseIntentSet(uint256 indexed swapId, uint256 indexed currentReportId, uint128 executionCompAdded);
     event CloseAuctionStarted(
         uint256 indexed swapId,
