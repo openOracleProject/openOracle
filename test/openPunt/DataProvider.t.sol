@@ -245,6 +245,78 @@ contract OpenPuntDataProviderTest {
         }
     }
 
+    function test_newestDetailsReturnsReverseProposalOrderAndFullMetadata() public view {
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory page, uint256 total) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, 0, 2);
+        require(total == 3 && page.length == 2, "first page and total");
+        require(page[0].index == 2 && page[0].proposedBlock == 13, "newest proposal index");
+        require(page[0].detail.swap.swapId == 6 && page[0].detail.swap.terminalBlock == 70, "closed newest retained");
+        require(page[1].index == 1 && page[1].proposedBlock == 12, "older proposal index");
+        require(page[1].detail.swap.swapId == 4, "active ID");
+        require(page[1].detail.swap.reportId == 14 && page[1].detail.swap.executionComp == 140, "report metadata");
+        require(page[1].detail.swap.closeRequestBlock == 44, "close intent");
+        require(page[1].detail.auction.maxReward == 400 && page[1].detail.auction.useInternalBalances, "auction");
+        require(page[1].detail.heartbeat.reportId == 14 && page[1].detail.heartbeat.timestamp == 43, "heartbeat");
+        require(page[1].detail.settlementEligibility == 55, "eligibility");
+    }
+
+    function test_newestDetailPagesJoinWithoutDuplicatesOrGaps() public view {
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory first,) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, 0, 2);
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory last, uint256 total) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, first.length, 2);
+        require(total == 3 && last.length == 1, "short final page");
+        require(first[0].index == 2 && first[1].index == 1 && last[0].index == 0, "every index once");
+        require(last[0].proposedBlock == 11 && last[0].detail.swap.swapId == 5, "oldest proposal");
+        require(last[0].detail.swap.status == OpenPuntDataProvider.SwapStatus.EndedBeforeOpening, "ended retained");
+    }
+
+    function test_newestDetailsClampsAndHandlesEmptyPagesWithoutUnderflow() public view {
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory page, uint256 total) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, 1, type(uint256).max);
+        require(total == 3 && page.length == 2 && page[0].index == 1 && page[1].index == 0, "huge count clamps");
+        (page, total) = provider.getSwapperSwapDetailsNewest(SWAPPER, 3, 1);
+        require(total == 3 && page.length == 0, "exact end");
+        (page, total) = provider.getSwapperSwapDetailsNewest(SWAPPER, type(uint256).max, type(uint256).max);
+        require(total == 3 && page.length == 0, "huge offset");
+        (page, total) = provider.getSwapperSwapDetailsNewest(SWAPPER, 0, 0);
+        require(total == 3 && page.length == 0, "zero count");
+        (page, total) = provider.getSwapperSwapDetailsNewest(address(0x5678), 0, type(uint256).max);
+        require(total == 0 && page.length == 0, "empty account");
+    }
+
+    function test_newestDetailsHonorsZeroHashDespiteStaleLiveMetadata() public {
+        source.clearHash(4);
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory page,) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, 1, 1);
+        OpenPuntDataProvider.SwapDetailView memory detail = page[0].detail;
+        require(detail.swap.swapHash == bytes32(0), "cleared commitment");
+        require(detail.swap.status == OpenPuntDataProvider.SwapStatus.ClosedOrLiquidated, "ended status");
+        require(detail.swap.reportId == 0 && detail.swap.closeRequestBlock == 0, "no live controls");
+        require(detail.swap.executionComp == 0 && detail.settlementEligibility == 0, "no live report metadata");
+        require(page[0].index == 1 && page[0].proposedBlock == 12, "retain recovery identity");
+    }
+
+    function testFuzz_newestDetailsMatchesExistingViews(uint8 rawOffset, uint256 count) public view {
+        uint256 offset = uint256(rawOffset) % 5;
+        (OpenPuntDataProvider.SwapperSwapDetailView[] memory page, uint256 total) =
+            provider.getSwapperSwapDetailsNewest(SWAPPER, offset, count);
+        require(total == 3, "total");
+        uint256 expectedLength = offset < 3 ? 3 - offset : 0;
+        if (count < expectedLength) expectedLength = count;
+        require(page.length == expectedLength, "clamped length");
+        for (uint256 i; i < page.length; ++i) {
+            OpenPuntDataProvider.SwapperSwapView memory existing = provider.getSwapperSwap(SWAPPER, page[i].index);
+            require(page[i].index + offset + i == total - 1, "reverse order");
+            require(page[i].proposedBlock == existing.proposedBlock, "packed proposal block");
+            require(keccak256(abi.encode(page[i].detail.swap)) == keccak256(abi.encode(existing.swap)), "all swap fields");
+            require(
+                keccak256(abi.encode(page[i].detail)) == keccak256(abi.encode(provider.getSwapDetail(existing.swap.swapId))),
+                "all detail fields match existing view"
+            );
+        }
+    }
+
     function _status(uint256 swapId, OpenPuntDataProvider.SwapStatus expected) internal view {
         require(provider.getSwap(swapId).status == expected, "incorrect status");
     }
