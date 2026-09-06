@@ -99,6 +99,12 @@ contract OpenPuntDataProvider {
         uint48 settlementEligibility;
     }
 
+    struct SwapperSwapDetailView {
+        uint256 index; // original zero-based index in this swapper's proposal history
+        uint48 proposedBlock;
+        SwapDetailView detail;
+    }
+
     constructor(IOpenPuntDataSource punt_, IOpenOracle2 oracle_) {
         if (address(punt_) == address(0) || address(oracle_) == address(0)) revert AddressCannotBeZero();
         punt = punt_;
@@ -204,6 +210,35 @@ contract OpenPuntDataProvider {
         result = new SwapperSwapView[](length);
         for (uint256 i; i < length; ++i) {
             result[i] = _getSwapperSwap(swapper, startIndex + i, total, nextId);
+        }
+    }
+
+    /// @notice Reads up to count proposal entries newest first, including full recovery metadata.
+    /// @param offset Number of newest entries to skip; zero starts at the latest proposal.
+    /// @dev Returns the total proposal count so the first page needs no separate count read.
+    ///      Includes inactive entries without filtering. Each index remains its original ascending
+    ///      proposal index; newest means proposal order, not most recently updated position.
+    ///      Offsets at/beyond total and zero counts return an empty page. Counts are clamped.
+    ///      Pin every page to the same block: a new proposal shifts offsets toward older entries.
+    ///      Details include hashes and pointers, not preimages; reconstruct and hash-check those
+    ///      from the pointed logs. Cost scales with the number of entries returned.
+    function getSwapperSwapDetailsNewest(address swapper, uint256 offset, uint256 count)
+        external
+        view
+        returns (SwapperSwapDetailView[] memory result, uint256 total)
+    {
+        total = punt.numSwapsBySwapper(swapper);
+        uint256 nextId = punt.nextSwapId();
+        uint256 length = _pageLength(offset, count, total);
+        result = new SwapperSwapDetailView[](length);
+        for (uint256 i; i < length; ++i) {
+            uint256 index = total - 1 - offset - i;
+            uint256 packed = punt.swapperSwapData(swapper, index);
+            result[i] = SwapperSwapDetailView({
+                index: index,
+                proposedBlock: uint48(packed),
+                detail: _getSwapDetail(packed >> 48, nextId)
+            });
         }
     }
 
