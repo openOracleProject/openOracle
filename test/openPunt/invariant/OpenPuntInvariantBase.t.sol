@@ -101,6 +101,9 @@ abstract contract OpenPuntInvariantBase is OpenPuntBase {
             }
 
             if (q.phase == OpenPuntHandler.Phase.Proposed) {
+                assertEq(q.proposed.oracleFlags & 1, 0, "proposal remains in block mode");
+                assertTrue((q.proposed.oracleFlags & (uint8(1) << 4)) != 0, "proposal requires eligibility storage");
+                assertTrue(q.proposed.estimatedDisputeGas != 0, "proposal commits a nonzero dispute-gas estimate");
                 assertEq(
                     stored,
                     keccak256(abi.encode(q.proposed, q.preimage)),
@@ -112,6 +115,17 @@ abstract contract OpenPuntInvariantBase is OpenPuntBase {
             }
 
             // every matched phase commits the MatchedSwap alone
+            assertEq(q.matched.oracleFlags, q.proposed.oracleFlags, "matched position preserves proposal flags");
+            assertEq(
+                q.matched.maxDisputeCostPerToken1,
+                q.proposed.maxDisputeCostPerToken1,
+                "matched position preserves dispute-gas terms"
+            );
+            assertEq(
+                q.matched.estimatedDisputeGas,
+                q.proposed.estimatedDisputeGas,
+                "matched position preserves dispute-gas estimate"
+            );
             assertEq(stored, keccak256(abi.encode(q.matched)), "matched hash reconstructs from the emitted struct");
 
             if (q.phase == OpenPuntHandler.Phase.OpeningReport) {
@@ -146,15 +160,46 @@ abstract contract OpenPuntInvariantBase is OpenPuntBase {
                 keccak256(abi.encode(q.game, q.helper)),
                 "oracle commitment reconstructs from the event-derived preimage"
             );
+            if ((q.game.flags & (uint8(1) << 1)) != 0) {
+                assertGe(q.game.numReports, 1, "tracked report count starts at one");
+
+                uint256 latestIndex = q.game.numReports;
+                if (latestIndex < type(uint24).max) --latestIndex;
+                (uint128 amount1, uint128 amount2,, uint48 reportTimestamp) =
+                    oracle.disputeHistory(q.reportId, latestIndex);
+
+                // The first dispute that saturates the counter writes max - 1; later disputes
+                // remain at max and write max itself. Mirror production's one-time fallback.
+                if (amount1 == 0) {
+                    assertEq(q.game.numReports, type(uint24).max, "only saturation can leave the max row empty");
+                    (amount1, amount2,, reportTimestamp) = oracle.disputeHistory(q.reportId, latestIndex - 1);
+                }
+
+                assertEq(amount1, q.game.currentAmount1, "tracked history has the latest amount1");
+                assertEq(amount2, q.game.currentAmount2, "tracked history has the latest amount2");
+                assertEq(reportTimestamp, q.game.reportTimestamp, "tracked history has the latest timestamp");
+            } else {
+                assertEq(q.game.numReports, 0, "untracked report count remains zero");
+                (uint128 amount1, uint128 amount2, uint128 baseFee, uint48 reportTimestamp) =
+                    oracle.disputeHistory(q.reportId, 0);
+                assertEq(amount1, 0, "untracked report writes no amount1 history");
+                assertEq(amount2, 0, "untracked report writes no amount2 history");
+                assertEq(baseFee, 0, "untracked report writes no base-fee history");
+                assertEq(reportTimestamp, 0, "untracked report writes no timestamp history");
+            }
             if (q.phase == OpenPuntHandler.Phase.ActiveReport) {
-                assertEq(q.game.flags, 1 << 4, "active report stores settlement eligibility");
+                assertEq(q.game.flags, q.matched.oracleFlags, "active report forwards the committed flags");
                 assertEq(
                     oracle.settlementEligibility(q.reportId),
                     q.game.reportTimestamp + q.game.settlementTime,
                     "active report eligibility matches the modeled game"
                 );
             } else {
-                assertEq(q.game.flags, 0, "opening report uses no stored eligibility");
+                assertEq(
+                    q.game.flags,
+                    q.matched.oracleFlags & ~(uint8(1) << 4),
+                    "opening report strips only stored eligibility"
+                );
                 assertEq(oracle.settlementEligibility(q.reportId), 0, "opening report has no eligibility sidecar");
             }
         }

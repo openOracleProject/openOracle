@@ -74,6 +74,9 @@ contract OpenPuntHandler {
     uint16 internal constant HB_MAX = 300;
     uint128 internal constant DUTCH_MAX = 50e18;
     uint128 internal constant DUTCH_START = 10e18;
+    uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1;
+    uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4;
+    uint8 internal constant OPTIONAL_ORACLE_FLAGS = 0x6e; // every defined flag except time mode and required bit 4
 
     // ── phases ──────────────────────────────────────────────────────────
     enum Phase {
@@ -287,6 +290,8 @@ contract OpenPuntHandler {
         s.settlerReward = SETTLER_REWARD;
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.openExecutionComp = OPEN_EXEC_COMP;
+        s.oracleFlags = 1 << 4;
+        s.estimatedDisputeGas = 100_000;
 
         m.initialLiquidity = A1;
         m.escalationHalt = 100 * uint128(A1);
@@ -369,6 +374,22 @@ contract OpenPuntHandler {
             return (g, h);
         }
         revert("handler: expected ReportSubmitted");
+    }
+
+    function _readDisputedOracle(Vm.Log[] memory logs, uint256 reportId)
+        internal
+        view
+        returns (IOpenOracle2.OracleGame memory g, IOpenOracle2.PreimageHelper memory h)
+    {
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter != address(oracle)) continue;
+            if (logs[i].topics.length < 2 || logs[i].topics[0] != OpenOracle.ReportDisputed.selector) continue;
+            if (uint256(logs[i].topics[1]) != reportId) continue;
+            g = PackedDecoder.decodeOracleGame(logs[i].data);
+            h = PackedDecoder.decodeHelperTail(logs[i].data, reportId);
+            return (g, h);
+        }
+        revert("handler: expected ReportDisputed");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -467,7 +488,7 @@ contract OpenPuntHandler {
         (bool found, uint256 id) = _pickActive(seed);
         if (!found) (found, id) = _pick(seed, Phase.ActiveReport);
         if (!found) return _miss("clockCrossMaturityPlusWeek");
-        uint256 target = uint256(pos[id].matched.maturity) + 1 weeks;
+        uint256 target = uint256(pos[id].matched.maturity) + 60 hours;
         if (block.timestamp >= target) return _miss("clockCrossMaturityPlusWeek");
         _advanceValid(target - block.timestamp);
         _hit("clockCrossMaturityPlusWeek");
@@ -509,6 +530,14 @@ contract OpenPuntHandler {
         bool feeAuction = (seed >> 3) % 2 == 1;
         (OpenPuntStorage.ProposedSwap memory s, OpenPuntStorage.MatcherPreimage memory m) =
             _swapCfg(heartbeatOn, latency, token1PerToken2, feeAuction);
+        // Every proposal remains in required block mode with eligibility storage, while the
+        // remaining defined flags vary across the campaign instead of staying fixed at 0x10.
+        s.oracleFlags = uint8(uint256(FLAG_STORE_SETTLEMENT_ELIGIBILITY) | (seed & OPTIONAL_ORACLE_FLAGS));
+        // Foundry's invariant chain has zero base fee, so this safely exercises both the
+        // disabled and committed dispute-gas shapes without making proposal reachability depend
+        // on an arbitrary test-runner fee.
+        s.maxDisputeCostPerToken1 = seed % 3 == 0 ? uint128(3e9) : 0;
+        s.estimatedDisputeGas = uint32(50_000 + seed % 150_001);
         uint256 value = uint256(s.matcherGasComp) + s.settlerReward + s.openExecutionComp;
 
         vm.recordLogs();
@@ -680,7 +709,8 @@ contract OpenPuntHandler {
                 reservedRawEth -= q.proposed.openExecutionComp;
                 _hit("executeOpeningSuccess");
             } else {
-                // slippage or cadence refund: each margin returns to the party that posted it
+                // slippage, cadence, latency, or dispute-gas refund: each margin returns to the
+                // party that posted it
                 expectedCollat -= q.marginPool;
                 modelSwapperPlusReporterCollat += int256(uint256(q.matched.initialMarginSwapper));
                 modelMatcherCollat += int256(uint256(q.matched.initialMarginMatcher));
@@ -957,6 +987,61 @@ contract OpenPuntHandler {
         }
     }
 
+    /// @dev Replaces a live active-position quote through the real oracle, then advances the
+    ///      model exclusively from the packed ReportDisputed event. Oracle-token movements are
+    ///      intentionally outside the collateral conservation book.
+    function disputeActiveReport(uint256 seed) external {
+        (bool found, uint256 id) = _pick(seed, Phase.ActiveReport);
+        if (!found) return _miss("disputeActiveReport");
+        Pos storage q = pos[id];
+        if (q.settledDirectly) return _miss("disputeActiveReport");
+
+        uint256 earliest = uint256(q.game.reportTimestamp) + q.game.disputeDelay;
+        uint256 eligibility = uint256(q.game.reportTimestamp) + q.game.settlementTime;
+        if (block.number < earliest || block.number >= eligibility) return _miss("disputeActiveReport");
+
+        uint256 nextAmount1;
+        if (q.game.escalationHalt > q.game.currentAmount1) {
+            nextAmount1 = uint256(q.game.currentAmount1) * q.game.multiplier / 100;
+            if (nextAmount1 > q.game.escalationHalt) nextAmount1 = q.game.escalationHalt;
+        } else {
+            if (q.game.currentAmount1 == type(uint128).max) return _miss("disputeActiveReport");
+            nextAmount1 = uint256(q.game.currentAmount1) + 1;
+        }
+
+        uint24 oldReports = q.game.numReports;
+        uint8 oldFlags = q.game.flags;
+        bytes32 oldHelperHash = keccak256(abi.encode(q.helper));
+        address disputer = q.game.currentReporter == matcher ? reporter : matcher;
+
+        vm.recordLogs();
+        vm.prank(disputer);
+        try IOpenOracle2(address(oracle)).dispute(
+            q.reportId, uint128(nextAmount1), q.game.currentAmount2, disputer, true, true, q.game, q.helper, _noTiming()
+        ) {
+            Vm.Log[] memory logs = vm.getRecordedLogs();
+            (IOpenOracle2.OracleGame memory nextGame, IOpenOracle2.PreimageHelper memory nextHelper) =
+                _readDisputedOracle(logs, q.reportId);
+
+            uint256 expectedReports = oldReports;
+            if ((oldFlags & FLAG_TRACK_DISPUTES) != 0 && oldReports < type(uint24).max) expectedReports++;
+            _violation(nextGame.flags == oldFlags, "dispute changed oracle flags");
+            _violation(nextGame.numReports == expectedReports, "dispute report count mismatch");
+            _violation(keccak256(abi.encode(nextHelper)) == oldHelperHash, "dispute changed report helper");
+            _violation(
+                oracle.settlementEligibility(q.reportId) == uint256(nextGame.reportTimestamp) + nextGame.settlementTime,
+                "dispute eligibility mismatch"
+            );
+
+            q.game = nextGame;
+            q.helper = nextHelper;
+            _hit("disputeActiveReport");
+        } catch (bytes memory _e) {
+            lastRevertData = _e;
+            _miss("disputeActiveReport");
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  Active outcomes
     // ══════════════════════════════════════════════════════════════════
@@ -1088,6 +1173,10 @@ contract OpenPuntHandler {
                     q.hbReportId = 0;
                     q.hbTimestamp = 0;
                     _hit("outcomeLatencyBailout");
+                } else if (_has(logs, OpenPuntStorage.DisputeGasBailout.selector, id)) {
+                    q.hbReportId = 0;
+                    q.hbTimestamp = 0;
+                    _hit("outcomeGasBailout");
                 } else {
                     q.hbReportId = 0;
                     q.hbTimestamp = 0;
