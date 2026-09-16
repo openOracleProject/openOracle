@@ -35,7 +35,7 @@ contract OpenPuntAccountingInvariantsTest is OpenPuntInvariantBase {
         // Restrict to state-changing actions: the handler also exposes many getters, and letting
         // the fuzzer spend depth on view calls would dilute the liveness state machines this
         // campaign exists to exercise.
-        bytes4[] memory selectors = new bytes4[](14);
+        bytes4[] memory selectors = new bytes4[](15);
         selectors[0] = OpenPuntHandler.recordHeartbeat.selector;
         selectors[1] = OpenPuntHandler.startCloseAuction.selector;
         selectors[2] = OpenPuntHandler.cancelCloseAuction.selector;
@@ -43,13 +43,14 @@ contract OpenPuntAccountingInvariantsTest is OpenPuntInvariantBase {
         selectors[4] = OpenPuntHandler.reportNoDutch.selector;
         selectors[5] = OpenPuntHandler.reportClaimingDutch.selector;
         selectors[6] = OpenPuntHandler.reportZeroSentinel.selector;
-        selectors[7] = OpenPuntHandler.settleReportDirectly.selector;
-        selectors[8] = OpenPuntHandler.executeActiveReport.selector;
-        selectors[9] = OpenPuntHandler.clockToEligibility.selector;
-        selectors[10] = OpenPuntHandler.clockValidHop.selector;
-        selectors[11] = OpenPuntHandler.clockStallBlocks.selector;
-        selectors[12] = OpenPuntHandler.clockCrossHeartbeatMin.selector;
-        selectors[13] = OpenPuntHandler.withdrawTempHolding.selector;
+        selectors[7] = OpenPuntHandler.disputeActiveReport.selector;
+        selectors[8] = OpenPuntHandler.settleReportDirectly.selector;
+        selectors[9] = OpenPuntHandler.executeActiveReport.selector;
+        selectors[10] = OpenPuntHandler.clockToEligibility.selector;
+        selectors[11] = OpenPuntHandler.clockValidHop.selector;
+        selectors[12] = OpenPuntHandler.clockStallBlocks.selector;
+        selectors[13] = OpenPuntHandler.clockCrossHeartbeatMin.selector;
+        selectors[14] = OpenPuntHandler.withdrawTempHolding.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }

@@ -150,6 +150,44 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         _need("outcomeClose");
     }
 
+    /// @dev Seed 0x6e selects every permitted optional oracle flag plus the required eligibility
+    ///      bit. The handler must reconstruct a real dispute from its packed event and carry that
+    ///      replacement preimage through terminal OpenPunt execution.
+    function test_reach_allFlagsDisputeAndClose() public {
+        _openPosition(0x6e);
+        uint256 id = handler.ids(0);
+        OpenPuntHandler.Pos memory opened = handler.get(id);
+        assertEq(opened.proposed.oracleFlags, 0x7e, "fixture selects every block-mode flag");
+        assertEq(opened.matched.oracleFlags, 0x7e, "all flags survive opening");
+
+        handler.reportNoDutch(0);
+        OpenPuntHandler.Pos memory reported = handler.get(id);
+        assertEq(reported.game.flags, 0x7e, "active report forwards every flag");
+        assertEq(reported.game.numReports, 1, "tracked report starts at one");
+        uint256 originalEligibility = oracle.settlementEligibility(reported.reportId);
+
+        handler.setCloseIntentDuringReport(0);
+        _need("setCloseIntentDuringReport");
+        handler.clockValidHop(0); // one block: disputeDelay is one block
+        handler.disputeActiveReport(0);
+        _need("disputeActiveReport");
+
+        OpenPuntHandler.Pos memory disputed = handler.get(id);
+        assertEq(disputed.game.flags, 0x7e, "dispute preserves every flag");
+        assertEq(disputed.game.numReports, 2, "dispute increments the tracked report count");
+        assertGt(oracle.settlementEligibility(disputed.reportId), originalEligibility, "dispute moves eligibility");
+        assertEq(
+            oracle.oracleGame(disputed.reportId),
+            keccak256(abi.encode(disputed.game, disputed.helper)),
+            "event-derived dispute reconstructs the oracle hash"
+        );
+        assertEq(handler.modelViolations(), 0, handler.lastViolation());
+
+        handler.clockToEligibility(0);
+        handler.executeActiveReport(0);
+        _need("outcomeClose");
+    }
+
     /// @dev A request registered at the old report's eligibility survives that reusable outcome
     ///      and closes on the next report instead of receiving the already-known old price.
     function test_reach_lateCloseAppliesToTheNextReport() public {
@@ -239,6 +277,23 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
         _need("outcomeLatencyBailout");
     }
 
+    /// @dev A final dispute can record a base fee that the increased liquidity still cannot
+    ///      support. Execution must release the report while preserving the active position.
+    function test_reach_disputeGasBailout() public {
+        _openPosition(6); // tracked disputes and a nonzero dispute-cost commitment
+        handler.reportNoDutch(0);
+        handler.clockValidHop(0); // cross the one-block dispute delay
+
+        vm.fee(type(uint64).max);
+        handler.disputeActiveReport(0);
+        _need("disputeActiveReport");
+
+        vm.fee(0); // execution-time fee cannot rescue the recorded final-round verdict
+        handler.clockToEligibility(0);
+        handler.executeActiveReport(0);
+        _need("outcomeGasBailout");
+    }
+
     // ── terminal sweep and withdrawal ───────────────────────────────────
 
     function test_reach_terminalOutcomeAndWithdrawal() public {
@@ -282,7 +337,7 @@ contract OpenPuntInvariantReachabilityTest is OpenPuntInvariantBase {
     }
 
     /// @dev A fresh recovery-era report bypasses both cadence-derived checks.
-    function test_reach_cadenceRecoveryAfterMaturityPlusWeek() public {
+    function test_reach_cadenceRecoveryAfterMaturityPlus60Hours() public {
         _openPosition(4); // heartbeat and maxExecutionLatency enabled
 
         handler.clockCrossMaturityPlusWeek(0);

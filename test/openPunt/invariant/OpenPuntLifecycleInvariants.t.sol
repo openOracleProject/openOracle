@@ -18,7 +18,7 @@ contract OpenPuntLifecycleInvariantsTest is OpenPuntInvariantBase {
         // The handler exposes getters alongside actions, so the randomized
         // target set is restricted to the state-changing actions; otherwise a large share of the
         // depth is spent on view calls that cannot advance the state machine.
-        bytes4[] memory selectors = new bytes4[](17);
+        bytes4[] memory selectors = new bytes4[](18);
         selectors[0] = OpenPuntHandler.propose.selector;
         selectors[1] = OpenPuntHandler.matchSwap.selector;
         selectors[2] = OpenPuntHandler.executeOpening.selector;
@@ -31,11 +31,12 @@ contract OpenPuntLifecycleInvariantsTest is OpenPuntInvariantBase {
         selectors[9] = OpenPuntHandler.reportNoDutch.selector;
         selectors[10] = OpenPuntHandler.reportClaimingDutch.selector;
         selectors[11] = OpenPuntHandler.reportZeroSentinel.selector;
-        selectors[12] = OpenPuntHandler.executeActiveReport.selector;
-        selectors[13] = OpenPuntHandler.clockToEligibility.selector;
-        selectors[14] = OpenPuntHandler.clockValidHop.selector;
-        selectors[15] = OpenPuntHandler.withdrawTempHolding.selector;
-        selectors[16] = OpenPuntHandler.clockPastProposalExpiry.selector;
+        selectors[12] = OpenPuntHandler.disputeActiveReport.selector;
+        selectors[13] = OpenPuntHandler.executeActiveReport.selector;
+        selectors[14] = OpenPuntHandler.clockToEligibility.selector;
+        selectors[15] = OpenPuntHandler.clockValidHop.selector;
+        selectors[16] = OpenPuntHandler.withdrawTempHolding.selector;
+        selectors[17] = OpenPuntHandler.clockPastProposalExpiry.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
         _restrictSenders();
