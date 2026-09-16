@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
+import {IGasPriceOracle} from "../interfaces/IGasPriceOracle.sol";
 import {PuntErrors as Errors} from "../libraries/PuntErrors.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {LibClone} from "solady/utils/LibClone.sol";
@@ -67,13 +68,67 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         if (!s.active) revert Errors.NotActive();
         if (s.maturityOnly && block.timestamp < s.maturity) revert Errors.MaturityNotReached();
 
-        // since openOracle already allows atomic looped escalation when disputeDelay is 0,
-        // and larger starting amounts may be useful sometimes, we allow the game to start larger in this case
+        // first, check if liquidity is in range of oracle game
         uint128 minAmount1 = preimage.initialLiquidity;
-        uint128 escalationHalt = preimage.escalationHalt;
-        uint128 reportCeiling = 10 * uint256(minAmount1) > escalationHalt ? escalationHalt : 10 * minAmount1;
-        if (amount1 > reportCeiling || amount1 < minAmount1) revert Errors.InvalidAmount1();
-        if (amount1 > minAmount1 && preimage.disputeDelay != 0) revert Errors.InvalidAmount1();
+        if (amount1 < minAmount1 || amount1 > preimage.escalationHalt) {
+            revert Errors.InvalidAmount1();
+        }
+
+        bool flexEsc = _hasFlag(s.oracleFlags, FLAG_FLEXIBLE_ESCALATION);
+        bool maxDisputeGasSet = s.maxDisputeCostPerToken1 != 0;
+        bool disputeDelayOn = preimage.disputeDelay > 0;
+        uint32 estimatedDisputeGas = s.estimatedDisputeGas;
+
+        // with no disputeDelay in the oracle game, disputers can already atomically loop disputes as if flexible escalation were on
+        bool isFlexible = flexEsc || !disputeDelayOn;
+        bool inRecovery = block.timestamp >= uint256(s.maturity) + RECOVERY_DELAY;
+
+        // if not in recovery, check that base fee is not too high relative to chosen amount1 plus buffer
+        uint128 amount1Discounted = uint128(9 * uint256(amount1) / 10);
+        uint256 baseFeeAdj = block.basefee;
+        if (!inRecovery) {
+
+            if (maxDisputeGasSet) {
+                // Ignoring rounding and the reporting buffer, the gate is:
+                // estimatedDisputeGas * baseFee + L1Fee(320) <= amount1 * maxDisputeCostPerToken1 / 1e18.
+                // To model actual gas G and L1 cost k * L1Fee(320), set estimatedDisputeGas = G / k
+                // and maxDisputeCostPerToken1 = desiredCostLimit / k.
+                // k is a fee ratio, not a calldata-byte ratio.
+                uint256 l1Fee = IGasPriceOracle(GAS_PRICE_ORACLE).getL1FeeUpperBound(320);
+
+                baseFeeAdj += Math.ceilDiv(l1Fee, estimatedDisputeGas);
+            }
+            // function checks if maxDisputeCostPerToken1 is 0 (gas check off) immediately
+            _checkDisputeGas(amount1Discounted, s.maxDisputeCostPerToken1, baseFeeAdj, estimatedDisputeGas);
+        }
+
+        // this branch can only be reached if disputeDelay > 0 in the oracle game and flexible escalation is set to off
+        // amount1 was already checked against dispute gas, but this allows increased liquidity if gas is too high
+        // the other branches already allow for any liquidity between minimum amount1 and escalation halt,
+        // so they just must satisfy the dispute gas check
+        if (amount1 > minAmount1 && !isFlexible) {
+            uint256 ceiling = minAmount1;
+            if (!inRecovery && maxDisputeGasSet) {
+                // if we are here, baseFeeAdj already has been incremented for L1 component
+                uint256 required = Math.mulDiv(
+                    baseFeeAdj,
+                    DISPUTE_COST_SCALE * estimatedDisputeGas,
+                    s.maxDisputeCostPerToken1,
+                    Math.Rounding.Ceil
+                );
+
+                // account for the 9/10 reporting check
+                required = Math.mulDiv(required, 10, 9, Math.Rounding.Ceil);
+
+                // permit sizing for a 12.5% base fee increase before inclusion.
+                // as of deployment time, Base L2 permits a 4% increase in base fee per block
+                required = Math.mulDiv(required, 9, 8, Math.Rounding.Ceil);
+
+                ceiling = Math.max(ceiling, required);
+            }
+
+            if (amount1 > ceiling) revert Errors.InvalidAmount1();
+        }
 
         address swapper = s.swapper;
         address collatToken = s.collatToken;
@@ -281,31 +336,66 @@ contract OpenPuntLifecycle is OpenPuntStorage {
         bool slippageOk = toleranceCheck(price, s.priceTolerated, s.toleranceRange);
 
         // if cadence changes cause active position execution bailouts (e.g. for close or liquidation),
-        // can recover after a week post-maturity
-        uint256 cadenceRecoveryStart = uint256(s.maturity) + 1 weeks;
+        // or gas is too high, can recover after RECOVERY_DELAY past maturity
+        uint256 recoveryStart = uint256(s.maturity) + RECOVERY_DELAY;
 
         // true if past recovery start and the oracle game's last report was inside the recovery window
-        bool cadenceRecovery =
-            active && block.timestamp >= cadenceRecoveryStart && oracleState.lastReportOppoTime >= cadenceRecoveryStart;
+        bool recovery =
+            active && block.timestamp >= recoveryStart && oracleState.lastReportOppoTime >= recoveryStart;
 
         // check if the realized blocks per second were within tolerance since last oracle report.
-        // override output if in cadenceRecovery
-        bool blockCadenceOk = cadenceRecovery
+        // override output if in recovery
+        bool blockCadenceOk = recovery
             || impliedMillisecondsPerBlock(
                 oracleState.lastReportOppoTime, oracleState.reportTimestamp, millisecondsPerBlock
             );
 
         // as long as we are not in recovery mode, if execution is too late reject the oracle game
-        bool executionTooLate = !cadenceRecovery && s.maxExecutionLatency != 0
+        bool executionTooLate = !recovery && s.maxExecutionLatency != 0
             && block.timestamp > uint256(syntheticEligibilityTimestamp) + s.maxExecutionLatency;
 
         bool slippageBailoutForOpen = !slippageOk && !active;
         bool openingGameTimedOut = !active && block.timestamp > uint256(s.start) + s.maxGameTime;
+
+        // defaults to true unless trackDisputes is on
+        bool gasOk = true;
+
+        // only time oracleFlags may differ from OracleGame flags is for settlement eligibility tracking
+        bool trackDisputes = _hasFlag(s.oracleFlags, FLAG_TRACK_DISPUTES);
+
+        // if trackDisputes is on, check gas at final oracle report time relative to final liquidity
+        // if in recovery, gasOk is always true
+        // skips if gas checking is off where gasOk is always true
+        if (trackDisputes && !recovery && s.maxDisputeCostPerToken1 != 0) {
+            uint256 index = oracleState.numReports;
+            // initial report writes index 0, sets numReports to 1. decrement skips when equal to max
+            if (index < type(uint24).max) --index;
+            (uint128 recordedAmount1,, uint128 lastReportBaseFee,) = oracle.disputeHistory(reportId, index);
+
+            // special case because numReports saturates at type(uint24).max
+            // the first time the counter hits max, our index is at max, but the max index is unwritten
+            // subsequent disputes keep numReports at max and write to that index, so recordedAmount1 is not 0
+            if (recordedAmount1 == 0) {
+                (,, lastReportBaseFee,) = oracle.disputeHistory(reportId, index - 1);
+            }
+
+            // currentAmount1 is recordedAmount1 outside first-time counter saturation
+            // does not incorporate L1 component (openOracle does not track, and using execute-time L1 fee opens a timing option)
+            gasOk = _disputeGasAcceptable(
+                    oracleState.currentAmount1,
+                    s.maxDisputeCostPerToken1,
+                    lastReportBaseFee,
+                    s.estimatedDisputeGas
+                    );
+        }
+
         // decide if position-opening oracle games should bail out and refund
-        bool shouldRefundOnOpen = openingGameTimedOut || slippageBailoutForOpen || !blockCadenceOk || executionTooLate;
+        bool shouldRefundOnOpen = openingGameTimedOut || slippageBailoutForOpen || !blockCadenceOk || executionTooLate || !gasOk;
 
         // decide if close or liquidation oracle games should bail out:
-        bool shouldBailoutCloseOrLiq = !blockCadenceOk || executionTooLate;
+        bool shouldBailoutCloseOrLiq = !blockCadenceOk || executionTooLate || !gasOk;
+
+        if (!gasOk) emit DisputeGasBailout(swapId);
 
         // position being opened
         if (!active) {
@@ -566,7 +656,7 @@ contract OpenPuntLifecycle is OpenPuntStorage {
             callbackContract: address(0),
             callbackGasLimit: 0,
             protocolFee: o.protocolFee,
-            flags: 1 << 4
+            flags: s.oracleFlags
         });
 
         reportId = oracle.report{value: settlerReward}(params, true, true, timing);
