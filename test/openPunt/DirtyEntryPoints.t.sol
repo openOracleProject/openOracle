@@ -83,7 +83,7 @@ contract DirtyEntryPointsTest is DirtyEntryPointsBase {
         bytes memory clean =
             abi.encodeCall(punt.matchSwap, (p.swapId, AMOUNT2, p.swap, p.preimage, _noTiming(), matcher));
 
-        uint256 off = _argOffset(64 + 27 * 32 + 12 * 32 + 4 * 32); // top-level address matcher
+        uint256 off = _argOffset(64 + 30 * 32 + 12 * 32 + 4 * 32); // top-level address matcher
         _assertCleanWord(clean, off, bytes32(uint256(uint160(matcher))), "matchSwap.matcher");
 
         _proveCleanThenDirty(

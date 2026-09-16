@@ -61,6 +61,7 @@ contract ReentrancyMatchSwapRefundTest is ReentrancyBase {
         s.openExecutionComp = p.swap.openExecutionComp;
         s.useInternalBalances = p.swap.useInternalBalances;
         s.maturityOnly = p.swap.maturityOnly;
+        s.oracleFlags = p.swap.oracleFlags;
     }
 
     function _assertHookReverted(bytes4 expected, string memory what) internal view {

@@ -13,6 +13,7 @@ import {PuntErrors} from "../../src/libraries/PuntErrors.sol";
 import {PackedDecoder} from "../utils/PackedDecoder.sol";
 import {MintableERC20} from "./util/MintableERC20.sol";
 import {RecordingPermit2} from "./util/RecordingPermit2.sol";
+import {FjordGasPriceOracleReference} from "./util/FjordGasPriceOracleReference.sol";
 
 /**
  * @notice Shared fixture for the OpenPunt suite.
@@ -31,12 +32,21 @@ import {RecordingPermit2} from "./util/RecordingPermit2.sol";
  */
 abstract contract OpenPuntBase is Test {
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address internal constant BASE_GAS_PRICE_ORACLE = 0x420000000000000000000000000000000000000F;
+
+    // Base block 51,288,793. These four L1Block values produce a 1,527,135,261 wei
+    // getL1FeeUpperBound(320) result on the real Base GasPriceOracle.
+    uint256 internal constant BASE_L1_BASE_FEE = 55_429_468;
+    uint256 internal constant BASE_BLOB_BASE_FEE = 2_977_470;
+    uint32 internal constant BASE_FEE_SCALAR = 2_269;
+    uint32 internal constant BASE_BLOB_BASE_FEE_SCALAR = 1_055_762;
 
     // ── deployed system ─────────────────────────────────────────────────
     OpenOracle internal oracle;
     OpenPuntLifecycle internal lifecycleModule; // raw module (negative tests only)
     openPunt internal punt; // core / fund holder
     OpenPuntLifecycle internal puntLifecycle; // core address, module ABI
+    FjordGasPriceOracleReference internal gasPriceOracle;
 
     MintableERC20 internal collat;
     MintableERC20 internal tokenA; // oracleToken1
@@ -69,8 +79,18 @@ abstract contract OpenPuntBase is Test {
     // oracle game
     uint128 internal constant INITIAL_LIQUIDITY = 1e18;
     uint128 internal constant ESCALATION_HALT = 20e18;
-    /// @dev OpenPunt creates its oracle games with `flags: 0`, so FLAG_TIME_TYPE is clear and the
-    ///      game clock counts blocks: `settlementTime` and
+    uint32 internal constant ESTIMATED_DISPUTE_GAS = 100_000;
+    uint8 internal constant ORACLE_FLAG_TIME_TYPE = 1 << 0;
+    uint8 internal constant ORACLE_FLAG_TRACK_DISPUTES = 1 << 1;
+    uint8 internal constant ORACLE_FLAG_STORE_ALL = 1 << 2;
+    uint8 internal constant ORACLE_FLAG_STORE_PRICE = 1 << 3;
+    uint8 internal constant ORACLE_FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4;
+    uint8 internal constant ORACLE_FLAG_FEES_ONLY_AT_HALT = 1 << 5;
+    uint8 internal constant ORACLE_FLAG_FLEXIBLE_ESCALATION = 1 << 6;
+
+    /// @dev OpenPunt requires block-number mode. The opening report strips settlement-eligibility
+    ///      storage, so the fixture's default opening game has `flags: 0` and its game clock counts
+    ///      blocks: `settlementTime` and
     ///      `disputeDelay` are block counts, and the game's `reportTimestamp` holds a block number
     ///      while `lastReportOppoTime` holds the wall clock.
     ///
@@ -123,6 +143,16 @@ abstract contract OpenPuntBase is Test {
         // `vm.etch` copies runtime code only, so the recorder keeps no constructor state.
         RecordingPermit2 permit2 = new RecordingPermit2();
         vm.etch(PERMIT2, address(permit2).code);
+
+        // Install the production Fjord calculation at Base's canonical predeploy address. Unlike
+        // a mocked return value, this remains sensitive to the requested size and all four fee
+        // parameters. Individual tests can change the parameters through the reference contract.
+        FjordGasPriceOracleReference gasPriceOracleImpl = new FjordGasPriceOracleReference();
+        vm.etch(BASE_GAS_PRICE_ORACLE, address(gasPriceOracleImpl).code);
+        gasPriceOracle = FjordGasPriceOracleReference(BASE_GAS_PRICE_ORACLE);
+        gasPriceOracle.setFeeParameters(
+            BASE_L1_BASE_FEE, BASE_BLOB_BASE_FEE, BASE_FEE_SCALAR, BASE_BLOB_BASE_FEE_SCALAR
+        );
 
         oracle = new OpenOracle();
         lifecycleModule = new OpenPuntLifecycle(address(oracle));
@@ -247,6 +277,8 @@ abstract contract OpenPuntBase is Test {
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.openExecutionComp = OPEN_EXEC_COMP;
         s.useInternalBalances = false;
+        s.oracleFlags = ORACLE_FLAG_STORE_SETTLEMENT_ELIGIBILITY;
+        s.estimatedDisputeGas = ESTIMATED_DISPUTE_GAS;
     }
 
     /// @dev Per-test dispute delay. Set this before proposing; it flows into the real
@@ -468,7 +500,7 @@ abstract contract OpenPuntBase is Test {
         mt.swap = _decodeSingleSwapState(logs, OpenPuntStorage.PositionReportStarted.selector, swapId);
         mt.reportId = punt.swapIdToReportId(swapId);
         (mt.game, mt.helper) = _decodeReportSubmitted(logs, mt.reportId);
-        assertEq(mt.game.flags, 1 << 4, "active report stores settlement eligibility");
+        assertEq(mt.game.flags, active.oracleFlags, "active report forwards the position's oracle flags");
         assertEq(
             oracle.settlementEligibility(mt.reportId),
             mt.game.reportTimestamp + mt.game.settlementTime,

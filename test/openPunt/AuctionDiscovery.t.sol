@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "./OpenPuntBase.t.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @notice Both auction modes, driven by real elapsed time between propose() and matchSwap().
@@ -202,6 +203,67 @@ contract AuctionDiscoveryTest is OpenPuntBase {
         _proposeBad(bad, m, PuntErrors.InvalidFulfillFee.selector, "buffer equal to the opening fee");
     }
 
+    /// @dev Exercises the largest possible uint128 notional against the largest valid fee rate.
+    ///      The native multiplication is bounded well below uint256.max and must retain the same
+    ///      strict buffer boundary and floor as the previous full-precision mulDiv implementation.
+    function test_feeAuction_uint128UpperBoundMatchesMulDivAndRefundsExactly() public {
+        OpenPuntStorage.ProposedSwap memory s = _feeLadderSwap();
+        s.notional = type(uint128).max;
+        s.initialMarginMatcher = 1;
+        s.maintenanceMarginSwapper = 0;
+
+        OpenPuntStorage.MatcherPreimage memory m = _feeLadderPreimage();
+        m.auctionStart = 1;
+        m.auctionEnd = 9_999_999;
+        m.growthRate = 10_000;
+
+        uint256 maximumFee = Math.mulDiv(uint256(s.notional), uint256(int256(m.auctionEnd)), 1e7);
+        s.initialMarginSwapper = uint128(maximumFee + 1);
+        collat.mint(swapper, s.initialMarginSwapper);
+
+        Proposal memory p = _proposeWith(s, m, swapper);
+        uint256 swapperBeforeMatch = collat.balanceOf(swapper);
+        Matched memory mt = _matchSwap(p);
+
+        uint256 actualFee = Math.mulDiv(uint256(s.notional), uint256(mt.swap.fulfillmentFee), 1e7);
+        uint256 expectedRefund = maximumFee - actualFee;
+        assertEq(mt.swap.fulfillmentFee, 1, "immediate match uses the one-unit starting rate");
+        assertEq(
+            mt.swap.initialMarginSwapper,
+            uint256(p.swap.initialMarginSwapper) - expectedRefund,
+            "upper-bound refund equals two separately floored mulDiv terms"
+        );
+        assertEq(collat.balanceOf(swapper), swapperBeforeMatch + expectedRefund, "exact upper-bound refund delivered");
+
+        OpenPuntStorage.ProposedSwap memory equalBuffer = _copy(s);
+        equalBuffer.initialMarginSwapper = uint128(maximumFee);
+        _proposeBad(
+            equalBuffer, m, PuntErrors.InvalidFulfillFee.selector, "upper-bound fee equal to the opening buffer"
+        );
+    }
+
+    /// @dev At notional=6,000,000, maxRate=2 and actualRate=1:
+    ///        floor(n*2/1e7) - floor(n*1/1e7) = 1 - 0 = 1,
+    ///      while floor(n*(2-1)/1e7) = 0. This pins the intentionally separate divisions.
+    function test_feeAuction_refundPreservesSeparateRounding() public {
+        OpenPuntStorage.ProposedSwap memory s = _feeLadderSwap();
+        s.notional = 6_000_000;
+
+        OpenPuntStorage.MatcherPreimage memory m = _feeLadderPreimage();
+        m.auctionStart = 1;
+        m.auctionEnd = 2;
+        m.growthRate = 10_000;
+
+        Proposal memory p = _proposeWith(s, m, swapper);
+        uint256 swapperBeforeMatch = collat.balanceOf(swapper);
+        Matched memory mt = _matchSwap(p);
+
+        assertEq(mt.swap.fulfillmentFee, 1, "immediate match uses rate one");
+        assertEq(mt.swap.initialMarginSwapper, uint256(p.swap.initialMarginSwapper) - 1, "one-unit refund retained");
+        assertEq(collat.balanceOf(swapper), swapperBeforeMatch + 1, "one-unit refund delivered");
+        assertEq(Math.mulDiv(uint256(s.notional), 2 - 1, 1e7), 0, "combined division would round differently");
+    }
+
     function test_feeAuction_fixedFundingRateBounds() public {
         OpenPuntStorage.ProposedSwap memory s = _feeLadderSwap();
         s.fundingRate = -100_000_000;
@@ -358,6 +420,26 @@ contract AuctionDiscoveryTest is OpenPuntBase {
         bad.initialMarginSwapper = 2000;
         bad.maintenanceMarginSwapper = 1000; // buffer 1000 == the 1000-unit opening fee
         _proposeBad(bad, _fundingPreimage(), PuntErrors.InvalidFulfillFee.selector, "buffer equal to the opening fee");
+    }
+
+    /// @dev Covers the other replaced maximum-fee multiplication: fixed fee under a funding-rate
+    ///      auction, again at the uint128/maximum-valid-rate boundary.
+    function test_fundingAuction_uint128UpperBoundMatchesMulDiv() public {
+        OpenPuntStorage.ProposedSwap memory s = _fundingSwap();
+        s.notional = type(uint128).max;
+        s.fulfillmentFee = 9_999_999;
+        s.initialMarginMatcher = 1;
+        s.maintenanceMarginSwapper = 0;
+
+        uint256 maximumFee = Math.mulDiv(uint256(s.notional), uint256(s.fulfillmentFee), 1e7);
+        s.initialMarginSwapper = uint128(maximumFee + 1);
+        collat.mint(swapper, s.initialMarginSwapper);
+        _proposeOk(s, _fundingPreimage(), "upper-bound fixed fee one unit below the buffer");
+
+        s.initialMarginSwapper = uint128(maximumFee);
+        _proposeBad(
+            s, _fundingPreimage(), PuntErrors.InvalidFulfillFee.selector, "upper-bound fixed fee equal to the buffer"
+        );
     }
 
     function test_fundingAuction_fixedFundingRateMustBeZero() public {

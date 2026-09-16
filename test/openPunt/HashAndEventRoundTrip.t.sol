@@ -131,7 +131,7 @@ contract HashAndEventRoundTripTest is OpenPuntBase {
         uint48 reportBn = uint48(vm.getBlockNumber());
         Matched memory mt = _matchSwap(p);
 
-        // In block mode (flags: 0), `reportTimestamp` carries the report's block number and
+        // In block mode (FLAG_TIME_TYPE clear), `reportTimestamp` carries the report's block number and
         // `lastReportOppoTime` carries the wall clock. Both are asserted
         // against the chain values captured immediately before the match.
         assertEq(mt.game.reportTimestamp, reportBn, "reportTimestamp holds the BLOCK NUMBER");
@@ -150,9 +150,8 @@ contract HashAndEventRoundTripTest is OpenPuntBase {
         assertEq(mt.game.callbackContract, address(0), "no callback");
         assertEq(mt.game.callbackGasLimit, 0, "no callback gas");
         assertEq(mt.game.numReports, 0, "dispute tracking disabled");
-        // OpenPunt creates its games with flags == 0: FLAG_TIME_TYPE clear, so the game clock
-        // counts blocks, and dispute tracking / store-all / store-price are all off.
-        assertEq(mt.game.flags, 0, "block clock, no optional oracle features");
+        // The default proposal requests only settlement-eligibility storage, which opening strips.
+        assertEq(mt.game.flags, 0, "opening strips the default settlement-eligibility flag");
 
         assertEq(mt.helper.reportId, mt.reportId, "helper reportId from topic");
         assertEq(mt.helper.blockTimestamp, reportTs, "helper blockTimestamp");

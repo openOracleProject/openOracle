@@ -45,7 +45,7 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         bytes memory clean = abi.encodeCall(punt.propose, (s, m, _params()));
 
         uint256 headOff = _argOffset(PROPOSE_PERMIT2_HEAD_OFF);
-        uint256 tailStart = PROPOSE_PERMIT2_HEAD_OFF + 32; // 1280
+        uint256 tailStart = PROPOSE_PERMIT2_HEAD_OFF + 32; // 1344
         _assertCleanWord(clean, headOff, bytes32(tailStart), "Permit2Params head offset");
         _assertCleanWord(clean, _argOffset(tailStart), bytes32(uint256(77)), "nonce");
         _assertCleanWord(clean, _argOffset(tailStart + 32), bytes32(uint256(1_999_999_999)), "deadline");
@@ -164,34 +164,16 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
         _rejectAbi(_withWord(clean, sigOffWord, bytes32(clean.length)), value, "signature offset past the end");
     }
 
-    /// @dev With this ABI shape, the same signed-offset decoder edge exercised below for close()
-    ///      also forwards an empty signature from propose(). The permissive recorder accepts it;
-    ///      the authentic Permit2 test proves the cryptographic boundary rejects it.
-    function test_proposeMaximumSignatureOffsetYieldsAnEmptySignature() public {
+    /// @dev With the current static-head size, propose()'s decoder rejects this signed-offset edge
+    ///      before the malformed signature can reach even a permissive Permit2 implementation.
+    function test_proposeMaximumSignatureOffsetIsRejectedByTheDecoder() public {
         (bytes memory clean, uint256 value) = _cleanPropose();
         uint256 sigOffWord = _argOffset(PROPOSE_PERMIT2_HEAD_OFF + 32 + 64);
-
-        uint256 snap = vm.snapshotState();
-        (bool okClean,) = _rawCallPunt(swapper, value, clean);
-        assertTrue(okClean, "clean control");
-        uint256 cleanSwapId = punt.nextSwapId() - 1;
-        bytes32 cleanHash = punt.swaps(cleanSwapId);
-        bytes32 cleanWitness = _permit2().lastCall().witness;
-        vm.revertToState(snap);
-
-        uint256 calls0 = _permit2().callCount();
         bytes memory dirty = _withWord(clean, sigOffWord, bytes32(type(uint256).max));
-        (bool ok,) = _rawCallPunt(swapper, value, dirty);
-
-        assertTrue(ok, "signed offset is forwarded as an empty signature");
-        assertEq(_permit2().callCount(), calls0 + 1, "Permit2 reached once");
-        assertEq(_permit2().lastCall().signature.length, 0, "empty signature forwarded");
-        assertEq(punt.nextSwapId() - 1, cleanSwapId, "same swapId issued");
-        assertEq(punt.swaps(cleanSwapId), cleanHash, "proposal commitment is byte-identical");
-        assertEq(_permit2().lastCall().witness, cleanWitness, "Permit2 witness is byte-identical");
+        _rejectAbi(dirty, value, "maximum propose signature offset");
     }
 
-    function test_authenticPermit2RejectsTheEmptyProposeSignature() public {
+    function test_authenticPermit2IsNotReachedForMaximumProposeSignatureOffset() public {
         (bytes memory clean, uint256 value) = _cleanPropose();
         uint256 sigOffWord = _argOffset(PROPOSE_PERMIT2_HEAD_OFF + 32 + 64);
         bytes memory dirty = _withWord(clean, sigOffWord, bytes32(type(uint256).max));
@@ -201,9 +183,9 @@ contract DirtyPermit2AbiTest is DirtyEntryPointsBase {
 
         Book memory before = _book(0, address(collat));
         (bool ok, bytes memory ret) = _rawCallPunt(swapper, value, dirty);
-        assertFalse(ok, "authentic Permit2 refuses the empty signature");
-        assertEq(bytes4(ret), INVALID_SIGNATURE_LENGTH, "InvalidSignatureLength()");
-        _assertStateUnchanged(before, 0, address(collat), "authentic/empty propose signature");
+        assertFalse(ok, "malformed offset rejected");
+        assertEq(ret.length, 0, "rejected by the ABI decoder before authentic Permit2");
+        _assertStateUnchanged(before, 0, address(collat), "authentic/malformed propose signature");
     }
 
     function test_signatureLengthBeyondAvailableCalldata() public {

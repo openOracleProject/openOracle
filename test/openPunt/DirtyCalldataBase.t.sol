@@ -63,7 +63,7 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
     // ══════════════════════════════════════════════════════════════════
 
     function _proposedSwapFields() internal pure returns (Field[] memory f) {
-        f = new Field[](27);
+        f = new Field[](30);
         f[0] = Field(20, C_ADDR, "swapper");
         f[1] = Field(20, C_ADDR, "collatToken");
         f[2] = Field(20, C_ADDR, "oracleToken1");
@@ -91,6 +91,9 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
         f[24] = Field(12, C_UINT, "openExecutionComp");
         f[25] = Field(1, C_BOOL, "useInternalBalances");
         f[26] = Field(1, C_BOOL, "maturityOnly");
+        f[27] = Field(1, C_UINT, "oracleFlags");
+        f[28] = Field(16, C_UINT, "maxDisputeCostPerToken1");
+        f[29] = Field(4, C_UINT, "estimatedDisputeGas");
     }
 
     function _matcherPreimageFields() internal pure returns (Field[] memory f) {
@@ -110,7 +113,7 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
     }
 
     function _matchedSwapFields() internal pure returns (Field[] memory f) {
-        f = new Field[](31);
+        f = new Field[](34);
         f[0] = Field(20, C_ADDR, "swapper");
         f[1] = Field(20, C_ADDR, "matcher");
         f[2] = Field(20, C_ADDR, "collatToken");
@@ -142,6 +145,9 @@ abstract contract DirtyCalldataBase is TokenCompatBase {
         f[28] = Field(12, C_UINT, "openExecutionComp");
         f[29] = Field(1, C_BOOL, "useInternalBalances");
         f[30] = Field(1, C_BOOL, "maturityOnly");
+        f[31] = Field(1, C_UINT, "oracleFlags");
+        f[32] = Field(16, C_UINT, "maxDisputeCostPerToken1");
+        f[33] = Field(4, C_UINT, "estimatedDisputeGas");
     }
 
     function _closeDutchFields() internal pure returns (Field[] memory f) {

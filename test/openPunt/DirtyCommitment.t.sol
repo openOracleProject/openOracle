@@ -7,13 +7,15 @@ import "./DirtyEntryPointsBase.t.sol";
  * @notice Hash canonicalization versus commitment rejection, and the fields OpenPunt
  *         overrides or deliberately ignores.
  *
- * @dev Under solc 0.8.28 / via-IR / cancun / optimizer 190, every commitment-bearing
- *      calldata struct is copied into memory before it is hashed:
+ * @dev Under solc 0.8.28 / via-IR / cancun / optimizer 190, the ABI decoder checks every
+ *      sub-256-bit member of these static calldata structs before the function body can use it.
+ *      Several commitment-bearing paths then copy their inputs into memory before hashing:
  *
  *      `MatchedSwap memory s = swapState`, `CloseDutch memory d = dutch`, and in `execute()`
  *      `IOpenOracle2.OracleGame memory oracleStateMem = oracleState` together with its
- *      PreimageHelper counterpart. The decoder validates each sub-256-bit member during that copy
- *      and reverts with empty returndata, so dirty bytes never reach a hash.
+ *      PreimageHelper counterpart. `cancelSwapOpen()` instead hashes its checked calldata encoding
+ *      directly. In either representation, noncanonical narrow values revert with empty returndata
+ *      before dirty bytes can reach a commitment check.
  *
  *      Exactly one rejection category therefore remains for malformed input (empty decode revert),
  *      and one for well-formed input that reconstructs the wrong state (`WrongHash` /
@@ -123,7 +125,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         // ── every padding byte of the rewritten member ───────────────────
         (swapId, pos, mt) = _sameBlockRace();
         clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
-        uint256 stOff = _argOffset(1024 + 32 * 4); // OracleGame.settlementTimestamp, a uint48
+        uint256 stOff = _argOffset(1120 + 32 * 4); // OracleGame.settlementTimestamp, a uint48
         _assertCleanWord(clean, stOff, bytes32(uint256(0)), "OracleGame.settlementTimestamp is the stale zero");
 
         bytes32 storedBefore = punt.swaps(swapId);
@@ -160,11 +162,11 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
 
         uint256 rejected;
         rejected += _sweepOracleStruct(
-            clean, 1024, _oracleGameFields(), "OracleGame", swapId, mt.reportId, storedBefore, tempBefore, oracleBefore
+            clean, 1120, _oracleGameFields(), "OracleGame", swapId, mt.reportId, storedBefore, tempBefore, oracleBefore
         );
         rejected += _sweepOracleStruct(
             clean,
-            1024 + 20 * 32,
+            1120 + 20 * 32,
             _preimageHelperFields(),
             "PreimageHelper",
             swapId,
@@ -232,7 +234,7 @@ contract DirtyCommitmentTest is DirtyEntryPointsBase {
         // A well-formed but different oracle value still fails through the commitment.
         (swapId, pos, mt) = _sameBlockRace();
         clean = abi.encodeCall(puntLifecycle.execute, (swapId, pos, mt.game, mt.helper, 1));
-        uint256 off = _argOffset(1024 + 32 * 0); // OracleGame.currentAmount1, a uint128
+        uint256 off = _argOffset(1120 + 32 * 0); // OracleGame.currentAmount1, a uint128
 
         bytes32 storedBefore = punt.swaps(swapId);
         (bool ok, bytes memory ret) =

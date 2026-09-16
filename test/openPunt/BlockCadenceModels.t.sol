@@ -16,7 +16,7 @@ import "./OpenPuntBase.t.sol";
  *      The tolerance is two seconds of time, not two blocks: how many blocks fit inside it
  *      depends entirely on the chain's block interval, which is exactly what these profiles show.
  *
- *      OpenPunt creates its games with `flags: 0`, so the oracle clock counts blocks: settlement
+ *      OpenPunt requires FLAG_TIME_TYPE to be clear, so the oracle clock counts blocks: settlement
  *      eligibility is `blockNumber >= reportBlock +
  *      settlementTime(blocks)` and carries no wall-clock requirement at all. A position can
  *      therefore become executable within a single timestamp, and the zero-elapsed boundary is

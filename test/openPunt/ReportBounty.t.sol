@@ -39,9 +39,9 @@ contract ReportBountyTest is CloseBase {
         );
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
-        // Existing consumers retain their original topic and state-only data decoder.
-        bytes32 legacyTopic = 0xd275e775eb154290b570020176f25ae1ec34ab60a8faef5befc9b7a2fbbc68a6;
-        Vm.Log memory legacy = _findLog(logs, address(punt), legacyTopic, swapId);
+        // The event retains its indexed fields and state-only payload shape. Its topic follows the
+        // updated MatchedSwap tuple, whose new oracleFlags member is intentionally ABI-visible.
+        Vm.Log memory legacy = _findLog(logs, address(punt), OpenPuntStorage.PositionReportStarted.selector, swapId);
         assertEq(legacy.topics[2], bytes32(reportId));
         assertEq(legacy.topics[3], bytes32(uint256(uint160(reporter))));
         assertEq(legacy.data, abi.encode(active), "legacy payload unchanged");

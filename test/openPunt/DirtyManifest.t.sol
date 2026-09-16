@@ -120,6 +120,9 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.openExecutionComp = type(uint96).max;
         s.useInternalBalances = true;
         s.maturityOnly = true;
+        s.oracleFlags = type(uint8).max;
+        s.maxDisputeCostPerToken1 = type(uint128).max;
+        s.estimatedDisputeGas = type(uint32).max;
         _assertWidths(abi.encode(s), _proposedSwapFields(), "ProposedSwap");
     }
 
@@ -173,6 +176,9 @@ contract DirtyManifestTest is DirtyCalldataBase {
         s.openExecutionComp = type(uint96).max;
         s.useInternalBalances = true;
         s.maturityOnly = true;
+        s.oracleFlags = type(uint8).max;
+        s.maxDisputeCostPerToken1 = type(uint128).max;
+        s.estimatedDisputeGas = type(uint32).max;
         _assertWidths(abi.encode(s), _matchedSwapFields(), "MatchedSwap");
     }
 
@@ -246,9 +252,9 @@ contract DirtyManifestTest is DirtyCalldataBase {
     // ══════════════════════════════════════════════════════════════════
 
     function test_paddingByteBudgetPerStruct() public pure {
-        assertEq(_paddingByteCount(_proposedSwapFields()), 617, "ProposedSwap padding bytes");
+        assertEq(_paddingByteCount(_proposedSwapFields()), 692, "ProposedSwap padding bytes");
         assertEq(_paddingByteCount(_matcherPreimageFields()), 317, "MatcherPreimage padding bytes");
-        assertEq(_paddingByteCount(_matchedSwapFields()), 659, "MatchedSwap padding bytes");
+        assertEq(_paddingByteCount(_matchedSwapFields()), 734, "MatchedSwap padding bytes");
         assertEq(_paddingByteCount(_closeDutchFields()), 228, "CloseDutch padding bytes");
         assertEq(_paddingByteCount(_oracleGameFields()), 437, "OracleGame padding bytes");
         assertEq(_paddingByteCount(_preimageHelperFields()), 12, "PreimageHelper padding bytes");
@@ -256,7 +262,7 @@ contract DirtyManifestTest is DirtyCalldataBase {
             _paddingByteCount(_proposedSwapFields()) + _paddingByteCount(_matcherPreimageFields())
                 + _paddingByteCount(_matchedSwapFields()) + _paddingByteCount(_closeDutchFields())
                 + _paddingByteCount(_oracleGameFields()) + _paddingByteCount(_preimageHelperFields()),
-            2270,
+            2420,
             "total padding budget across all six structs"
         );
     }

@@ -4,14 +4,16 @@ pragma solidity 0.8.28;
 import "./LivenessBase.t.sol";
 
 /**
- * @notice The one-week cadence-recovery escape hatch on the active-position path.
+ * @notice The 60-hour cadence-recovery escape hatch on the active-position path.
  *
- * @dev A report whose latest report/dispute predates maturity plus one week remains subject to the
+ * @dev A report whose latest report/dispute predates maturity plus 60 hours remains subject to the
  *      ordinary cadence and latency checks. A report started or updated after that boundary waits
  *      its committed block window, then bypasses both checks derived from the obsolete block-time
  *      assumption. Liquidation heartbeat authorization remains independent.
  */
 contract CadenceRecoveryTest is LivenessBase {
+    uint256 internal constant RECOVERY_DELAY = 60 hours;
+
     function setUp() public {
         _setUpLiveness();
     }
@@ -35,7 +37,7 @@ contract CadenceRecoveryTest is LivenessBase {
     function _freshRecoveryReport(LiveCfg memory c, uint128 a2Close) internal returns (Live memory l) {
         c.maturityWindow = MATURITY_INSTANT;
         (l.swapId, l.active, l.p,) = _openLive(c);
-        _warpTo(uint256(l.active.maturity) + 1 weeks);
+        _warpTo(uint256(l.active.maturity) + RECOVERY_DELAY);
         l.mt = _reportLive(l.swapId, _noDutch(), l.active, l.p.preimage, reporter, LIVE_COMP, a2Close);
     }
 
@@ -68,14 +70,14 @@ contract CadenceRecoveryTest is LivenessBase {
         c.maxExecutionLatency = 0; // isolate the cadence from the latency deadline
         Live memory l = _brokenCadenceAtEligibility(c, A2_HEALTHY);
 
-        _warpTo(uint256(l.active.maturity) + 1 weeks - 1);
+        _warpTo(uint256(l.active.maturity) + RECOVERY_DELAY - 1);
         _assertCadenceIsBroken(l);
 
         Vm.Log[] memory logs = _executeNow(l.swapId, l.mt, closeExecutor);
 
         assertTrue(
             _hasBailoutLog(logs, OpenPuntStorage.ImpliedMillisecondsPerBlockBailout.selector, l.swapId),
-            "cadence bailout at maturity + 1 week - 1"
+            "cadence bailout at maturity + 60 hours - 1"
         );
         assertFalse(_hasLog(logs, OpenPuntStorage.PositionClosed.selector, l.swapId), "not closed");
         assertTrue(punt.swaps(l.swapId) != bytes32(0), "position survives and stays reusable");
@@ -87,9 +89,9 @@ contract CadenceRecoveryTest is LivenessBase {
         c.maxExecutionLatency = 0;
         Live memory l = _brokenCadenceAtEligibility(c, A2_HEALTHY);
 
-        _warpTo(uint256(l.active.maturity) + 1 weeks);
+        _warpTo(uint256(l.active.maturity) + RECOVERY_DELAY);
         _assertCadenceIsBroken(l);
-        assertLt(l.mt.game.lastReportOppoTime, uint256(l.active.maturity) + 1 weeks, "report predates recovery");
+        assertLt(l.mt.game.lastReportOppoTime, uint256(l.active.maturity) + RECOVERY_DELAY, "report predates recovery");
 
         Vm.Log[] memory logs = _executeNow(l.swapId, l.mt, closeExecutor);
 
@@ -108,7 +110,7 @@ contract CadenceRecoveryTest is LivenessBase {
         c.maxExecutionLatency = LATENCY_MIN;
         Live memory l = _freshRecoveryReport(c, A2_HEALTHY);
 
-        assertEq(l.mt.game.lastReportOppoTime, uint256(l.active.maturity) + 1 weeks, "report starts at recovery");
+        assertEq(l.mt.game.lastReportOppoTime, uint256(l.active.maturity) + RECOVERY_DELAY, "report starts at recovery");
         _advanceSlowToEligibility(l, c);
         _assertCadenceIsBroken(l);
         assertGt(
@@ -185,7 +187,7 @@ contract CadenceRecoveryTest is LivenessBase {
         c.maxExecutionLatency = LATENCY_MIN;
         Live memory l = _brokenCadenceAtEligibility(c, A2_HEALTHY);
 
-        _warpTo(uint256(l.active.maturity) + 1 weeks);
+        _warpTo(uint256(l.active.maturity) + RECOVERY_DELAY);
 
         Vm.Log[] memory logs = _executeNow(l.swapId, l.mt, closeExecutor);
 
@@ -245,7 +247,7 @@ contract CadenceRecoveryTest is LivenessBase {
         c.maturityWindow = MATURITY_INSTANT;
 
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p,) = _openLive(c);
-        _warpTo(uint256(active.maturity) + 1 weeks);
+        _warpTo(uint256(active.maturity) + RECOVERY_DELAY);
         _heartbeat(swapId, active, outsider);
         Matched memory mt = _reportLive(swapId, _noDutch(), active, p.preimage, reporter, LIVE_COMP, A2_LIQUIDATES);
         Live memory l = Live({swapId: swapId, active: active, p: p, mt: mt});

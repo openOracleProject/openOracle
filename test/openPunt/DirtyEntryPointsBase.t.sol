@@ -14,33 +14,33 @@ abstract contract DirtyEntryPointsBase is DirtyCalldataBase {
     //
     //   0     swapId                (1 word)
     //   32    CloseDutch            (11 words -> 352 bytes)
-    //   384   MatchedSwap           (31 words -> 992 bytes)
-    //   1376  useInternalBalances   (1 word)
-    //   1408  Permit2Params HEAD    (1 word: offset to the dynamic tail)
-    //   1440  altGasCompExec        (1 word)
-    //   1472  OracleGame            (20 words -> 640 bytes)
-    //   2112  PreimageHelper        (4 words -> 128 bytes)
-    //   2240  settlementTimestampSearchDepth (1 word)
-    //   2272  Permit2Params TAIL
+    //   384   MatchedSwap           (34 words -> 1088 bytes)
+    //   1472  useInternalBalances   (1 word)
+    //   1504  Permit2Params HEAD    (1 word: offset to the dynamic tail)
+    //   1536  altGasCompExec        (1 word)
+    //   1568  OracleGame            (20 words -> 640 bytes)
+    //   2208  PreimageHelper        (4 words -> 128 bytes)
+    //   2336  settlementTimestampSearchDepth (1 word)
+    //   2368  Permit2Params TAIL
     uint256 internal constant CLOSE_DUTCH_OFF = 32;
     uint256 internal constant CLOSE_MATCHED_OFF = 384;
-    uint256 internal constant CLOSE_USE_INTERNAL_OFF = 1376;
-    uint256 internal constant CLOSE_PERMIT2_HEAD_OFF = 1408;
-    uint256 internal constant CLOSE_ALT_COMP_OFF = 1440;
-    uint256 internal constant CLOSE_GAME_OFF = 1472;
-    uint256 internal constant CLOSE_HELPER_OFF = 2112;
-    uint256 internal constant CLOSE_SEARCH_DEPTH_OFF = 2240;
-    uint256 internal constant CLOSE_PERMIT2_TAIL_OFF = 2272;
+    uint256 internal constant CLOSE_USE_INTERNAL_OFF = 1472;
+    uint256 internal constant CLOSE_PERMIT2_HEAD_OFF = 1504;
+    uint256 internal constant CLOSE_ALT_COMP_OFF = 1536;
+    uint256 internal constant CLOSE_GAME_OFF = 1568;
+    uint256 internal constant CLOSE_HELPER_OFF = 2208;
+    uint256 internal constant CLOSE_SEARCH_DEPTH_OFF = 2336;
+    uint256 internal constant CLOSE_PERMIT2_TAIL_OFF = 2368;
 
     // ── propose() top-level argument offsets ────────────────────────────
     //
     //   propose(ProposedSwap s, MatcherPreimage m, Permit2Params permit2)
     //
-    //   0     ProposedSwap     (27 words -> 864 bytes)
-    //   864   MatcherPreimage  (12 words -> 384 bytes)
-    //   1248  Permit2Params HEAD
-    uint256 internal constant PROPOSE_PREIMAGE_OFF = 864;
-    uint256 internal constant PROPOSE_PERMIT2_HEAD_OFF = 1248;
+    //   0     ProposedSwap     (30 words -> 960 bytes)
+    //   960   MatcherPreimage  (12 words -> 384 bytes)
+    //   1344  Permit2Params HEAD
+    uint256 internal constant PROPOSE_PREIMAGE_OFF = 960;
+    uint256 internal constant PROPOSE_PERMIT2_HEAD_OFF = 1344;
 
     // ── raw mutation shorthands ─────────────────────────────────────────
 

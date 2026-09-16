@@ -109,7 +109,7 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  MatchedSwap via liquidationHeartbeat() — 659 padding bytes
+    //  MatchedSwap via liquidationHeartbeat() — 734 padding bytes
     // ══════════════════════════════════════════════════════════════════
 
     function test_matchedSwapPaddingSweep() public {
@@ -123,15 +123,15 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
             caller: outsider,
             value: 0
         });
-        assertEq(sw.clean.length, 4 + 32 + 31 * 32, "liquidationHeartbeat calldata length");
+        assertEq(sw.clean.length, 4 + 32 + 34 * 32, "liquidationHeartbeat calldata length");
         _assertCleanReaches(sw);
 
         uint256 n = _sweepStruct(sw, _matchedSwapFields(), "MatchedSwap");
-        assertEq(n, 659, "every MatchedSwap padding byte probed");
+        assertEq(n, 734, "every MatchedSwap padding byte probed");
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  ProposedSwap + MatcherPreimage via matchSwap() — 617 + 317
+    //  ProposedSwap + MatcherPreimage via matchSwap() — 692 + 317
     // ══════════════════════════════════════════════════════════════════
 
     function _matchSweep() internal returns (Sweep memory sw, uint256 swapId) {
@@ -145,25 +145,158 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
             caller: matcher,
             value: 0
         });
-        assertEq(sw.clean.length, 4 + 32 + 32 + 27 * 32 + 12 * 32 + 4 * 32 + 32, "matchSwap calldata length");
+        assertEq(sw.clean.length, 4 + 32 + 32 + 30 * 32 + 12 * 32 + 4 * 32 + 32, "matchSwap calldata length");
         _assertCleanReaches(sw);
     }
 
     function test_proposedSwapPaddingSweep() public {
         (Sweep memory sw,) = _matchSweep();
         uint256 n = _sweepStruct(sw, _proposedSwapFields(), "ProposedSwap");
-        assertEq(n, 617, "every ProposedSwap padding byte probed");
+        assertEq(n, 692, "every ProposedSwap padding byte probed");
     }
 
     function test_matcherPreimagePaddingSweep() public {
         (Sweep memory sw,) = _matchSweep();
-        sw.structArgOffset = 64 + 27 * 32; // MatcherPreimage follows ProposedSwap
+        sw.structArgOffset = 64 + 30 * 32; // MatcherPreimage follows ProposedSwap
         uint256 n = _sweepStruct(sw, _matcherPreimageFields(), "MatcherPreimage");
         assertEq(n, 317, "every MatcherPreimage padding byte probed");
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  MatchedSwap via cancelCloseAuction() — 659 padding bytes
+    //  ProposedSwap + MatcherPreimage via cancelSwapOpen() — 692 + 317
+    // ══════════════════════════════════════════════════════════════════
+
+    /// @dev This path deliberately has its own exhaustive matrix. `cancelSwapOpen()` keeps both
+    ///      structs in calldata, whereas `matchSwap()` materializes a MatchedSwap in memory after
+    ///      authenticating them. A clean control proves the calldata aliases remain usable all
+    ///      the way through owner cancellation and its collateral/ETH payouts.
+    function _cancelOpenSweepFrom(Proposal memory p) internal returns (Sweep memory sw) {
+        sw = Sweep({
+            clean: abi.encodeCall(punt.cancelSwapOpen, (p.swapId, p.swap, p.preimage)),
+            structArgOffset: 32, // after uint256 swapId
+            swapId: p.swapId,
+            collatToken: p.swap.collatToken,
+            caller: swapper,
+            value: 0
+        });
+        assertEq(sw.clean.length, 4 + 32 + 30 * 32 + 12 * 32, "cancelSwapOpen calldata length");
+        _assertCleanReaches(sw);
+    }
+
+    function _cancelOpenSweep() internal returns (Sweep memory sw) {
+        return _cancelOpenSweepFrom(_propose());
+    }
+
+    function test_cancelSwapOpenProposedSwapPaddingSweep() public {
+        Sweep memory sw = _cancelOpenSweep();
+        uint256 n = _sweepStruct(sw, _proposedSwapFields(), "cancelSwapOpen.ProposedSwap");
+        assertEq(n, 692, "every cancelSwapOpen ProposedSwap padding byte probed");
+    }
+
+    function test_cancelSwapOpenMatcherPreimagePaddingSweep() public {
+        Sweep memory sw = _cancelOpenSweep();
+        sw.structArgOffset = 32 + 30 * 32; // MatcherPreimage follows ProposedSwap
+        uint256 n = _sweepStruct(sw, _matcherPreimageFields(), "cancelSwapOpen.MatcherPreimage");
+        assertEq(n, 317, "every cancelSwapOpen MatcherPreimage padding byte probed");
+    }
+
+    /// @dev Produces a different canonical value without touching a field's padding. Since
+    ///      cancelSwapOpen hashes the complete decoded structs before any payout logic, every
+    ///      such change must reach and fail the commitment check with WrongHash—not the decoder.
+    function _differentCanonicalWord(bytes32 cleanWord, Field memory field) internal pure returns (bytes32) {
+        if (field.cls == C_BOOL) return cleanWord == bytes32(0) ? bytes32(uint256(1)) : bytes32(0);
+        return cleanWord ^ bytes32(uint256(1));
+    }
+
+    function _sweepCancelCanonicalValues(Sweep memory sw, Field[] memory fields, string memory structName)
+        internal
+        returns (uint256 probed)
+    {
+        Book memory before = _book(sw.swapId, sw.collatToken);
+
+        for (uint256 i = 0; i < fields.length; i++) {
+            uint256 off = _argOffset(sw.structArgOffset + 32 * i);
+            bytes32 cleanWord = _readWord(sw.clean, off);
+            bytes memory altered = _copyBytes(sw.clean);
+            _writeWord(altered, off, _differentCanonicalWord(cleanWord, fields[i]));
+
+            (bool ok, bytes memory ret) = _rawCallPunt(sw.caller, sw.value, altered);
+            _assertRevertedWith(
+                ok,
+                ret,
+                PuntErrors.WrongHash.selector,
+                string.concat(structName, ".", fields[i].name, " canonical mutation")
+            );
+            _assertStateUnchanged(before, sw.swapId, sw.collatToken, string.concat(structName, ".", fields[i].name));
+            probed++;
+        }
+    }
+
+    function test_cancelSwapOpenCanonicalValueChangesFailTheCommitment() public {
+        Sweep memory sw = _cancelOpenSweep();
+        uint256 proposed = _sweepCancelCanonicalValues(sw, _proposedSwapFields(), "ProposedSwap");
+
+        sw.structArgOffset = 32 + 30 * 32;
+        uint256 preimage = _sweepCancelCanonicalValues(sw, _matcherPreimageFields(), "MatcherPreimage");
+
+        assertEq(proposed, 30, "every ProposedSwap field changed canonically");
+        assertEq(preimage, 12, "every MatcherPreimage field changed canonically");
+    }
+
+    /// @dev The generic fixture's signed values are nonnegative. This separately proves that
+    ///      cancelSwapOpen accepts genuine negative int32 values with 0xff sign extension and
+    ///      rejects every single-byte break in that extension before reaching the hash check.
+    function _sweepNegativeCancelPadding(Sweep memory sw, uint256 wordIndex, string memory name)
+        internal
+        returns (uint256 probed)
+    {
+        uint256 off = _argOffset(sw.structArgOffset + 32 * wordIndex);
+        Book memory before = _book(sw.swapId, sw.collatToken);
+
+        for (uint256 p = 0; p < 28; p++) {
+            assertEq(_readByte(sw.clean, off + p), 0xff, string.concat(name, ": canonical negative padding"));
+
+            bytes memory dirty = _copyBytes(sw.clean);
+            _writeByte(dirty, off + p, 0x00);
+            (bool ok, bytes memory ret) = _rawCallPunt(sw.caller, sw.value, dirty);
+            _assertRevertedEmpty(ok, ret, string.concat(name, ": broken negative sign extension"));
+            _assertStateUnchanged(before, sw.swapId, sw.collatToken, name);
+            probed++;
+        }
+    }
+
+    function test_cancelSwapOpenNegativeFundingRateSignExtension() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        s.fundingRate = -1;
+        Proposal memory p = _proposeWith(s, _defaultMatcherPreimage(), swapper);
+        Sweep memory sw = _cancelOpenSweepFrom(p);
+
+        uint256 n = _sweepNegativeCancelPadding(sw, 10, "cancelSwapOpen.ProposedSwap.fundingRate");
+        assertEq(n, 28, "every negative fundingRate padding byte probed through cancelSwapOpen");
+    }
+
+    function test_cancelSwapOpenNegativeAuctionBoundsSignExtension() public {
+        OpenPuntStorage.ProposedSwap memory s = _defaultProposedSwap();
+        s.auctionFunding = true;
+        s.fulfillmentFee = 10_000;
+        s.fundingRate = 0;
+
+        OpenPuntStorage.MatcherPreimage memory m = _defaultMatcherPreimage();
+        m.auctionStart = -2;
+        m.auctionEnd = -1;
+
+        Proposal memory p = _proposeWith(s, m, swapper);
+        Sweep memory sw = _cancelOpenSweepFrom(p);
+        sw.structArgOffset = 32 + 30 * 32;
+
+        uint256 starts = _sweepNegativeCancelPadding(sw, 6, "cancelSwapOpen.MatcherPreimage.auctionStart");
+        uint256 ends = _sweepNegativeCancelPadding(sw, 7, "cancelSwapOpen.MatcherPreimage.auctionEnd");
+        assertEq(starts, 28, "every negative auctionStart padding byte probed through cancelSwapOpen");
+        assertEq(ends, 28, "every negative auctionEnd padding byte probed through cancelSwapOpen");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  MatchedSwap via cancelCloseAuction() — 734 padding bytes
     // ══════════════════════════════════════════════════════════════════
 
     function test_closeDutchPaddingSweep() public {
@@ -179,11 +312,11 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
             caller: swapper,
             value: 0
         });
-        assertEq(sw.clean.length, 4 + 32 + 31 * 32, "cancelCloseAuction calldata length");
+        assertEq(sw.clean.length, 4 + 32 + 34 * 32, "cancelCloseAuction calldata length");
         _assertCleanReaches(sw);
 
         uint256 n = _sweepStruct(sw, _matchedSwapFields(), "MatchedSwap");
-        assertEq(n, 659, "every MatchedSwap padding byte probed");
+        assertEq(n, 734, "every MatchedSwap padding byte probed");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -234,9 +367,10 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
         });
         _assertCleanReaches(sw);
 
-        uint256[4] memory boolWords = [uint256(9), 10, 27, 29];
-        string[4] memory names = ["swapperIsLong", "pnlUsesToken1PerToken2", "active", "useInternalBalances"];
-        for (uint256 i = 0; i < 4; i++) {
+        uint256[5] memory boolWords = [uint256(9), 10, 27, 29, 30];
+        string[5] memory names =
+            ["swapperIsLong", "pnlUsesToken1PerToken2", "active", "useInternalBalances", "maturityOnly"];
+        for (uint256 i = 0; i < 5; i++) {
             _assertBoolControlDecodes(sw, boolWords[i], 0, string.concat("MatchedSwap.", names[i], " = 0"));
             _assertBoolControlDecodes(sw, boolWords[i], 1, string.concat("MatchedSwap.", names[i], " = 1"));
             _assertBoolValueRejected(sw, boolWords[i], 2, string.concat("MatchedSwap.", names[i], " = 2"));
@@ -249,10 +383,30 @@ contract DirtyStructPaddingTest is DirtyCalldataBase {
 
     function test_proposedSwapBooleansRejectTwo() public {
         (Sweep memory sw,) = _matchSweep();
-        uint256[4] memory boolWords = [uint256(8), 9, 12, 25];
-        string[4] memory names = ["isLong", "pnlUsesToken1PerToken2", "auctionFunding", "useInternalBalances"];
-        for (uint256 i = 0; i < 4; i++) {
+        uint256[5] memory boolWords = [uint256(8), 9, 12, 25, 26];
+        string[5] memory names =
+            ["isLong", "pnlUsesToken1PerToken2", "auctionFunding", "useInternalBalances", "maturityOnly"];
+        for (uint256 i = 0; i < 5; i++) {
             _assertBoolValueRejected(sw, boolWords[i], 2, string.concat("ProposedSwap.", names[i], " = 2"));
+        }
+    }
+
+    function test_cancelSwapOpenProposedSwapBooleansRejectNonCanonicalValues() public {
+        Sweep memory sw = _cancelOpenSweep();
+        uint256[5] memory boolWords = [uint256(8), 9, 12, 25, 26];
+        string[5] memory names =
+            ["isLong", "pnlUsesToken1PerToken2", "auctionFunding", "useInternalBalances", "maturityOnly"];
+        uint256[3] memory invalid = [uint256(2), 255, type(uint256).max];
+
+        for (uint256 i = 0; i < boolWords.length; i++) {
+            for (uint256 j = 0; j < invalid.length; j++) {
+                _assertBoolValueRejected(
+                    sw,
+                    boolWords[i],
+                    invalid[j],
+                    string.concat("cancelSwapOpen.ProposedSwap.", names[i], " invalid bool")
+                );
+            }
         }
     }
 

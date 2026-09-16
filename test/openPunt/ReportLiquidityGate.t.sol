@@ -6,10 +6,9 @@ import "./OpenPuntBase.t.sol";
 /**
  * @notice Covers the report() liquidity gate:
  *
- *           if (amount1 > minAmount1 && preimage.disputeDelay != 0) revert InvalidAmount1;
- *
- *         - nonzero disputeDelay: amount1 must equal initialLiquidity exactly
- *         - zero disputeDelay:    amount1 may range up to the existing reportCeiling
+ *         - nonzero disputeDelay without flexible escalation: amount1 must equal
+ *           initialLiquidity when the gas-cost parameter is disabled
+ *         - zero disputeDelay: amount1 may range through escalationHalt
  *
  * @dev Every case reaches an active position through the real sequence
  *      propose -> matchSwap -> settlement eligibility -> opening execute.
@@ -147,10 +146,7 @@ contract ReportLiquidityGateTest is OpenPuntBase {
         uint256 reporterBInt0 = _spendable(reporter, address(tokenB));
         uint256 expectedReportId = oracle.nextReportId();
 
-        // sanity: the higher amount is inside the pre-existing ceiling, so only the new
-        // disputeDelay rule could have blocked it.
-        uint256 ceiling = 10 * uint256(INITIAL_LIQUIDITY) > ESCALATION_HALT ? ESCALATION_HALT : 10 * INITIAL_LIQUIDITY;
-        assertLe(HIGHER_AMOUNT1, ceiling, "test amount is within reportCeiling");
+        assertLe(HIGHER_AMOUNT1, ESCALATION_HALT, "test amount is within escalationHalt");
         assertGt(HIGHER_AMOUNT1, INITIAL_LIQUIDITY, "test amount exceeds initialLiquidity");
 
         Matched memory closing = _reportOnPositionWithAmount1(
@@ -186,17 +182,38 @@ contract ReportLiquidityGateTest is OpenPuntBase {
         );
     }
 
-    /// @dev Zero delay still respects the pre-existing ceiling.
-    function test_zeroDelay_aboveCeilingStillReverts() public {
+    /// @dev The explicit flexible-escalation flag provides the same wider report range even
+    ///      when a nonzero dispute delay prevents atomic dispute loops.
+    function test_flexibleEscalationFlagAllowsHigherLiquidityWithNonzeroDelay() public {
+        disputeDelayParam = 5;
+        OpenPuntStorage.ProposedSwap memory input = _defaultProposedSwap();
+        input.oracleFlags |= ORACLE_FLAG_FLEXIBLE_ESCALATION;
+        Proposal memory p = _proposeWith(input, _defaultMatcherPreimage(), swapper);
+        Matched memory opening = _matchSwap(p);
+        _advanceToSettlementEligibility();
+        OpenPuntStorage.MatchedSwap memory active = _executeOpening(opening, executor);
+
+        Matched memory closing = _reportOnPositionWithAmount1(
+            p.swapId, _noDutch(), active, p.preimage, reporter, REPORT_EXEC_COMP, HIGHER_AMOUNT1
+        );
+
+        assertEq(closing.game.currentAmount1, HIGHER_AMOUNT1, "flexible report accepts higher liquidity");
+        assertEq(closing.game.disputeDelay, 5, "nonzero dispute delay is preserved");
+        assertTrue(
+            closing.game.flags & ORACLE_FLAG_FLEXIBLE_ESCALATION != 0, "closing game preserves flexible escalation"
+        );
+    }
+
+    /// @dev Zero delay permits loop escalation but never exceeds escalationHalt.
+    function test_zeroDelay_aboveHaltStillReverts() public {
         (uint256 swapId, OpenPuntStorage.MatchedSwap memory active, Proposal memory p) = _openWithDisputeDelay(0);
         bytes32 storedBefore = punt.swaps(swapId);
 
-        uint128 ceiling =
-            10 * uint256(INITIAL_LIQUIDITY) > ESCALATION_HALT ? ESCALATION_HALT : uint128(10 * INITIAL_LIQUIDITY);
-
         vm.prank(reporter);
         vm.expectRevert(PuntErrors.InvalidAmount1.selector);
-        puntLifecycle.report(swapId, bytes32(0), active, p.preimage, _noTiming(), reporter, ceiling + 1, AMOUNT2, 0);
+        puntLifecycle.report(
+            swapId, bytes32(0), active, p.preimage, _noTiming(), reporter, ESCALATION_HALT + 1, AMOUNT2, 0
+        );
 
         assertEq(punt.swaps(swapId), storedBefore, "position hash unchanged");
         assertEq(oracle.oracleGame(oracle.nextReportId()), bytes32(0), "no game created");

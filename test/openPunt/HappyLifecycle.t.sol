@@ -415,6 +415,7 @@ contract HappyLifecycleTest is OpenPuntBase {
         s.active = false;
         s.openExecutionComp = OPEN_EXEC_COMP;
         s.useInternalBalances = false;
+        s.oracleFlags = prop.swap.oracleFlags;
     }
 
     function _expectedActive() internal view returns (OpenPuntStorage.MatchedSwap memory s) {
