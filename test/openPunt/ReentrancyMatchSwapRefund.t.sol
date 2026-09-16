@@ -62,6 +62,8 @@ contract ReentrancyMatchSwapRefundTest is ReentrancyBase {
         s.useInternalBalances = p.swap.useInternalBalances;
         s.maturityOnly = p.swap.maturityOnly;
         s.oracleFlags = p.swap.oracleFlags;
+        s.maxDisputeCostPerToken1 = p.swap.maxDisputeCostPerToken1;
+        s.estimatedDisputeGas = p.swap.estimatedDisputeGas;
     }
 
     function _assertHookReverted(bytes4 expected, string memory what) internal view {

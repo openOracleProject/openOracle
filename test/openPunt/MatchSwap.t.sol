@@ -83,6 +83,8 @@ contract MatchSwapTest is OpenPuntBase {
         want.openExecutionComp = OPEN_EXEC_COMP;
         want.useInternalBalances = false;
         want.oracleFlags = p.swap.oracleFlags;
+        want.maxDisputeCostPerToken1 = p.swap.maxDisputeCostPerToken1;
+        want.estimatedDisputeGas = p.swap.estimatedDisputeGas;
 
         assertEq(keccak256(abi.encode(mt.swap)), keccak256(abi.encode(want)), "emitted state matches expectation");
         assertEq(punt.swaps(p.swapId), keccak256(abi.encode(want)), "stored hash matches expectation");
