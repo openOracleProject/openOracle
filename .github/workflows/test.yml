@@ -7,6 +7,7 @@ on:
 
 env:
   FOUNDRY_PROFILE: ci
+  BASE_RPC_URL: https://base.gateway.tenderly.co
 
 jobs:
   check:
