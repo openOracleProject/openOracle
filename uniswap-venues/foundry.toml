@@ -1,0 +1,158 @@
+# Standalone Foundry project for the vendored Uniswap venues.
+#
+# WHY THIS IS A SEPARATE PROJECT RATHER THAN A PROFILE.
+#
+# The Uniswap venues must not touch the main build at all. An earlier attempt to share one showed
+# how quietly they interfere: `forge install universal-router` into the main `lib/` made Foundry's
+# auto-generated remappings repoint the bare `@openzeppelin/` prefix at a nested copy under v4-core,
+# and OpenPunt compiled CLEAN against a different OpenZeppelin -- different ReentrancyGuard,
+# SafeERC20 and Math -- with no warning.
+#
+# A `[profile.venues]` inside the main foundry.toml is not enough either: Foundry profiles inherit
+# every unset key from `[profile.default]`, so the main project's `solc = "0.8.28"` hard pin leaks
+# in and overrides `auto_detect_solc`. There is no way to unset an inherited key. Separating the
+# project is the only way to keep BOTH an explicit hard pin on the main build and a multi-version
+# build here.
+#
+# The isolation is total:
+#
+#   - separate config, so no key is shared or inherited in either direction. This is the reason a
+#     `[profile.venues]` in the main file was not enough -- profiles inherit every unset key from
+#     `[profile.default]`, so its `solc = "0.8.28"` hard pin leaked in and overrode
+#     `auto_detect_solc`, and there is no way to unset an inherited key;
+#   - separate `out/` and cache, so a venue build can never overwrite or invalidate a production
+#     artifact, and `forge clean` on one does not touch the other;
+#   - self-contained lib root (`uniswap-venues/lib/`), which is NOT a lib root of the main project,
+#     so these dependencies contribute nothing to its remappings. `forge remappings` at the root
+#     shows `@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/` and no Uniswap entries,
+#     and the root needs no `remappings.txt` at all.
+#
+# The main foundry.toml is what it was before any Uniswap dependency existed apart from ONE added
+# line: a read-only `fs_permissions` grant scoped to `./uniswap-venues`. That grant is what lets the
+# root tests read this project's artifacts, and compare their recorded source hashes against the
+# files on disk. `solc = "0.8.28"` there is untouched.
+#
+# USAGE
+#
+#   cd uniswap-venues && forge build     # once, and after any change under uniswap-venues/
+#   forge test                           # from the root, unchanged, still hard-pinned to 0.8.28
+#
+# The root suite reads the resulting creation bytecode out of `uniswap-venues/out/` with
+# `vm.deployCode` and places the REAL Uniswap code. Because the root `forge test` cannot rebuild this
+# project, `DisputeHelperBase.setUp` verifies the artifacts are both PRESENT and CURRENT: it compares
+# the source hashes solc recorded in each artifact's metadata against fresh hashes of the files on
+# disk, and fails with the exact command to run. A forgotten or outdated venue build therefore cannot
+# be mistaken for a passing run. The check is content-based rather than timestamp-based, so touching
+# an unchanged file does not trip it.
+#
+# WHAT LIVES IN src/
+#
+# Compile-only shims. Each one exists solely to pull a venue into the compilation so its artifact is
+# produced at its own pinned solc: Universal Router (`=0.8.26` via V4Router), Uniswap V2
+# (`=0.5.16`), Uniswap V3 (`=0.7.6`), and the V4 PoolManager (`0.8.26`). `V4Support.sol` also holds
+# the two test-support contracts that need v4-core's types and therefore cannot live in a 0.8.28
+# test file.
+
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+auto_detect_solc = true
+via_ir = true
+evm_version = "cancun"
+optimizer_runs = 190
+
+remappings = [
+    "universal-router/=lib/universal-router/",
+    "v2-core/=lib/v2-core/",
+    "v3-core/=lib/v3-core/",
+    "v4-core/=lib/universal-router/lib/v4-periphery/lib/v4-core/src/",
+    "v4-periphery/=lib/universal-router/lib/v4-periphery/",
+    "lib/universal-router/:@openzeppelin/=lib/universal-router/lib/v4-periphery/lib/v4-core/lib/openzeppelin-contracts/",
+    "lib/universal-router/:solmate/=lib/universal-router/lib/solmate/",
+    "lib/universal-router/:permit2/=lib/universal-router/lib/permit2/",
+    "lib/universal-router/:forge-std/=lib/universal-router/lib/forge-std/src/",
+    "lib/universal-router/:@uniswap/v2-core/=lib/v2-core/",
+    "lib/universal-router/:@uniswap/v3-core/=lib/v3-core/",
+    "lib/universal-router/:@uniswap/v3-periphery/=lib/universal-router/lib/v3-periphery/",
+    "lib/universal-router/:@uniswap/v4-core/=lib/universal-router/lib/v4-periphery/lib/v4-core/",
+    "lib/universal-router/:@uniswap/v4-periphery/=lib/universal-router/lib/v4-periphery/",
+]
+
+[[profile.default.additional_compiler_profiles]]
+name = "legacy-uniswap"
+via_ir = false
+evm_version = "istanbul"
+optimizer = true
+optimizer_runs = 190
+
+# Uniswap V2/V3 predate both the IR pipeline (0.5.x IR cannot codegen modifiers) and the cancun EVM.
+# Only these version-pinned IMPLEMENTATION files are restricted -- deliberately NOT the shared
+# `>=0.5.0` interfaces, which the Universal Router also imports and which must stay in the router's
+# own cancun/via-IR unit. Restricting those interfaces drags the router's whole unit down to
+# istanbul, where its `tstore`/`tload` no longer compile.
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/UniswapV2Factory.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/UniswapV2Pair.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/UniswapV2ERC20.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/libraries/Math.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/libraries/SafeMath.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v2-core/contracts/libraries/UQ112x112.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v3-core/contracts/UniswapV3Factory.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v3-core/contracts/UniswapV3Pool.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v3-core/contracts/UniswapV3PoolDeployer.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v3-core/contracts/NoDelegateCall.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "lib/v3-core/contracts/libraries/LowGasSafeMath.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/V2Build.sol"
+via_ir = false
+max_evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/V3Build.sol"
+via_ir = false
+max_evm_version = "istanbul"
