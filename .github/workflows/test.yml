@@ -34,6 +34,9 @@ jobs:
           forge build --sizes
         id: build
 
+      - name: Build Uniswap test venues
+        run: forge build --root uniswap-venues
+
       - name: Run Forge tests
         run: |
           forge test -vvv
