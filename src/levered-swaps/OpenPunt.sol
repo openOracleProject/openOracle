@@ -5,7 +5,6 @@ import {IOpenOracle2} from "../interfaces/IOpenOracle2.sol";
 import {OpenPuntStorage} from "./OpenPuntStorage.sol";
 import {OpenPuntLifecycle} from "./OpenPuntLifecycle.sol";
 import {LibClone} from "solady/utils/LibClone.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISignatureTransfer} from "../interfaces/ISignatureTransfer.sol";
 import {PuntErrors as Errors} from "../libraries/PuntErrors.sol";
 
@@ -79,7 +78,7 @@ contract openPunt is OpenPuntStorage {
 
     /**
      * @notice Proposes a leveraged position and escrows the swapper's collateral through OpenOracle.
-     * @dev Only the swap hash is stored on-chain. All future callers (matchSwap, cancelSwap, execute,
+     * @dev Only the swap hash is stored on-chain. All future callers (matchSwap, cancelSwapOpen, execute,
      *      bailOutOpen) must supply the exact ProposedSwap / MatcherPreimage / MatchedSwap that
      *      reconstructs the current swap hash; off-chain indexing is the caller's responsibility.
      * @param s ProposedSwap parameters; s.swapper is set to msg.sender and s.expiration is converted to an absolute timestamp by the contract
@@ -130,18 +129,27 @@ contract openPunt is OpenPuntStorage {
 
         uint256 settlementDurationMilliseconds = uint256(m.settlementTime) * s.millisecondsPerBlock;
         if (
-            m.settlementTime == 0 || m.initialLiquidity == 0 || s.millisecondsPerBlock == 0
+                m.initialLiquidity == 0 || s.millisecondsPerBlock == 0
                 || m.disputeDelay >= m.settlementTime || m.escalationHalt < m.initialLiquidity
                 || settlementDurationMilliseconds > 4 hours * 1000 || m.protocolFee >= 1e7
                 || uint256(s.maxGameTime) * 1000 < settlementDurationMilliseconds * 20 || s.maxGameTime > 604800
                 || m.multiplier < 100
         ) revert Errors.InvalidOracleParams();
 
+        if (
+            s.oracleFlags > FLAGS_MAX
+                || _hasFlag(s.oracleFlags, FLAG_TIME_TYPE)
+                || !_hasFlag(s.oracleFlags, FLAG_STORE_SETTLEMENT_ELIGIBILITY)
+        ) revert Errors.InvalidOracleParams();
+
+        // if estimatedDisputeGas > 0 && maxDisputeCostPerToken1 == 0, gas check is disabled anyways
+        if (s.estimatedDisputeGas == 0) revert Errors.InvalidDisputeGasEstimate();
+
         // auction mode
         int32 maxAbsFunding = 100_000_000; // 1,000% annualized
 
         if (
-            m.maxRounds == 0 || m.maxRounds > 200 // 200 should be gas-ok
+            m.maxRounds == 0 || m.maxRounds > 200
                 || m.roundLength == 0
         ) revert Errors.InvalidFulfillFeeParams();
 
@@ -149,7 +157,7 @@ contract openPunt is OpenPuntStorage {
             if (m.auctionStart < -maxAbsFunding || m.auctionEnd > maxAbsFunding || m.auctionStart >= m.auctionEnd) {
                 revert Errors.InvalidFundingRate();
             }
-            uint256 maximumFeeAmount = Math.mulDiv(s.notional, s.fulfillmentFee, 1e7);
+            uint256 maximumFeeAmount = (uint256(s.notional) * s.fulfillmentFee) / 1e7;
             if (s.fulfillmentFee >= 1e7 || maximumFeeAmount >= startingBuffer) {
                 revert Errors.InvalidFulfillFee();
             }
@@ -158,7 +166,7 @@ contract openPunt is OpenPuntStorage {
             if (m.auctionStart <= 0 || m.auctionEnd < m.auctionStart || m.auctionEnd >= 1e7 || m.growthRate < 10000) {
                 revert Errors.InvalidFulfillFee();
             }
-            uint256 maximumFeeAmount = Math.mulDiv(s.notional, uint256(int256(m.auctionEnd)), 1e7);
+            uint256 maximumFeeAmount = (s.notional * uint256(int256(m.auctionEnd)))/ 1e7;
             if (maximumFeeAmount >= startingBuffer) revert Errors.InvalidFulfillFee();
             if (s.fundingRate < -maxAbsFunding || s.fundingRate > maxAbsFunding) revert Errors.InvalidFundingRate();
             if (s.fulfillmentFee != 0) revert Errors.MustBeZero();
@@ -259,6 +267,9 @@ contract openPunt is OpenPuntStorage {
         s.collatToken = _swap.collatToken;
         s.swapperIsLong = _swap.isLong;
         s.pnlUsesToken1PerToken2 = _swap.pnlUsesToken1PerToken2;
+        s.oracleFlags = _swap.oracleFlags;
+        s.estimatedDisputeGas = _swap.estimatedDisputeGas;
+        s.maxDisputeCostPerToken1 = _swap.maxDisputeCostPerToken1;
         // used to authenticate oracle amounts in report() later
         s.matcherPreimageHash = keccak256(abi.encode(preimage));
 
@@ -269,6 +280,9 @@ contract openPunt is OpenPuntStorage {
         uint96 matcherGasComp = _swap.matcherGasComp;
         uint96 settlerReward = _swap.settlerReward;
 
+        // rough check. does not include L1 component. opening price already mitigated by toleranceRange
+        // prevents matching extremely low maxDisputeCostPerToken1
+        _checkDisputeGas(preimage.initialLiquidity, s.maxDisputeCostPerToken1, block.basefee, s.estimatedDisputeGas);
         if (s.swapper == address(0)) revert Errors.NotActive();
         if (matcher == address(0)) revert Errors.AddressCannotBeZero();
         if (matcher == address(this)) revert Errors.ContractCannotBeParticipant();
@@ -303,7 +317,7 @@ contract openPunt is OpenPuntStorage {
         uint256 maximumFeeRate =
             _swap.auctionFunding ? uint256(_swap.fulfillmentFee) : uint256(uint32(preimage.auctionEnd));
         uint128 openingFeeRefund =
-            uint128(Math.mulDiv(s.notional, maximumFeeRate, 1e7) - Math.mulDiv(s.notional, s.fulfillmentFee, 1e7));
+            uint128(((s.notional * maximumFeeRate) / 1e7) - (uint256(s.notional) * s.fulfillmentFee / 1e7));
         s.initialMarginSwapper -= openingFeeRefund;
 
         s.matcher = matcher;
@@ -583,7 +597,7 @@ contract openPunt is OpenPuntStorage {
     {
         bytes32 passedHash = keccak256(abi.encode(_swap, preimage));
         if (passedHash != swaps[swapId]) revert Errors.WrongHash();
-        ProposedSwap memory s = _swap;
+        ProposedSwap calldata s = _swap;
 
         address caller;
         uint256 callerPiece;
@@ -594,6 +608,7 @@ contract openPunt is OpenPuntStorage {
         uint96 settlerReward = s.settlerReward;
         address collatToken = s.collatToken;
         uint128 initialMarginSwapper = s.initialMarginSwapper;
+        bool useInternalBalances = s.useInternalBalances;
 
         if (block.timestamp <= s.expiration) {
             if (msg.sender != swapper) revert Errors.NotSwapper();
@@ -611,13 +626,13 @@ contract openPunt is OpenPuntStorage {
 
         delete swaps[swapId];
 
-        if (s.useInternalBalances) {
+        if (useInternalBalances) {
             tempHolding[swapper] += swapperPiece + settlerReward;
         }
         if (caller == msg.sender && callerPiece > 0) tempHolding[caller] += callerPiece;
 
-        _refundSwapper(collatToken, swapper, initialMarginSwapper, s.useInternalBalances);
-        if (!s.useInternalBalances) payEth(swapper, swapperPiece + settlerReward);
+        _refundSwapper(collatToken, swapper, initialMarginSwapper, useInternalBalances);
+        if (!useInternalBalances) payEth(swapper, swapperPiece + settlerReward);
 
         emit SwapCancelled(swapId);
     }
@@ -708,7 +723,7 @@ contract openPunt is OpenPuntStorage {
         return LibClone.predictDeterministicAddress(feeReceiverImpl, args, bytes32(swapId), address(this));
     }
 
-    /// @dev Creates the opening oracle game in block-number mode (`flags == 0`); the preimage's
+    /// @dev Creates the opening oracle game in block-number mode; the preimage's
     ///      settlementTime and disputeDelay therefore represent block counts.
     /// @param s Matched position supplying tokens, fee recipient, and reporter context.
     /// @param o Committed oracle-game parameters.
@@ -747,7 +762,7 @@ contract openPunt is OpenPuntStorage {
             callbackContract: address(0),
             callbackGasLimit: 0,
             protocolFee: o.protocolFee,
-            flags: 0
+            flags: s.oracleFlags & ~FLAG_STORE_SETTLEMENT_ELIGIBILITY
         });
 
         reportId = oracle.report{value: settlerReward}(params, true, true, timing);
@@ -812,12 +827,13 @@ contract openPunt is OpenPuntStorage {
         uint256 elapsedRounds = (block.timestamp - auctionStart) / roundLength;
 
         if (elapsedRounds >= maxRounds) return endingRate;
+        unchecked {
+            int256 distance = int256(endingRate) - int256(startingRate);
 
-        int256 distance = int256(endingRate) - int256(startingRate);
+            int256 currentRate = int256(startingRate) + distance * int256(elapsedRounds) / int256(uint256(maxRounds));
 
-        int256 currentRate = int256(startingRate) + distance * int256(elapsedRounds) / int256(uint256(maxRounds));
-
-        return int32(currentRate);
+            return int32(currentRate);
+        }
     }
 
     /// @dev Returns the current geometrically increasing fee, capped at maxFee.
