@@ -43,4 +43,7 @@ library PuntErrors {
     error OracleGameInProgress();
     error CloseIntentLive();
     error InvalidDutchParams();
+    
+    error InvalidDisputeGasEstimate();
+    error DisputeGasTooHigh();
 }
