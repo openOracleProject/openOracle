@@ -14,6 +14,19 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         oracle = IOpenOracle2(oracle_);
     }
 
+    // oracle game flags
+    uint8 internal constant FLAG_TIME_TYPE = 1 << 0; // = 1
+    uint8 internal constant FLAG_TRACK_DISPUTES = 1 << 1; // = 2
+    uint8 internal constant FLAG_STORE_SETTLEMENT_ELIGIBILITY = 1 << 4; // = 16
+    uint8 internal constant FLAG_FLEXIBLE_ESCALATION = 1 << 6; // = 64
+    uint8 internal constant FLAGS_MAX = 0x7F;
+
+    address internal constant GAS_PRICE_ORACLE = 0x420000000000000000000000000000000000000F;
+
+    uint256 internal constant DISPUTE_COST_SCALE = 1e18;
+
+    uint256 internal constant RECOVERY_DELAY = 60 hours;
+
     struct PositionControl {
         uint128 reportIdPlusOne; // one means idle; values above one encode the live report id plus one
         uint48 closeRequestBlock; // zero means no close request; otherwise the block in which close() registered it
@@ -104,6 +117,10 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         recoveryBlocks[swapId].terminalBlock = _getBlockNumber();
     }
 
+    function _hasFlag(uint8 flags, uint8 mask) internal pure returns (bool) {
+        return (flags & mask) != 0;
+    }
+
     struct MatchedSwap {
         // Parties and assets
         address swapper; // account that proposed the position; nonzero means the swap exists
@@ -130,7 +147,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint24 toleranceRange; // 1e7 = 100%; maximum opening-price deviation
         uint16 millisecondsPerBlock; // expected block interval in milliseconds; 2000 means one block per two seconds
         uint24 maxGameTime; // maximum opening-game duration before the parties can be refunded
-        uint16 maxExecutionLatency; // max active-report execution delay in seconds; 0 disables; post-recovery reports bypass
+        uint16 maxExecutionLatency; // max report execution delay in seconds; 0 disables; post-recovery reports bypass
         uint16 liquidationHeartbeatMin; // seconds of notice required by settlement eligibility before liquidation
         uint16 liquidationHeartbeatMax; // seconds in which a report may bind; not an execution deadline; zero with min zero disables
         // Lifecycle state
@@ -142,6 +159,9 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint96 openExecutionComp; // ETH paid to opening executor; zero after opening execution
         bool useInternalBalances; // true routes swapper collateral and refunds through oracle balances
         bool maturityOnly; // true prevents active-position reports before maturity
+        uint8 oracleFlags; // oracle game flags
+        uint128 maxDisputeCostPerToken1; // calibrated dispute cost in wei per raw token1 unit, scaled by 1e18; zero is disabled
+        uint32 estimatedDisputeGas; // calibrated dispute gas estimate, must be nonzero
     }
 
     struct ProposedSwap {
@@ -166,7 +186,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         // Oracle and timing protections
         uint16 millisecondsPerBlock; // expected block interval in milliseconds; 2000 means one block per two seconds
         uint24 maxGameTime; // maximum opening-game duration before bailout
-        uint16 maxExecutionLatency; // active-report execution delay; 0 disables, otherwise 1 minute to 1 hour; recovery may bypass
+        uint16 maxExecutionLatency; // report execution delay; 0 disables, otherwise 1 minute to 1 hour; recovery may bypass
         uint16 liquidationHeartbeatMin; // seconds of notice required by settlement eligibility; zero with max zero disables
         uint16 liquidationHeartbeatMax; // seconds in which a report may bind; an existing binding does not expire
         // Lifecycle configuration
@@ -178,6 +198,9 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         uint96 openExecutionComp; // ETH reward offered to the opening OpenPunt executor
         bool useInternalBalances; // true funds swapper collateral from oracle internal balance
         bool maturityOnly; // true prevents active-position reports before maturity
+        uint8 oracleFlags; // oracle game flags
+        uint128 maxDisputeCostPerToken1; // calibrated dispute cost in wei per raw token1 unit, scaled by 1e18; zero is disabled
+        uint32 estimatedDisputeGas; // calibrated dispute gas estimate, must be nonzero
     }
 
     struct CloseDutch {
@@ -238,6 +261,32 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
         }
 
         emit CloseAuctionCancelled(swapId);
+    }
+
+    function _checkDisputeGas(
+        uint128 amount1,
+        uint128 maxDisputeCostPerToken1,
+        uint256 baseFee,
+        uint32 estimatedDisputeGas
+    ) internal pure {
+        if (!_disputeGasAcceptable(amount1, maxDisputeCostPerToken1, baseFee, estimatedDisputeGas)) {
+            revert Errors.DisputeGasTooHigh();
+        }
+    }
+
+    function _disputeGasAcceptable(
+        uint128 amount1,
+        uint128 maxDisputeCostPerToken1,
+        uint256 baseFee,
+        uint32 estimatedDisputeGas
+    ) internal pure returns (bool) {
+        if (maxDisputeCostPerToken1 == 0) return true;
+
+        uint256 maxBaseFee =
+            uint256(amount1) * maxDisputeCostPerToken1
+                / DISPUTE_COST_SCALE / estimatedDisputeGas;
+
+        return baseFee <= maxBaseFee;
     }
 
     struct Permit2Params {
@@ -301,6 +350,7 @@ abstract contract OpenPuntStorage is ReentrancyGuard {
     event PositionClosed(
         uint256 indexed swapId, uint256 indexed reportId, uint256 owedToSwapper, uint256 owedToMatcher
     );
+    event DisputeGasBailout(uint256 indexed swapId);
 
     /// @dev Returns the chain-specific block clock used by OpenPunt and its block-mode oracle games.
     ///      Change this single integration point on chains whose protocol block number differs
