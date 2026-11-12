@@ -77,74 +77,72 @@ library PackedDecoder {
         h.blockNumber    = uint256(readU48(blob, 229));
     }
 
-    /// @dev ProposedSwap layout from SwapCreated packed (172 bytes head). Mirrors
+    /// @dev ProposedSwap layout from SwapCreated packed (170 bytes head). Mirrors
     ///      openSwap._packMem kind=1 head.
     function decodeProposedSwap(bytes memory blob)
         internal
         pure
         returns (openSwapV2.ProposedSwap memory s)
     {
-        require(blob.length >= 172, "PackedDecoder: blob too short for ProposedSwap");
+        require(blob.length >= 170, "PackedDecoder: blob too short for ProposedSwap");
         s.sellAmt              = readU128(blob,   0);
         s.minFulfillLiquidity  = readU128(blob,  16);
         s.settlerReward        = readU96(blob,  32);
         s.maxGameTime          = readU24(blob,  44);
-        s.blocksPerSecond      = readU16(blob,  47);
-        s.buyToken             = readAddress(blob, 49);
-        s.matcherGasComp       = readU96(blob,  69);
-        s.sellToken            = readAddress(blob, 81);
-        s.swapper              = readAddress(blob, 101);
-        s.executorGasComp      = readU96(blob, 121);
-        s.useInternalBalances  = readBool(blob, 133);
-        s.expiration           = readU48(blob, 134);
-        s.priceTolerated       = readU232(blob, 140);
-        s.toleranceRange       = readU24(blob, 169);
+        s.buyToken             = readAddress(blob, 47);
+        s.matcherGasComp       = readU96(blob,  67);
+        s.sellToken            = readAddress(blob, 79);
+        s.swapper              = readAddress(blob, 99);
+        s.executorGasComp      = readU96(blob, 119);
+        s.useInternalBalances  = readBool(blob, 131);
+        s.expiration           = readU48(blob, 132);
+        s.priceTolerated       = readU232(blob, 138);
+        s.toleranceRange       = readU24(blob, 167);
     }
 
-    /// @dev MatcherPreimage tail of SwapCreated packed (65 bytes at offset 172).
+    /// @dev MatcherPreimage tail of SwapCreated packed (65 bytes at offset 170).
     function decodeMatcherPreimage(bytes memory blob)
         internal
         pure
         returns (openSwapV2.MatcherPreimage memory m)
     {
-        require(blob.length >= 237, "PackedDecoder: blob too short for MatcherPreimage");
-        m.initialLiquidity         = readU128(blob, 172);
-        m.escalationHalt           = readU128(blob, 188);
-        m.settlementTime           = readU48(blob, 204);
-        m.disputeDelay             = readU24(blob, 210);
-        m.protocolFee              = readU24(blob, 213);
-        m.multiplier               = readU16(blob, 216);
-        m.startFulfillFeeIncrease  = readU48(blob, 218);
-        m.maxFee                   = readU24(blob, 224);
-        m.startingFee              = readU24(blob, 227);
-        m.roundLength              = readU24(blob, 230);
-        m.growthRate               = readU16(blob, 233);
-        m.maxRounds                = readU16(blob, 235);
+        require(blob.length >= 235, "PackedDecoder: blob too short for MatcherPreimage");
+        m.initialLiquidity         = readU128(blob, 170);
+        m.escalationHalt           = readU128(blob, 186);
+        m.settlementTime           = readU48(blob, 202);
+        m.disputeDelay             = readU24(blob, 208);
+        m.protocolFee              = readU24(blob, 211);
+        m.multiplier               = readU16(blob, 214);
+        m.startFulfillFeeIncrease  = readU48(blob, 216);
+        m.maxFee                   = readU24(blob, 222);
+        m.startingFee              = readU24(blob, 225);
+        m.roundLength              = readU24(blob, 228);
+        m.growthRate               = readU16(blob, 231);
+        m.maxRounds                = readU16(blob, 233);
     }
 
-    /// @dev MatchedSwap layout from SwapMatched packed (207 bytes). Mirrors
+    /// @dev MatchedSwap layout from SwapMatched packed (205 bytes). Mirrors
     ///      openSwap._packMem kind=2.
     function decodeMatchedSwap(bytes memory blob)
         internal
         pure
         returns (openSwapV2.MatchedSwap memory s)
     {
-        require(blob.length >= 207, "PackedDecoder: blob too short for MatchedSwap");
+        require(blob.length >= 205, "PackedDecoder: blob too short for MatchedSwap");
         s.sellAmt              = readU128(blob,   0);
         s.minFulfillLiquidity  = readU128(blob,  16);
         s.maxGameTime          = readU24(blob,  32);
-        s.blocksPerSecond      = readU16(blob,  35);
-        s.buyToken             = readAddress(blob, 37);
-        s.sellToken            = readAddress(blob, 57);
-        s.swapper              = readAddress(blob, 77);
-        s.executorGasComp      = readU96(blob,  97);
-        s.useInternalBalances  = readBool(blob, 109);
-        s.reportId             = readU128(blob, 110);
-        s.matcher              = readAddress(blob, 126);
-        s.start                = readU48(blob, 146);
-        s.fulfillmentFee       = readU24(blob, 152);
-        s.feeRecipient         = readAddress(blob, 155);
-        s.priceTolerated       = readU232(blob, 175);
-        s.toleranceRange       = readU24(blob, 204);
+        s.buyToken             = readAddress(blob, 35);
+        s.sellToken            = readAddress(blob, 55);
+        s.swapper              = readAddress(blob, 75);
+        s.executorGasComp      = readU96(blob,  95);
+        s.useInternalBalances  = readBool(blob, 107);
+        s.reportId             = readU128(blob, 108);
+        s.matcher              = readAddress(blob, 124);
+        s.start                = readU48(blob, 144);
+        s.fulfillmentFee       = readU24(blob, 150);
+        s.feeRecipient         = readAddress(blob, 153);
+        s.priceTolerated       = readU232(blob, 173);
+        s.toleranceRange       = readU24(blob, 202);
     }
 }
