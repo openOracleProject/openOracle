@@ -13,7 +13,7 @@ import {SwapSystemHandler} from "./SwapSystemHandler.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Broad invariant campaign across openSwap → openOracle. Drives propose / match / cancel /
-///         bailOut / oracle-settle / execute / withdraw across 4 actors and 4 tokens (ETH + 2 vanilla +
+///         dispute / bailOut / oracle-settle / execute / withdraw across 4 actors and 4 tokens (ETH + 2 vanilla +
 ///         USDT-style). Asserts:
 ///           1. Swap never holds ERC20 externally (every token flow routes through oracle).
 ///           2. Swap ETH conservation: swap.balance == Σ tempHolding + active-swap inflight.
@@ -80,7 +80,7 @@ contract SwapSystemInvariantsTest is StdInvariant, Test {
         }
 
         targetContract(address(handler));
-        bytes4[] memory sels = new bytes4[](10);
+        bytes4[] memory sels = new bytes4[](11);
         sels[0] = SwapSystemHandler.actPropose.selector;
         sels[1] = SwapSystemHandler.actPropose.selector; // bias toward propose
         sels[2] = SwapSystemHandler.actMatch.selector;
@@ -91,7 +91,22 @@ contract SwapSystemInvariantsTest is StdInvariant, Test {
         sels[7] = SwapSystemHandler.actExecute.selector;
         sels[8] = SwapSystemHandler.actWithdrawTemp.selector;
         sels[9] = SwapSystemHandler.actWarp.selector;
+        sels[10] = SwapSystemHandler.actDispute.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: sels}));
+    }
+
+    /// @dev The dispute action can carry a game past maxGameTime, so bailOut is reachable in the campaign.
+    function test_handlerDisputeReachesBailOut() public {
+        handler.actPropose(0, 1, 2, 10e18, true); // actor 0 sells vanillaA for vanillaB, internal balances
+        handler.actMatch(1, 0, 2000e18);
+        handler.actDispute(2, 0, 79, 0, 5);
+        handler.actBailOut(3, 0);
+
+        assertGe(handler.totalDisputes(), 50, "dispute burst ran");
+        assertEq(handler.totalBailOuts(), 1, "bailOut reached");
+        invariant_swapEthConservation();
+        invariant_perSwapHashMatches();
+        invariant_oracleConservationPerToken();
     }
 
     // ─── Invariant 1: swap holds no external ERC20 ──────────────────────────

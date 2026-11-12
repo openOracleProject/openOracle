@@ -9,7 +9,7 @@ import {MockERC20} from "../utils/MockERC20.sol";
 import {NoReturnToken} from "./AdversarialMocks.sol";
 import {SwapCompat} from "../openSwapPermitTesting/SwapCompat.sol";
 
-/// @notice Drives propose / match / cancel / bailOut / settleOracle / execute / withdraw across multiple
+/// @notice Drives propose / match / cancel / dispute / bailOut / settleOracle / execute / withdraw across multiple
 ///         actors and tokens (ETH + vanilla + USDT-style). Tracks per-swap state so the invariant test
 ///         can assert (a) the swap holds no ERC20 directly, (b) ETH conservation across tempHolding +
 ///         active-swap inflight, and (c) every stored swap hash matches a reconstruction.
@@ -29,7 +29,7 @@ contract SwapSystemHandler is Test {
     uint48 public constant SETTLEMENT_TIME = 300;
     uint24 public constant DISPUTE_DELAY = 5;
     uint24 public constant PROTOCOL_FEE = 0;
-    uint24 public constant MAX_GAME_TIME = 6000;
+    uint24 public constant MAX_GAME_TIME = 15000;
     uint16 public constant MULTIPLIER = 110;
     uint24 public constant MAX_FEE = 10000;
     uint24 public constant STARTING_FEE = 10000;
@@ -37,7 +37,6 @@ contract SwapSystemHandler is Test {
     uint16 public constant GROWTH_RATE = 10000; // 1.0x — no fee growth (deterministic)
     uint16 public constant MAX_ROUNDS = 10;
     uint128 public constant ESCALATION_HALT = 10e18;
-    uint16 public constant BLOCKS_PER_SECOND = 2000; // milli-bps
     uint232 public constant PRICE_TOLERATED = 2e38;
     uint24 public constant TOLERANCE_RANGE = 1_000_000; // 10%
 
@@ -70,6 +69,7 @@ contract SwapSystemHandler is Test {
     uint256 public totalMatches;
     uint256 public totalCancels;
     uint256 public totalBailOuts;
+    uint256 public totalDisputes;
     uint256 public totalExecutes;
     uint256 public totalOracleSettles;
     uint256 public totalWithdrawals;
@@ -147,7 +147,6 @@ contract SwapSystemHandler is Test {
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.settlerReward = SETTLER_REWARD;
         s.maxGameTime = MAX_GAME_TIME;
-        s.blocksPerSecond = BLOCKS_PER_SECOND;
         s.buyToken = buyToken;
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.sellToken = sellToken;
@@ -183,7 +182,7 @@ contract SwapSystemHandler is Test {
             // Capture post-propose canonical s (with swapper override + absolute expiration).
             s.swapper = swapper;
             s.expiration = uint48(block.timestamp) + expirationOffset;
-            m.startFulfillFeeIncrease = uint48(block.timestamp);
+            m.startFulfillFeeIncrease = uint48(block.number);
 
             Tracked storage t = _swaps.push();
             t.swapId = newId;
@@ -223,7 +222,6 @@ contract SwapSystemHandler is Test {
             ms.sellAmt = t.s.sellAmt;
             ms.minFulfillLiquidity = t.s.minFulfillLiquidity;
             ms.maxGameTime = t.s.maxGameTime;
-            ms.blocksPerSecond = t.s.blocksPerSecond;
             ms.buyToken = t.s.buyToken;
             ms.sellToken = t.s.sellToken;
             ms.swapper = t.s.swapper;
@@ -231,7 +229,7 @@ contract SwapSystemHandler is Test {
             ms.useInternalBalances = t.s.useInternalBalances;
             ms.reportId = uint128(reportIdAtMatch);
             ms.matcher = matcher;
-            ms.start = uint48(ts);
+            ms.start = uint48(bn);
             // fulfillmentFee = calcFee with maxFee=startingFee, growthRate=1.0x → always startingFee.
             ms.fulfillmentFee = STARTING_FEE;
             ms.feeRecipient = address(0); // PROTOCOL_FEE == 0 → no feeRecipient clone
@@ -246,10 +244,10 @@ contract SwapSystemHandler is Test {
                 currentAmount1: INITIAL_LIQUIDITY,
                 currentAmount2: amount2,
                 currentReporter: matcher,
-                reportTimestamp: uint48(ts),
+                reportTimestamp: uint48(bn),
                 settlementTimestamp: 0,
                 token1: t.s.sellToken,
-                lastReportOppoTime: uint48(bn),
+                lastReportOppoTime: uint48(ts),
                 settlementTime: SETTLEMENT_TIME,
                 escalationHalt: ESCALATION_HALT,
                 protocolFeeRecipient: address(0),
@@ -262,7 +260,7 @@ contract SwapSystemHandler is Test {
                 callbackContract: address(0),
                 callbackGasLimit: 0,
                 protocolFee: PROTOCOL_FEE,
-                flags: 1 // FLAG_TIME_TYPE (hardcoded in oracleGame() of openSwap)
+                flags: 32 // FLAG_FEES_ONLY_AT_HALT, block-number timing (hardcoded in oracleGame() of openSwap)
             });
             t.game = g;
             t.helper = IOpenOracle2.PreimageHelper({
@@ -319,20 +317,87 @@ contract SwapSystemHandler is Test {
         } catch {}
     }
 
+    // ─── Actions: dispute ──────────────────────────────────────────────────
+
+    /// @dev Picks the first game from swapSeed onward whose dispute window is still open, then runs
+    ///      1-80 dispute rounds on it, rotating disputers. Each round lands at a
+    ///      fuzzed block in the last eighth of the dispute window and moves the price by up to ±5%. Late
+    ///      landings advance the game ~a full round each, so long bursts carry it past maxGameTime, which is
+    ///      what makes bailOut and execute's maxGameTime refund reachable.
+    function actDispute(uint8 disputerSeed, uint16 swapSeed, uint8 roundsSeed, uint16 offsetSeed, uint8 priceSeed)
+        external
+    {
+        uint256 n = _swaps.length;
+        uint256 idx = type(uint256).max;
+        for (uint256 k; k < n; ++k) {
+            Tracked storage c = _swaps[(uint256(swapSeed) + k) % n];
+            if (c.reportId == 0 || c.oracleSettled) continue;
+            if (block.number >= uint256(c.game.reportTimestamp) + c.game.settlementTime) continue;
+            idx = (uint256(swapSeed) + k) % n;
+            break;
+        }
+        if (idx == type(uint256).max) return;
+        Tracked storage t = _swaps[idx];
+
+        uint256 rounds = bound(uint256(roundsSeed), 1, 80);
+        for (uint256 i; i < rounds; ++i) {
+            IOpenOracle2.OracleGame memory g = t.game;
+            uint256 open = uint256(g.reportTimestamp) + g.disputeDelay;
+            uint256 close = uint256(g.reportTimestamp) + g.settlementTime; // exclusive
+            if (block.number >= close) return;
+            uint256 target = close - 1 - (uint256(offsetSeed) + i * 7919) % ((close - open) / 8 + 1);
+            if (target < block.number) target = block.number;
+            vm.roll(target);
+
+            uint256 old1 = g.currentAmount1;
+            uint256 new1 = old1 + 1;
+            if (g.escalationHalt > old1) {
+                new1 = (old1 * g.multiplier) / 100;
+                if (new1 > g.escalationHalt) new1 = g.escalationHalt;
+            }
+            uint256 new2 = (uint256(g.currentAmount2) * new1) / old1;
+            new2 = (new2 * (95 + (uint256(priceSeed) + i) % 11)) / 100;
+            if (new2 == 0) new2 = 1;
+            if (new2 > type(uint128).max) return;
+
+            address disputer = _pickActor(uint8(uint256(disputerSeed) + i));
+            vm.prank(disputer);
+            try IOpenOracle2(address(oracle)).dispute(
+                t.reportId, uint128(new1), uint128(new2), disputer, true, true, g, t.helper, _emptyTiming()
+            ) {
+                t.game.currentAmount1 = uint128(new1);
+                t.game.currentAmount2 = uint128(new2);
+                t.game.currentReporter = disputer;
+                t.game.reportTimestamp = uint48(target);
+                t.game.lastReportOppoTime = uint48(block.timestamp);
+                totalDisputes += 1;
+            } catch {
+                return;
+            }
+        }
+    }
+
     // ─── Actions: bailOut ──────────────────────────────────────────────────
 
+    /// @dev Prefers the first matched swap from swapSeed onward whose game ran past maxGameTime;
+    ///      otherwise tries swapSeed's swap, which exercises the CantBailOutYet revert.
     function actBailOut(uint8 callerSeed, uint16 swapSeed) external {
-        if (_swaps.length == 0) return;
-        uint256 idx = swapSeed % _swaps.length;
+        uint256 n = _swaps.length;
+        if (n == 0) return;
+        uint256 idx = swapSeed % n;
+        for (uint256 k; k < n; ++k) {
+            Tracked storage c = _swaps[(uint256(swapSeed) + k) % n];
+            if (c.state != SwapState.Matched) continue;
+            if (uint256(c.game.reportTimestamp) + c.game.settlementTime - c.ms.start <= c.ms.maxGameTime) continue;
+            idx = (uint256(swapSeed) + k) % n;
+            break;
+        }
         Tracked storage t = _swaps[idx];
         if (t.state != SwapState.Matched) return;
 
-        uint256 target = uint256(t.ms.start) + t.ms.maxGameTime + 1;
-        if (block.timestamp < target) vm.warp(target);
-
         address caller = _pickActor(callerSeed);
         vm.prank(caller);
-        try swap.bailOut(t.swapId, t.ms) {
+        try swap.bailOut(t.swapId, t.ms, t.game, t.helper) {
             t.state = SwapState.Finalized;
             matchedCount -= 1;
             totalBailOuts += 1;
@@ -351,10 +416,10 @@ contract SwapSystemHandler is Test {
         if (t.game.reportTimestamp == 0) return;
 
         uint256 target = uint256(t.game.reportTimestamp) + t.game.settlementTime + 1;
-        if (block.timestamp < target) vm.warp(target);
+        if (block.number < target) vm.roll(target);
 
         try IOpenOracle2(address(oracle)).settle(t.reportId, t.game, t.helper) {
-            t.game.settlementTimestamp = uint48(block.timestamp);
+            t.game.settlementTimestamp = uint48(block.number);
             t.oracleSettled = true;
             totalOracleSettles += 1;
         } catch {}
@@ -368,22 +433,22 @@ contract SwapSystemHandler is Test {
         Tracked storage t = _swaps[idx];
         if (t.state != SwapState.Matched) return;
 
-        // Need to be past oracle's settlementTime.
+        // Need to be past oracle's settlementTime (in blocks).
         uint256 target = uint256(t.game.reportTimestamp) + t.game.settlementTime + 1;
-        if (block.timestamp < target) vm.warp(target);
+        if (block.number < target) vm.roll(target);
 
         address caller = _pickActor(callerSeed);
-        bool looseTiming = (callerSeed & 1) == 1;
+        uint8 settlementSearchDepth = callerSeed & 1;
 
         vm.prank(caller);
-        try swap.execute(t.swapId, t.ms, t.game, t.helper, looseTiming) {
+        try swap.execute(t.swapId, t.ms, t.game, t.helper, settlementSearchDepth) {
             t.state = SwapState.Finalized;
             matchedCount -= 1;
             totalExecutes += 1;
             // If execute called settle internally, update tracking.
             if (!t.oracleSettled) {
                 t.oracleSettled = true;
-                t.game.settlementTimestamp = uint48(block.timestamp);
+                t.game.settlementTimestamp = uint48(block.number);
             }
             _markKnown(caller);
         } catch {}
@@ -404,6 +469,6 @@ contract SwapSystemHandler is Test {
     function actWarp(uint16 dtSeed) external {
         uint256 dt = (uint256(dtSeed) % 1800) + 1;
         vm.warp(block.timestamp + dt);
-        vm.roll(block.number + (dt / 12 + 1));
+        vm.roll(block.number + dt * 5); // 200ms blocks
     }
 }
