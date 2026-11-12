@@ -4,12 +4,12 @@ pragma solidity 0.8.28;
 import "../utils/SlimTestBase.sol";
 
 contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
-    openSwapV2.FulfillFeeParams internal _fees;
+    SwapCompat.FulfillFeeParams internal _fees;
 
     function setUp() public {
         _setUpAll();
         // Default loose fee schedule
-        _fees = openSwapV2.FulfillFeeParams({
+        _fees = SwapCompat.FulfillFeeParams({
             maxFee: MAX_FEE,
             startingFee: STARTING_FEE,
             roundLength: ROUND_LENGTH,
@@ -18,14 +18,14 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         });
     }
 
-    function _defaultFulfillFee() internal view override returns (openSwapV2.FulfillFeeParams memory) {
+    function _defaultFulfillFee() internal view override returns (SwapCompat.FulfillFeeParams memory) {
         return _fees;
     }
 
     function _setFees(uint24 maxFee, uint24 startingFee, uint24 roundLength, uint16 growthRate, uint16 maxRounds)
         internal
     {
-        _fees = openSwapV2.FulfillFeeParams({
+        _fees = SwapCompat.FulfillFeeParams({
             maxFee: maxFee,
             startingFee: startingFee,
             roundLength: roundLength,
@@ -60,8 +60,8 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         _propose();
     }
 
-    function testValidation_MaxRoundsAbove100_Reverts() public {
-        _setFees(MAX_FEE, STARTING_FEE, ROUND_LENGTH, GROWTH_RATE, 101);
+    function testValidation_MaxRoundsAbove250_Reverts() public {
+        _setFees(MAX_FEE, STARTING_FEE, ROUND_LENGTH, GROWTH_RATE, 251);
         vm.expectRevert();
         _propose();
     }
@@ -84,10 +84,10 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         _propose();
     }
 
-    function testValidation_MaxRoundsAt100_Succeeds() public {
-        _setFees(MAX_FEE, STARTING_FEE, ROUND_LENGTH, GROWTH_RATE, 100);
+    function testValidation_MaxRoundsAt250_Succeeds() public {
+        _setFees(MAX_FEE, STARTING_FEE, ROUND_LENGTH, GROWTH_RATE, 250);
         (uint256 swapId,) = _propose();
-        assertGt(swapId, 0, "propose succeeded with maxRounds=100");
+        assertGt(swapId, 0, "propose succeeded with maxRounds=250");
     }
 
     // ── Fee escalation behavior ─────────────────────────────────────────
@@ -100,9 +100,9 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
 
     function testFulfillFee_AfterOneRound_Increases() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        // Warp 1 round forward
-        vm.warp(block.timestamp + ROUND_LENGTH);
-        vm.roll(block.number + 1);
+        // Roll 1 round forward
+        vm.roll(block.number + ROUND_LENGTH);
+        vm.warp(block.timestamp + ROUND_LENGTH / 5);
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         // startingFee * growthRate / 10000 = 10000 * 15000 / 10000 = 15000
         uint24 expected = uint24((uint256(STARTING_FEE) * GROWTH_RATE) / 10000);
@@ -114,9 +114,9 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
         // Use a low maxFee so we hit the cap quickly
         _setFees(15000, 10000, ROUND_LENGTH, 15000, 10);
         (uint256 swapId, uint48 expiration) = _propose();
-        // Warp many rounds (more than enough to exceed maxFee)
-        vm.warp(block.timestamp + ROUND_LENGTH * 5);
-        vm.roll(block.number + 5);
+        // Roll many rounds (more than enough to exceed maxFee)
+        vm.roll(block.number + ROUND_LENGTH * 5);
+        vm.warp(block.timestamp + ROUND_LENGTH);
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.fulfillmentFee, 15000, "capped at maxFee");
     }
@@ -124,9 +124,9 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
     function testFulfillFee_CappedAtMaxRounds() public {
         _setFees(MAX_FEE, STARTING_FEE, ROUND_LENGTH, GROWTH_RATE, 3);
         (uint256 swapId, uint48 expiration) = _propose();
-        // Warp past maxRounds but inside expiration (1 hour)
-        vm.warp(block.timestamp + ROUND_LENGTH * 10);
-        vm.roll(block.number + 10);
+        // Roll past maxRounds but inside expiration (1 hour)
+        vm.roll(block.number + ROUND_LENGTH * 10);
+        vm.warp(block.timestamp + ROUND_LENGTH * 2);
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         // Should be startingFee compounded only 3 times, then capped (or at maxFee, whichever lower)
         uint256 fee = STARTING_FEE;
@@ -142,9 +142,9 @@ contract OpenSwapFulfillFeeParamsTest is SlimTestBase {
 
     function testFulfillFee_PartialRoundNotCounted() public {
         (uint256 swapId, uint48 expiration) = _propose();
-        // Warp less than one round
-        vm.warp(block.timestamp + ROUND_LENGTH - 1);
-        vm.roll(block.number + 1);
+        // Roll less than one round
+        vm.roll(block.number + ROUND_LENGTH - 1);
+        vm.warp(block.timestamp + ROUND_LENGTH / 5);
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         assertEq(sPost.fulfillmentFee, STARTING_FEE, "partial round still uses startingFee");
     }

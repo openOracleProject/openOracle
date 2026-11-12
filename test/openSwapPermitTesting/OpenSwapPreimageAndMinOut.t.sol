@@ -74,15 +74,15 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
         assertTrue(sPost.matcher != address(0), "match succeeded with correct preimage");
     }
 
-    function testPreimage_AfterWarp_MustUseProposeTime() public {
-        // proposeTs is captured at _propose; tampering it (e.g. using current block.timestamp) fails
+    function testPreimage_AfterRoll_MustUseProposeBlock() public {
+        // proposeBn is captured at _propose; tampering it (e.g. using the current block.number) fails
         (uint256 swapId, uint48 expiration) = _propose();
         vm.warp(block.timestamp + 60);
         vm.roll(block.number + 1);
 
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        m.startFulfillFeeIncrease = uint48(block.timestamp); // wrong — should be the propose timestamp
+        m.startFulfillFeeIncrease = uint48(block.number); // wrong — should be the propose block
 
         vm.prank(matcher);
         vm.expectRevert(Errors.WrongHash.selector);
@@ -92,7 +92,7 @@ contract OpenSwapPreimageAndMinOutTest is SlimTestBase {
     // ── minOut validation at propose ────────────────────────────────────
 
     function _proposeWithMinOut(uint128 minOut) internal returns (uint256) {
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         return SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), minOut, address(buyToken), MIN_FULFILL_LIQUIDITY,

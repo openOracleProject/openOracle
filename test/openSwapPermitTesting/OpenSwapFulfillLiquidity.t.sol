@@ -15,7 +15,7 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
     function _proposeWithMinFulfill(uint128 minFulfill) internal returns (uint256 swapId, uint48 expiration) {
         _minFulfill = minFulfill;
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
@@ -48,12 +48,12 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, amount2, s, m, timing);
 
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportBn);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
 
         uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
@@ -100,12 +100,12 @@ contract OpenSwapFulfillLiquidityTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, 2000e18, s, m, timing);
 
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportBn);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 

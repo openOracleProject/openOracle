@@ -26,21 +26,21 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         // The contract stored keccak256(abi.encode(sPost))
         assertEq(swapContract.swaps(swapId), keccak256(abi.encode(sPost)), "post-match hash");
         assertEq(sPost.matcher, matcher, "matcher set (non-zero means matched)");
-        assertEq(sPost.start, uint48(block.timestamp), "start set");
+        assertEq(sPost.start, uint48(block.number), "start set");
         assertEq(sPost.fulfillmentFee, STARTING_FEE, "fulfillmentFee set to startingFee at t=0");
         assertEq(sPost.reportId, 1, "reportId = 1 (first oracle game)");
     }
 
-    function testMatchSwap_SetsStartTimestamp() public {
+    function testMatchSwap_SetsStartBlock() public {
         (uint256 swapId, uint48 expiration) = _propose();
 
-        // Warp before matching
+        // Advance before matching
         vm.warp(block.timestamp + 100);
         vm.roll(block.number + 50);
-        uint48 matchTs = uint48(block.timestamp);
+        uint48 matchBn = uint48(block.number);
 
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
-        assertEq(sPost.start, matchTs, "start = block.timestamp at match");
+        assertEq(sPost.start, matchBn, "start = block.number at match");
     }
 
     // ── Internal-balance shuffles ──────────────────────────────────────
@@ -161,8 +161,8 @@ contract OpenSwapMatchSwapTest is SlimTestBase {
         swapContract.matchSwap(swapId2, 2000e18, s2, m2, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
         // Build post-match swaps for each and verify stored hash matches expected matcher
-        openSwapV2.MatchedSwap memory s1Post = _postMatchSwap(s1, 1, STARTING_FEE, reportTs);
-        openSwapV2.MatchedSwap memory s2Post = _postMatchSwap(s2, 2, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory s1Post = _postMatchSwap(s1, 1, STARTING_FEE, reportBn);
+        openSwapV2.MatchedSwap memory s2Post = _postMatchSwap(s2, 2, STARTING_FEE, reportBn);
         s2Post.matcher = matcher2;
 
         assertEq(swapContract.swaps(swapId1), keccak256(abi.encode(s1Post)), "swap1 post hash with matcher");

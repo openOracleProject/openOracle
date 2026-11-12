@@ -74,8 +74,8 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -97,8 +97,8 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -128,10 +128,11 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
 
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
 
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
-        swapContract.bailOut(swapId, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
         _assertUnrelatedBalancesIntact();
     }
@@ -147,8 +148,8 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -216,8 +217,8 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -230,8 +231,6 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         // Snapshot ALL relevant balances before any swap, and after all are resolved.
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
         uint256 swapperBuyBefore = buyToken.balanceOf(swapper);
-        uint256 matcherSellInternalBefore = _spendable(matcher, address(sellToken));
-        uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         // swap A: cancel (pre-match)
         (uint256 swapA, uint48 expA) = _propose();
@@ -240,17 +239,21 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         vm.prank(swapper);
         swapContract.cancelSwap(swapA, sA, mA);
 
-        // swap B: match, then bailOut after maxGameTime
+        // swap B: match, disputes run the game past maxGameTime, then bailOut
         (uint256 swapB, uint48 expB) = _propose();
         (, , openSwapV2.MatchedSwap memory sBpost) = _match(swapB, 2000e18, expB);
+        (IOpenOracle2.OracleGame memory ogB, IOpenOracle2.PreimageHelper memory phB) =
+            _gameAtMatch(swapB, expB, 2000e18, sBpost);
+        ogB = _disputePastMaxGameTime(ogB, phB, sBpost);
 
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
+        // Disputes moved swap B's report stake; matcher deltas are measured from here.
+        uint256 matcherSellInternalBefore = _spendable(matcher, address(sellToken));
+        uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         // swap B bailout (maxGameTime exceeded)
-        swapContract.bailOut(swapB, sBpost);
+        swapContract.bailOut(swapB, sBpost, ogB, phB);
 
-        // swap C: full happy path, matched after B's timeout so C is still inside its own maxGameTime.
+        // swap C: full happy path
         uint256 fulfillAmt = _completeHappySwap();
 
         // openSwap should hold no external tokens
@@ -264,7 +267,7 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
         // Swap C: swapper got fulfillAmt of buyToken; matcher got sellAmt sellToken + leftover buyToken
         // Net token deltas across all three swaps:
         // - swap A cancel: net zero on tokens (sellToken refunded)
-        // - swap B bailout: net zero on swapper sellToken (refunded), matcher's amount2 stays in oracle game, minFulfillLiquidity returned
+        // - swap B bailout: net zero on swapper sellToken (refunded), matcher's minFulfillLiquidity returned
         // - swap C complete: swapper -sellAmt sellToken, +fulfillAmt buyToken. matcher +sellAmt sellToken, -fulfillAmt buyToken
         assertEq(
             sellToken.balanceOf(swapper),
@@ -276,16 +279,16 @@ contract OpenSwapBalanceInvariantTest is SlimTestBase {
             swapperBuyBefore + fulfillAmt,
             "swapper net buyToken delta = +fulfillAmt (only swap C)"
         );
-        // Matcher: swap B's amount2 still stuck in oracle game (settle never called for swap B);
+        // Matcher from swap B's bailOut on: +minFulfillLiquidity (B refund);
         // swap C net delta: +SELL_AMT sellToken, -fulfillAmt buyToken
         assertEq(
             _spendable(matcher, address(sellToken)),
-            matcherSellInternalBefore + SELL_AMT - INITIAL_LIQUIDITY, // swap B's initialLiquidity also stuck
+            matcherSellInternalBefore + SELL_AMT,
             "matcher net sellToken delta"
         );
         assertEq(
             _spendable(matcher, address(buyToken)),
-            matcherBuyInternalBefore - fulfillAmt - 2000e18, // swap B's amount2 stuck in oracle
+            matcherBuyInternalBefore + MIN_FULFILL_LIQUIDITY - fulfillAmt,
             "matcher net buyToken delta"
         );
     }

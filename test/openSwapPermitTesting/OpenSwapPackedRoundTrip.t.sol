@@ -20,8 +20,7 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
     uint128 internal constant E_SELL_AMT             = 0.5 ether;          // 5e17
     uint128 internal constant E_MIN_FULFILL_LIQ      = 0.25 ether;         // 2.5e17
     uint96  internal constant E_SETTLER_REWARD       = uint96(0.001 ether);
-    uint24  internal constant E_MAX_GAME_TIME        = uint24(0x056ce0);   // 354_528 sec, > 20*settlementTime
-    uint16  internal constant E_BLOCKS_PER_SECOND    = uint16(0x01f4);     // 500
+    uint24  internal constant E_MAX_GAME_TIME        = uint24(0x056ce0);   // 354_528 blocks, > 50*settlementTime
     uint96  internal constant E_MATCHER_GAS_COMP     = uint96(0.0005 ether);
     uint96  internal constant E_EXECUTOR_GAS_COMP    = uint96(0.00025 ether);
     uint48  internal constant E_EXPIRATION_OFFSET    = uint48(1 hours);
@@ -50,7 +49,6 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         s.minFulfillLiquidity  = E_MIN_FULFILL_LIQ;
         s.settlerReward        = E_SETTLER_REWARD;
         s.maxGameTime          = E_MAX_GAME_TIME;
-        s.blocksPerSecond      = E_BLOCKS_PER_SECOND;
         s.buyToken             = address(buyToken);
         s.matcherGasComp       = E_MATCHER_GAS_COMP;
         s.sellToken            = address(sellToken);
@@ -69,7 +67,7 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         m.disputeDelay             = E_DISPUTE_DELAY;
         m.protocolFee              = E_PROTOCOL_FEE;
         m.multiplier               = E_MULTIPLIER;
-        m.startFulfillFeeIncrease  = 0; // override → block.timestamp
+        m.startFulfillFeeIncrease  = 0; // override → block.number
         m.maxFee                   = E_MAX_FEE;
         m.startingFee              = E_STARTING_FEE;
         m.roundLength              = E_ROUND_LENGTH;
@@ -104,21 +102,20 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         assertEq(uint256(logs[idx].topics[1]), swapId, "topic swapId");
         assertEq(address(uint160(uint256(logs[idx].topics[2]))), swapper, "topic swapper");
         bytes memory packed = logs[idx].data;
-        assertEq(packed.length, 237, "packed length");
+        assertEq(packed.length, 235, "packed length");
 
         // Build expected: input + overrides.
         openSwapV2.ProposedSwap memory expected = s;
         expected.swapper = swapper;
         expected.expiration = uint48(block.timestamp + uint256(s.expiration));
         openSwapV2.MatcherPreimage memory expectedM = m;
-        expectedM.startFulfillFeeIncrease = uint48(block.timestamp);
+        expectedM.startFulfillFeeIncrease = uint48(block.number);
 
         openSwapV2.ProposedSwap memory ds = PackedDecoder.decodeProposedSwap(packed);
         assertEq(ds.sellAmt,             expected.sellAmt,             "sellAmt");
         assertEq(ds.minFulfillLiquidity, expected.minFulfillLiquidity, "minFulfillLiquidity");
         assertEq(ds.settlerReward,       expected.settlerReward,       "settlerReward");
         assertEq(ds.maxGameTime,         expected.maxGameTime,         "maxGameTime");
-        assertEq(ds.blocksPerSecond,     expected.blocksPerSecond,     "blocksPerSecond");
         assertEq(ds.buyToken,            expected.buyToken,            "buyToken");
         assertEq(ds.matcherGasComp,      expected.matcherGasComp,      "matcherGasComp");
         assertEq(ds.sellToken,           expected.sellToken,           "sellToken");
@@ -136,7 +133,7 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         assertEq(dm.disputeDelay,            expectedM.disputeDelay,            "disputeDelay");
         assertEq(dm.protocolFee,             expectedM.protocolFee,             "protocolFee");
         assertEq(dm.multiplier,              expectedM.multiplier,              "multiplier");
-        assertEq(dm.startFulfillFeeIncrease, expectedM.startFulfillFeeIncrease, "startFulfillFeeIncrease (override = ts)");
+        assertEq(dm.startFulfillFeeIncrease, expectedM.startFulfillFeeIncrease, "startFulfillFeeIncrease (override = block)");
         assertEq(dm.maxFee,                  expectedM.maxFee,                  "maxFee");
         assertEq(dm.startingFee,             expectedM.startingFee,             "startingFee");
         assertEq(dm.roundLength,             expectedM.roundLength,             "roundLength");
@@ -156,11 +153,11 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         // Apply propose-side overrides to s/m so they reflect the on-chain stored swap.
         s.swapper = swapper;
         s.expiration = uint48(block.timestamp + uint256(E_EXPIRATION_OFFSET));
-        m.startFulfillFeeIncrease = uint48(block.timestamp);
+        m.startFulfillFeeIncrease = uint48(block.number);
 
         // Match. Capture pre-match nextReportId for expected reportId.
         uint128 expectedReportId = uint128(oracle.nextReportId());
-        uint48 expectedStart = uint48(block.timestamp);
+        uint48 expectedStart = uint48(block.number);
 
         vm.recordLogs();
         vm.prank(matcher);
@@ -170,14 +167,13 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         uint256 idx = _findPackedLog(logs, SWAP_MATCHED_SIG);
         assertEq(uint256(logs[idx].topics[1]), swapId, "topic swapId");
         bytes memory packed = logs[idx].data;
-        assertEq(packed.length, 207, "packed length");
+        assertEq(packed.length, 205, "packed length");
 
         // Expected MatchedSwap mirrors openSwap.matchSwap's MatchedSwap construction.
         openSwapV2.MatchedSwap memory expected;
         expected.sellAmt              = s.sellAmt;
         expected.minFulfillLiquidity  = s.minFulfillLiquidity;
         expected.maxGameTime          = s.maxGameTime;
-        expected.blocksPerSecond      = s.blocksPerSecond;
         expected.buyToken             = s.buyToken;
         expected.sellToken            = s.sellToken;
         expected.swapper              = s.swapper;
@@ -195,7 +191,6 @@ contract OpenSwapPackedRoundTripTest is SlimTestBase {
         assertEq(dm.sellAmt,              expected.sellAmt,              "sellAmt");
         assertEq(dm.minFulfillLiquidity,  expected.minFulfillLiquidity,  "minFulfillLiquidity");
         assertEq(dm.maxGameTime,          expected.maxGameTime,          "maxGameTime");
-        assertEq(dm.blocksPerSecond,      expected.blocksPerSecond,      "blocksPerSecond");
         assertEq(dm.buyToken,             expected.buyToken,             "buyToken");
         assertEq(dm.sellToken,            expected.sellToken,            "sellToken");
         assertEq(dm.swapper,              expected.swapper,              "swapper");

@@ -6,28 +6,25 @@ import "../utils/SlimTestBase.sol";
 /// @notice Behavior matrix for openSwap.execute()'s oracle-state handling.
 ///
 ///         execute() must succeed across four "shapes" of caller-passed OracleGame
-///         and reject the loose-timing variants when looseTiming=false:
+///         and reject the stale-settlement variants when settlementSearchDepth is too small:
 ///
 ///           1. PreSettleDirect      — oracle not yet settled; caller passes
 ///                                     pre-settle preimage (settlementTimestamp=0).
 ///                                     Direct hash match. execute settles internally.
-///                                     looseTiming irrelevant.
+///                                     settlementSearchDepth irrelevant.
 ///           2. PreSettleSameBlock   — settle was called earlier in the SAME block;
 ///                                     caller passes pre-settle preimage; hash
-///                                     mismatch. Loose-timing branch at line 594
-///                                     substitutes timestamp() and matches the
-///                                     post-settle hash. Requires looseTiming=true.
+///                                     mismatch. The search tries block.number first
+///                                     and matches the post-settle hash. Requires depth >= 1.
 ///           3. PostSettleDirect     — oracle was settled in a prior block; caller
 ///                                     passes the post-settle preimage with the
 ///                                     real settlementTimestamp. Direct hash match.
-///                                     looseTiming irrelevant.
-///           4. PostSettleOffByTwo   — oracle settled in a prior block at T; caller
-///                                     passes preimage with settlementTimestamp=T+2
-///                                     (a stale "current block" estimate). Loose-(t-2)
-///                                     branch at line 604 substitutes timestamp()-2.
-///                                     Requires looseTiming=true.
+///                                     settlementSearchDepth irrelevant.
+///           4. PreSettleEarlierBlock — oracle settled at block B; caller passes the
+///                                     pre-settle preimage k blocks later. The search
+///                                     reaches B only when depth > k.
 ///
-///         For each loose path we also assert that looseTiming=false reverts with
+///         For each recovered path we also assert that a too-small depth reverts with
 ///         WrongOracleHash().
 contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
     function setUp() public {
@@ -56,6 +53,22 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
         ph = _buildPreimageHelper(rid);
     }
 
+    function _expectWrongOracleHash(
+        uint256 swapId,
+        openSwapV2.MatchedSwap memory sPost,
+        IOpenOracle2.OracleGame memory og,
+        IOpenOracle2.PreimageHelper memory ph,
+        uint8 settlementSearchDepth,
+        string memory label
+    ) internal {
+        vm.prank(settler);
+        try swapContract.execute(swapId, sPost, og, ph, settlementSearchDepth) {
+            revert(string.concat("expected revert: ", label));
+        } catch (bytes memory ret) {
+            assertEq(bytes4(ret), bytes4(keccak256("WrongOracleHash()")), label);
+        }
+    }
+
     // ── 1. Pre-settle direct path ──────────────────────────────────────────────
 
     function testExecute_PreSettleDirect_Succeeds() public {
@@ -67,17 +80,17 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
             IOpenOracle2.PreimageHelper memory ph
         ) = _proposeMatch();
 
-        // Warp past settlementTime but DON'T pre-settle. og.settlementTimestamp stays 0.
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        // Roll past settlementTime but DON'T pre-settle. og.settlementTimestamp stays 0.
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
 
         vm.prank(settler);
-        swapContract.execute(swapId, sPost, og, ph, false); // looseTiming irrelevant
+        swapContract.execute(swapId, sPost, og, ph, 0); // settlementSearchDepth irrelevant
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted");
     }
 
-    // ── 2. Pre-settle same-block-loose ─────────────────────────────────────────
+    // ── 2. Pre-settle same block ───────────────────────────────────────────────
 
-    function testExecute_PreSettleSameBlockLoose_RequiresLooseTiming() public {
+    function testExecute_PreSettleSameBlock_RequiresDepthOne() public {
         (
             uint256 swapId,
             uint128 reportId,
@@ -86,25 +99,18 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
             IOpenOracle2.PreimageHelper memory ph
         ) = _proposeMatch();
 
-        // Warp past settlementTime so the report can settle.
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        // Roll past settlementTime so the report can settle.
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
 
         // Pre-settle in this block. og remains the pre-settle preimage (settlementTimestamp=0).
         _settle(reportId, og, ph);
-        // Same block: block.timestamp unchanged.
 
-        // looseTiming=false should fail (direct hash mismatch).
-        vm.prank(settler);
-        try swapContract.execute(swapId, sPost, og, ph, false) {
-            revert("expected revert");
-        } catch (bytes memory ret) {
-            assertEq(bytes4(ret), bytes4(keccak256("WrongOracleHash()")), "no looseTiming -> WrongOracleHash");
-        }
+        _expectWrongOracleHash(swapId, sPost, og, ph, 0, "depth 0 -> WrongOracleHash");
 
-        // looseTiming=true should succeed via the same-block fallback.
+        // Depth 1 tries the current block, which is the settle block.
         vm.prank(settler);
-        swapContract.execute(swapId, sPost, og, ph, true);
-        assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted after loose-success");
+        swapContract.execute(swapId, sPost, og, ph, 1);
+        assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted after same-block recovery");
     }
 
     // ── 3. Post-settle direct ──────────────────────────────────────────────────
@@ -118,25 +124,25 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
             IOpenOracle2.PreimageHelper memory ph
         ) = _proposeMatch();
 
-        uint48 settledAt = uint48(block.timestamp) + SETTLEMENT_TIME + 1;
-        vm.warp(uint256(settledAt));
+        uint48 settledAt = uint48(block.number) + SETTLEMENT_TIME + 1;
+        vm.roll(uint256(settledAt));
         _settle(reportId, og, ph);
         // Advance past the settle block. Use the captured settledAt (not re-reading
-        // block.timestamp) to avoid the Solidity-optimizer caching issue across vm.warp.
-        vm.warp(uint256(settledAt) + 10);
+        // block.number) to avoid the Solidity-optimizer caching issue across vm.roll.
+        vm.roll(uint256(settledAt) + 10);
 
         // Build post-settle preimage with the exact settlementTimestamp.
         IOpenOracle2.OracleGame memory ogPost = og;
         ogPost.settlementTimestamp = settledAt;
 
         vm.prank(settler);
-        swapContract.execute(swapId, sPost, ogPost, ph, false);
+        swapContract.execute(swapId, sPost, ogPost, ph, 0);
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted");
     }
 
-    // ── 4. Post-settle off-by-2 ────────────────────────────────────────────────
+    // ── 4. Pre-settle preimage, settled in an earlier block ────────────────────
 
-    function testExecute_PostSettleOffByTwo_RequiresLooseTiming() public {
+    function testExecute_PreSettleEarlierBlock_RequiresDepthPastSettleBlock() public {
         (
             uint256 swapId,
             uint128 reportId,
@@ -145,35 +151,23 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
             IOpenOracle2.PreimageHelper memory ph
         ) = _proposeMatch();
 
-        uint48 settledAt = uint48(block.timestamp) + SETTLEMENT_TIME + 1;
-        vm.warp(uint256(settledAt));
+        uint48 settledAt = uint48(block.number) + SETTLEMENT_TIME + 1;
+        vm.roll(uint256(settledAt));
         _settle(reportId, og, ph);
 
-        // Advance exactly 2 seconds so the loose-(t-2) branch's substitution lands on settledAt.
-        vm.warp(uint256(settledAt) + 2);
+        // Caller's tx lands 2 blocks after the settle, built from the pre-settle state.
+        vm.roll(uint256(settledAt) + 2);
 
-        // Caller's preimage uses the post-warp block.timestamp as their guess. Off-by-2 from actual.
-        uint48 callerGuess = settledAt + 2;
-        IOpenOracle2.OracleGame memory ogGuessed = og;
-        ogGuessed.settlementTimestamp = callerGuess;
-        assertTrue(callerGuess != settledAt, "test guess differs from actual");
-        assertTrue(callerGuess > 2, "loose-t-2 only fires when settlementTimestamp > 2");
+        // Depth 2 tries settledAt+2 and settledAt+1 only.
+        _expectWrongOracleHash(swapId, sPost, og, ph, 2, "depth 2 -> WrongOracleHash");
 
-        // looseTiming=false: direct mismatch, no fallback → WrongOracleHash.
+        // Depth 3 reaches settledAt.
         vm.prank(settler);
-        try swapContract.execute(swapId, sPost, ogGuessed, ph, false) {
-            revert("expected revert");
-        } catch (bytes memory ret) {
-            assertEq(bytes4(ret), bytes4(keccak256("WrongOracleHash()")), "no looseTiming -> WrongOracleHash");
-        }
-
-        // looseTiming=true: loose-(t-2) substitutes timestamp()-2 = settledAt → matches.
-        vm.prank(settler);
-        swapContract.execute(swapId, sPost, ogGuessed, ph, true);
-        assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted after loose-(t-2) success");
+        swapContract.execute(swapId, sPost, og, ph, 3);
+        assertEq(swapContract.swaps(swapId), bytes32(0), "swap deleted after earlier-block recovery");
     }
 
-    // ── 5. Sanity: pre-settle path with stale preimage that doesn't match either loose form ──
+    // ── 5. Sanity: preimages the search cannot recover ─────────────────────────
 
     function testExecute_StalePostSettlePreimage_AlwaysReverts() public {
         (
@@ -184,28 +178,18 @@ contract OpenSwapExecuteSettlementMatrixTest is SlimTestBase {
             IOpenOracle2.PreimageHelper memory ph
         ) = _proposeMatch();
 
-        uint48 settledAt = uint48(block.timestamp) + SETTLEMENT_TIME + 1;
-        vm.warp(uint256(settledAt));
+        uint48 settledAt = uint48(block.number) + SETTLEMENT_TIME + 1;
+        vm.roll(uint256(settledAt));
         _settle(reportId, og, ph);
-        // Warp 1 hour — neither the same-block-loose nor (t-2) loose branch will match.
-        vm.warp(uint256(settledAt) + 3600);
+        // 300 blocks later: beyond the largest possible depth (255).
+        vm.roll(uint256(settledAt) + 300);
 
+        _expectWrongOracleHash(swapId, sPost, og, ph, type(uint8).max, "settle beyond max depth -> WrongOracleHash");
+
+        // A wrong nonzero settlementTimestamp is never searched.
         IOpenOracle2.OracleGame memory ogStale = og;
-        ogStale.settlementTimestamp = settledAt + 3600; // wildly off from the real settle ts
-
-        // Both looseTiming variants revert because the substituted hashes don't match either.
-        vm.prank(settler);
-        try swapContract.execute(swapId, sPost, ogStale, ph, true) {
-            revert("expected revert with looseTiming=true");
-        } catch (bytes memory ret) {
-            assertEq(bytes4(ret), bytes4(keccak256("WrongOracleHash()")), "looseTiming=true still wrong");
-        }
-
-        vm.prank(settler);
-        try swapContract.execute(swapId, sPost, ogStale, ph, false) {
-            revert("expected revert with looseTiming=false");
-        } catch (bytes memory ret) {
-            assertEq(bytes4(ret), bytes4(keccak256("WrongOracleHash()")), "looseTiming=false WrongOracleHash");
-        }
+        ogStale.settlementTimestamp = settledAt + 300;
+        _expectWrongOracleHash(swapId, sPost, ogStale, ph, type(uint8).max, "wrong guess -> WrongOracleHash");
+        _expectWrongOracleHash(swapId, sPost, ogStale, ph, 0, "wrong guess, depth 0 -> WrongOracleHash");
     }
 }

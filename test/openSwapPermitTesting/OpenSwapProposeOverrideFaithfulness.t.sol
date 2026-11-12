@@ -37,13 +37,12 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
     {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         s.sellAmt = SELL_AMT;
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.settlerReward = op.settlerReward;
         s.maxGameTime = op.maxGameTime;
-        s.blocksPerSecond = op.blocksPerSecond;
         s.buyToken = address(buyToken);
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.sellToken = address(sellToken);
@@ -86,7 +85,7 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
         // Apply the overrides propose() is specified to perform.
         s.swapper = swapper;
         s.expiration = uint48(block.timestamp) + EXP_OFFSET;
-        m.startFulfillFeeIncrease = uint48(block.timestamp);
+        m.startFulfillFeeIncrease = uint48(block.number);
 
         assertEq(swapContract.swaps(swapId), keccak256(abi.encode(s, m)), "committed hash binds overridden values");
     }
@@ -105,7 +104,7 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
     function testSwapperOverride_BindsCaller_NotInput() public {
         (uint256 swapId, openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _propose(swapper);
         s.expiration = uint48(block.timestamp) + EXP_OFFSET;
-        m.startFulfillFeeIncrease = uint48(block.timestamp);
+        m.startFulfillFeeIncrease = uint48(block.number);
 
         // swapper = caller → matches.
         s.swapper = swapper;
@@ -119,7 +118,7 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
     function testExpirationOverride_BindsAbsolute_NotRelative() public {
         (uint256 swapId, openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _propose(swapper);
         s.swapper = swapper;
-        m.startFulfillFeeIncrease = uint48(block.timestamp);
+        m.startFulfillFeeIncrease = uint48(block.number);
 
         // absolute = block.timestamp + offset → matches.
         s.expiration = uint48(block.timestamp) + EXP_OFFSET;
@@ -130,15 +129,19 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
         assertTrue(swapContract.swaps(swapId) != keccak256(abi.encode(s, m)), "relative expiration must not match");
     }
 
-    function testStartFulfillFeeOverride_BindsProposeTimestamp() public {
-        // Warp to a distinctive timestamp so "block.timestamp" is unmistakably the source.
+    function testStartFulfillFeeOverride_BindsProposeBlock() public {
+        // Distinct timestamp and block number so "block.number" is unmistakably the source.
         vm.warp(1_000_000);
+        vm.roll(2_000_000);
         (uint256 swapId, openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) = _propose(swapper);
         s.swapper = swapper;
         s.expiration = uint48(block.timestamp) + EXP_OFFSET;
 
-        m.startFulfillFeeIncrease = uint48(block.timestamp); // == 1_000_000
-        assertEq(swapContract.swaps(swapId), keccak256(abi.encode(s, m)), "startFulfillFeeIncrease bound to propose ts");
+        m.startFulfillFeeIncrease = uint48(block.timestamp); // the propose timestamp
+        assertTrue(swapContract.swaps(swapId) != keccak256(abi.encode(s, m)), "timestamp must not match");
+
+        m.startFulfillFeeIncrease = uint48(block.number); // == 2_000_000
+        assertEq(swapContract.swaps(swapId), keccak256(abi.encode(s, m)), "startFulfillFeeIncrease bound to propose block");
 
         m.startFulfillFeeIncrease = 0; // the raw input
         assertTrue(swapContract.swaps(swapId) != keccak256(abi.encode(s, m)), "zero input must not match");
@@ -155,12 +158,12 @@ contract OpenSwapProposeOverrideFaithfulnessTest is SlimTestBase {
 
         s1.swapper = swapper;
         s1.expiration = uint48(block.timestamp) + EXP_OFFSET;
-        m1.startFulfillFeeIncrease = uint48(block.timestamp);
+        m1.startFulfillFeeIncrease = uint48(block.number);
         assertEq(swapContract.swaps(id1), keccak256(abi.encode(s1, m1)), "caller-1 hash reconstructs with swapper1");
 
         s2.swapper = swapper2;
         s2.expiration = uint48(block.timestamp) + EXP_OFFSET;
-        m2.startFulfillFeeIncrease = uint48(block.timestamp);
+        m2.startFulfillFeeIncrease = uint48(block.number);
         assertEq(swapContract.swaps(id2), keccak256(abi.encode(s2, m2)), "caller-2 hash reconstructs with swapper2");
     }
 }

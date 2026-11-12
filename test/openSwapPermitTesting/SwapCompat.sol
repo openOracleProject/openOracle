@@ -19,12 +19,19 @@ library SwapCompat {
         uint24 disputeDelay;
         uint24 protocolFee;
         uint16 multiplier;
-        uint16 blocksPerSecond;
     }
 
     struct SlippageParams {
         uint232 priceTolerated;
         uint24 toleranceRange;
+    }
+
+    struct FulfillFeeParams {
+        uint24 maxFee;
+        uint24 startingFee;
+        uint24 roundLength;
+        uint16 growthRate;
+        uint16 maxRounds;
     }
 
     /// @dev Translates the pre-hash-refactor 13-arg propose shape into the new
@@ -44,7 +51,7 @@ library SwapCompat {
         uint96 executorGasComp,
         OracleParams memory op,
         SlippageParams memory slip,
-        openSwapV2.FulfillFeeParams memory ff,
+        SwapCompat.FulfillFeeParams memory ff,
         openSwapV2.Permit2Params memory permit2,
         bool useInternalBalances
     ) internal returns (uint256 swapId) {
@@ -53,7 +60,6 @@ library SwapCompat {
         s.minFulfillLiquidity = minFulfillLiquidity;
         s.settlerReward = op.settlerReward;
         s.maxGameTime = op.maxGameTime;
-        s.blocksPerSecond = op.blocksPerSecond;
         s.buyToken = buyToken;
         s.matcherGasComp = matcherGasComp;
         s.sellToken = sellToken;
@@ -71,7 +77,7 @@ library SwapCompat {
         m.disputeDelay = op.disputeDelay;
         m.protocolFee = op.protocolFee;
         m.multiplier = op.multiplier;
-        // m.startFulfillFeeIncrease = 0 (contract overrides to block.timestamp)
+        // m.startFulfillFeeIncrease = 0 (contract overrides to block.number)
         m.maxFee = ff.maxFee;
         m.startingFee = ff.startingFee;
         m.roundLength = ff.roundLength;

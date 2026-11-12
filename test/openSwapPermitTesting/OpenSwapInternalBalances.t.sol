@@ -91,7 +91,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         );
 
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = true;
         vm.prank(tightSwapper);
         uint256 swapId = SwapCompat.proposeRaw(swapContract, ethToSend, 
@@ -116,7 +116,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         _setupSwapperInternalEth(swapper, ethSell);
 
         uint256 extra = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = true;
 
         uint256 swapperInternalEthBefore = _spendable(swapper, address(0));
@@ -173,7 +173,7 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
 
     // 9) Internal-balance bailout: refund returns assets internally; executor gets tempHolding gas comp.
     //    Note: bailOut only refunds the sellAmt and minFulfillLiquidity legs — the oracle-game stake
-    //    (amount2 in buyToken) stays locked in the oracle.
+    //    is settled by the oracle, not by bailOut.
     function testInternal_Bailout_RefundsInternally() public {
         uint256 swapperInternalSellBefore = _spendable(swapper, address(sellToken));
         uint256 matcherInternalBuyBefore = _spendable(matcher, address(buyToken));
@@ -189,18 +189,20 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
             "matcher buyToken debited at match"
         );
 
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, amount2, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
+        // Disputes moved the matcher's report stake; measure only what bailOut returns.
+        uint256 matcherBuyBeforeBailOut = _spendable(matcher, address(buyToken));
 
         address executor = address(0x6001);
         vm.prank(executor);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
         assertEq(_spendable(swapper, address(sellToken)), swapperInternalSellBefore, "swapper sellToken refunded internally");
-        // amount2 remains locked in the oracle game; minFulfillLiquidity returns internally.
         assertEq(
             _spendable(matcher, address(buyToken)),
-            matcherInternalBuyBefore - amount2,
+            matcherBuyBeforeBailOut + MIN_FULFILL_LIQUIDITY,
             "matcher buyToken minFulfill refunded internally"
         );
         assertEq(swapContract.tempHolding(executor), EXECUTOR_GAS_COMP, "executor gas comp queued");
@@ -259,8 +261,8 @@ contract OpenSwapInternalBalancesTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
 
         address executor = address(0x6002);

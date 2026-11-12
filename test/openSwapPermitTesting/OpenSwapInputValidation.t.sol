@@ -12,9 +12,9 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function _bareCall(address sellTok, uint128 sellAmt, uint128 minOut, address buyTok, uint128 minFulfill,
-        SwapCompat.OracleParams memory op, openSwapV2.FulfillFeeParams memory ff) internal
+        SwapCompat.OracleParams memory op, SwapCompat.FulfillFeeParams memory ff) internal
     {
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + op.settlerReward;
         // For ETH-sell case the test caller adds sellAmt to msg.value before this fn; not used here
         vm.prank(swapper);
@@ -55,7 +55,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_MaxFeeAt1e7_Reverts() public {
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         ff.maxFee = uint24(1e7);
         vm.expectRevert();
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -63,7 +63,7 @@ contract OpenSwapInputValidationTest is SlimTestBase {
     }
 
     function testSwap_MaxFeeJustBelow1e7_Succeeds() public {
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         ff.maxFee = uint24(1e7 - 1);
         // With near-100% fee, worstFulfillAmt approaches 0, so minOut must be tiny to pass
         _bareCall(address(sellToken), SELL_AMT, 1, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -104,9 +104,49 @@ contract OpenSwapInputValidationTest is SlimTestBase {
 
     function testSwap_SettlementTimeTooLong_Reverts() public {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
-        op.settlementTime = 4 * 60 * 60 + 1; // > 4 hours
-        op.maxGameTime = uint24(op.settlementTime) * 20;
-        vm.expectRevert();
+        op.settlementTime = 60481; // > 60480 blocks
+        op.maxGameTime = 3024000;
+        vm.expectRevert(Errors.InvalidOracleParams.selector);
+        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
+            op, _defaultFulfillFee());
+    }
+
+    function testSwap_SettlementTimeAtMax_Succeeds() public {
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
+        op.settlementTime = 60480;
+        op.maxGameTime = 3024000;
+        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
+            op, _defaultFulfillFee());
+    }
+
+    function testSwap_SettlementTimeBelowMin_Reverts() public {
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
+        op.settlementTime = 1; // < 2 blocks
+        op.disputeDelay = 0;
+        vm.expectRevert(Errors.InvalidOracleParams.selector);
+        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
+            op, _defaultFulfillFee());
+    }
+
+    function testSwap_SettlementTimeAtMin_Succeeds() public {
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
+        op.settlementTime = 2;
+        op.disputeDelay = 1;
+        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
+            op, _defaultFulfillFee());
+    }
+
+    function testSwap_MultiplierTooHigh_Reverts() public {
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
+        op.multiplier = 201; // > 200
+        vm.expectRevert(Errors.InvalidOracleParams.selector);
+        _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
+            op, _defaultFulfillFee());
+    }
+
+    function testSwap_MultiplierAtMax_Succeeds() public {
+        SwapCompat.OracleParams memory op = _defaultOracleParams();
+        op.multiplier = 200;
         _bareCall(address(sellToken), SELL_AMT, MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
             op, _defaultFulfillFee());
     }

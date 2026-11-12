@@ -23,14 +23,13 @@ contract OpenSwapPermit2WitnessTest is SlimTestBase {
         //   - m with startFulfillFeeIncrease = 0
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         openSwapV2.ProposedSwap memory s;
         s.sellAmt = SELL_AMT;
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.settlerReward = op.settlerReward;
         s.maxGameTime = op.maxGameTime;
-        s.blocksPerSecond = op.blocksPerSecond;
         s.buyToken = address(buyToken);
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.sellToken = address(sellToken);

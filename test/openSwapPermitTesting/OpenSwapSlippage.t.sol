@@ -30,8 +30,8 @@ contract OpenSwapSlippageTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));

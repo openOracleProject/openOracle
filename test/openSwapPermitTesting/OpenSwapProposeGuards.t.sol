@@ -26,13 +26,12 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
     {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         s.sellAmt = SELL_AMT;
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.settlerReward = op.settlerReward;
         s.maxGameTime = op.maxGameTime;
-        s.blocksPerSecond = op.blocksPerSecond;
         s.buyToken = address(buyToken);
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.sellToken = address(sellToken);
@@ -88,7 +87,7 @@ contract OpenSwapProposeGuardsTest is SlimTestBase {
         bytes32 witness1 = MockPermit2(PERMIT2).lastWitness();
         bytes32 swapHash1 = swapContract.swaps(swapId1);
 
-        // Warp far enough that absolute expiration + startFulfillFeeIncrease shift.
+        // Advance far enough that absolute expiration + startFulfillFeeIncrease shift.
         vm.warp(block.timestamp + 100 seconds);
         vm.roll(block.number + 50);
 

@@ -34,7 +34,7 @@ contract OpenSwapReentrancyTest is SlimTestBase {
 
     function _hookPropose() internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = false;
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
@@ -114,7 +114,7 @@ contract OpenSwapReentrancyTest is SlimTestBase {
         IOpenOracle2.OracleGame memory dummyOg;
         IOpenOracle2.PreimageHelper memory dummyPh;
         bytes memory executeCalldata = abi.encodeCall(
-            swapContract.execute, (swapId, dummyMatched, dummyOg, dummyPh, false)
+            swapContract.execute, (swapId, dummyMatched, dummyOg, dummyPh, uint8(0))
         );
 
         hook.arm(address(swapContract), executeCalldata);
@@ -138,7 +138,10 @@ contract OpenSwapReentrancyTest is SlimTestBase {
         // Any MatchedSwap (even uninitialized) will trigger nonReentrant before its
         // hash check would run, since the lock is acquired at the top of bailOut().
         openSwapV2.MatchedSwap memory dummyMatched;
-        bytes memory bailOutCalldata = abi.encodeCall(swapContract.bailOut, (swapId, dummyMatched));
+        IOpenOracle2.OracleGame memory dummyOg;
+        IOpenOracle2.PreimageHelper memory dummyPh;
+        bytes memory bailOutCalldata =
+            abi.encodeCall(swapContract.bailOut, (swapId, dummyMatched, dummyOg, dummyPh));
 
         hook.arm(address(swapContract), bailOutCalldata);
 

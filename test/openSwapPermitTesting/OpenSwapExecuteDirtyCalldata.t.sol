@@ -6,25 +6,25 @@ import "../utils/SlimTestBase.sol";
 /// @notice Dirty-calldata fuzz for openSwap.execute().
 ///
 ///         execute() stages TWO buffers via raw calldatacopy:
-///           - swapState (MatchedSwap, 0x200) → keccak → swaps[swapId]   ⇒ WrongHash()
+///           - swapState (MatchedSwap, 0x1e0) → keccak → swaps[swapId]   ⇒ WrongHash()
 ///           - oracleState + oracleHelper (0x300) → keccak → oracle.oracleGame[reportId]
-///             ⇒ mismatch falls into "loose timing" fallbacks before ultimately reverting.
+///             ⇒ mismatch falls into the settlement search before ultimately reverting.
 ///
-///         Top-level: swapId (uint256, no padding) · looseTiming (bool, padded).
+///         Top-level: swapId (uint256, no padding) · settlementSearchDepth (uint8, padded).
 ///
 ///         Layered expectation:
-///           looseTiming padding   → strict-decode → empty data
+///           settlementSearchDepth padding → strict-decode → empty data
 ///           MatchedSwap padding   → raw calldatacopy → WrongHash() (4-byte)
 ///           OracleGame padding    → raw calldatacopy → eventually reverts; we accept
 ///                                   any 4-byte custom error (covers WrongHash,
-///                                   the various loose-timing-related custom errors,
+///                                   the settlement-search-related custom errors,
 ///                                   and the no-such-report path)
 ///           PreimageHelper padding → same as OracleGame region
 contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
     uint256 internal constant MATCHED_SWAP_OFFSET = 0x020;     // after swapId
-    uint256 internal constant ORACLE_GAME_OFFSET = 0x220;      // after MatchedSwap
-    uint256 internal constant ORACLE_HELPER_OFFSET = 0x4A0;    // after OracleGame
-    uint256 internal constant LOOSE_TIMING_OFFSET = 0x520;     // after PreimageHelper
+    uint256 internal constant ORACLE_GAME_OFFSET = 0x200;      // after MatchedSwap
+    uint256 internal constant ORACLE_HELPER_OFFSET = 0x480;    // after OracleGame
+    uint256 internal constant SEARCH_DEPTH_OFFSET = 0x500;     // after PreimageHelper
 
     function setUp() public {
         _setUpAll();
@@ -50,10 +50,10 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
         og = _buildOracleGameAtReport(s0, m0, 2000e18);
         ph = _buildPreimageHelper(rid);
 
-        // Warp past settlementTime and settle the oracle so execute's post-settle hash is the live one.
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
+        // Roll past settlementTime and settle the oracle so execute's post-settle hash is the live one.
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
         _settle(rid, og, ph);
-        og.settlementTimestamp = uint48(block.timestamp);
+        og.settlementTimestamp = uint48(block.number);
     }
 
     function _executeCallData(
@@ -62,7 +62,7 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og,
         IOpenOracle2.PreimageHelper memory ph
     ) internal view returns (bytes memory) {
-        return abi.encodeCall(swapContract.execute, (swapId, sPost, og, ph, false));
+        return abi.encodeCall(swapContract.execute, (swapId, sPost, og, ph, uint8(0)));
     }
 
     function testDirtyCalldata_CleanExecuteSucceeds() public {
@@ -105,12 +105,12 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
             bytes4 wrongHashSel = bytes4(keccak256("WrongHash()"));
             bytes4 wrongOracleHashSel = bytes4(keccak256("WrongOracleHash()"));
 
-            if (off >= LOOSE_TIMING_OFFSET) {
-                // looseTiming bool padding → strict-decode → empty data
+            if (off >= SEARCH_DEPTH_OFFSET) {
+                // settlementSearchDepth uint8 padding → strict-decode → empty data
                 assertEq(
                     ret.length,
                     0,
-                    string.concat("looseTiming dirty must be type-decode revert @ byte ", vm.toString(off))
+                    string.concat("settlementSearchDepth dirty must be type-decode revert @ byte ", vm.toString(off))
                 );
             } else if (off >= MATCHED_SWAP_OFFSET && off < ORACLE_GAME_OFFSET) {
                 // MatchedSwap region → swap-hash check fires first → WrongHash().
@@ -122,8 +122,8 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
             } else if (off >= ORACLE_GAME_OFFSET && off < ORACLE_HELPER_OFFSET) {
                 // OracleGame region → oracle-hash check fires → WrongOracleHash() EXCEPT
                 // settlementTimestamp's padding slot (offset 0x80 in the struct, padding
-                // bytes 0..25 of that slot). The loose-timing branches evaluate
-                // `oracleState.settlementTimestamp == 0/> 2` via typed calldata access,
+                // bytes 0..25 of that slot). The settlement search evaluates
+                // `oracleState.settlementTimestamp == 0` via typed calldata access,
                 // which strict-decodes the slot's high bytes → empty-data revert before
                 // the WrongOracleHash() branch is reached.
                 uint256 ogSlotOff = off - ORACLE_GAME_OFFSET;
@@ -163,26 +163,25 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
     }
 
     function _allExecutePaddingByteOffsets() internal pure returns (uint256[] memory out) {
-        // execute calldata: swapId · MatchedSwap(16) · OracleGame(20) · PreimageHelper(4) · looseTiming(bool).
-        uint256[2][38] memory fields = [
-            // MatchedSwap at 0x020 (16 fields)
+        // execute calldata: swapId · MatchedSwap(15) · OracleGame(20) · PreimageHelper(4) · settlementSearchDepth(uint8).
+        uint256[2][37] memory fields = [
+            // MatchedSwap at 0x020 (15 fields)
             [uint256(MATCHED_SWAP_OFFSET + 0x000), uint256(16)], // sellAmt
             [uint256(MATCHED_SWAP_OFFSET + 0x020), uint256(16)], // minFulfillLiquidity
             [uint256(MATCHED_SWAP_OFFSET + 0x040), uint256(3)],  // maxGameTime
-            [uint256(MATCHED_SWAP_OFFSET + 0x060), uint256(2)],  // blocksPerSecond
-            [uint256(MATCHED_SWAP_OFFSET + 0x080), uint256(20)], // buyToken
-            [uint256(MATCHED_SWAP_OFFSET + 0x0A0), uint256(20)], // sellToken
-            [uint256(MATCHED_SWAP_OFFSET + 0x0C0), uint256(20)], // swapper
-            [uint256(MATCHED_SWAP_OFFSET + 0x0E0), uint256(12)], // executorGasComp
-            [uint256(MATCHED_SWAP_OFFSET + 0x100), uint256(1)],  // useInternalBalances
-            [uint256(MATCHED_SWAP_OFFSET + 0x120), uint256(16)], // reportId
-            [uint256(MATCHED_SWAP_OFFSET + 0x140), uint256(20)], // matcher
-            [uint256(MATCHED_SWAP_OFFSET + 0x160), uint256(6)],  // start
-            [uint256(MATCHED_SWAP_OFFSET + 0x180), uint256(3)],  // fulfillmentFee
-            [uint256(MATCHED_SWAP_OFFSET + 0x1A0), uint256(20)], // feeRecipient
-            [uint256(MATCHED_SWAP_OFFSET + 0x1C0), uint256(29)], // priceTolerated
-            [uint256(MATCHED_SWAP_OFFSET + 0x1E0), uint256(3)],  // toleranceRange
-            // OracleGame at 0x220 (20 fields)
+            [uint256(MATCHED_SWAP_OFFSET + 0x060), uint256(20)], // buyToken
+            [uint256(MATCHED_SWAP_OFFSET + 0x080), uint256(20)], // sellToken
+            [uint256(MATCHED_SWAP_OFFSET + 0x0A0), uint256(20)], // swapper
+            [uint256(MATCHED_SWAP_OFFSET + 0x0C0), uint256(12)], // executorGasComp
+            [uint256(MATCHED_SWAP_OFFSET + 0x0E0), uint256(1)],  // useInternalBalances
+            [uint256(MATCHED_SWAP_OFFSET + 0x100), uint256(16)], // reportId
+            [uint256(MATCHED_SWAP_OFFSET + 0x120), uint256(20)], // matcher
+            [uint256(MATCHED_SWAP_OFFSET + 0x140), uint256(6)],  // start
+            [uint256(MATCHED_SWAP_OFFSET + 0x160), uint256(3)],  // fulfillmentFee
+            [uint256(MATCHED_SWAP_OFFSET + 0x180), uint256(20)], // feeRecipient
+            [uint256(MATCHED_SWAP_OFFSET + 0x1A0), uint256(29)], // priceTolerated
+            [uint256(MATCHED_SWAP_OFFSET + 0x1C0), uint256(3)],  // toleranceRange
+            // OracleGame at 0x200 (20 fields)
             [uint256(ORACLE_GAME_OFFSET + 0x000), uint256(16)], // currentAmount1
             [uint256(ORACLE_GAME_OFFSET + 0x020), uint256(16)], // currentAmount2
             [uint256(ORACLE_GAME_OFFSET + 0x040), uint256(20)], // currentReporter
@@ -203,10 +202,10 @@ contract OpenSwapExecuteDirtyCalldataTest is SlimTestBase {
             [uint256(ORACLE_GAME_OFFSET + 0x220), uint256(4)],  // callbackGasLimit
             [uint256(ORACLE_GAME_OFFSET + 0x240), uint256(3)],  // protocolFee
             [uint256(ORACLE_GAME_OFFSET + 0x260), uint256(1)],  // flags
-            // PreimageHelper.creator at 0x4A0 + 0x020
+            // PreimageHelper.creator at 0x480 + 0x020
             [uint256(ORACLE_HELPER_OFFSET + 0x020), uint256(20)],
-            // looseTiming bool at 0x520
-            [uint256(LOOSE_TIMING_OFFSET), uint256(1)]
+            // settlementSearchDepth uint8 at 0x500
+            [uint256(SEARCH_DEPTH_OFFSET), uint256(1)]
         ];
 
         uint256 total = 0;

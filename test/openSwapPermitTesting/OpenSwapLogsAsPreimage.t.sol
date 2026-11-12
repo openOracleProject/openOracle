@@ -39,7 +39,6 @@ contract OpenSwapLogsAsPreimageTest is SlimTestBase {
         s.minFulfillLiquidity  = 0.25 ether;
         s.settlerReward        = uint96(0.001 ether);
         s.maxGameTime          = MAX_GAME_TIME;
-        s.blocksPerSecond      = 500;
         s.buyToken             = address(buyToken);
         s.matcherGasComp       = uint96(0.0005 ether);
         s.sellToken            = address(sellToken);
@@ -105,16 +104,16 @@ contract OpenSwapLogsAsPreimageTest is SlimTestBase {
             PackedDecoder.decodeHelperTail(reportSubmittedLog.data, reportIdFromLog);
 
         // ── settle using decoded OracleGame + helper ──
-        vm.warp(block.timestamp + uint256(ogFromLog.settlementTime) + 1);
+        vm.roll(block.number + uint256(ogFromLog.settlementTime) + 1);
         vm.prank(settler);
         IOpenOracle2(address(oracle)).settle(reportIdFromLog, ogFromLog, phFromLog);
 
         // ── execute using decoded MatchedSwap + post-settle OracleGame ──
         IOpenOracle2.OracleGame memory ogSettled = ogFromLog;
-        ogSettled.settlementTimestamp = uint48(block.timestamp);
+        ogSettled.settlementTimestamp = uint48(block.number);
 
         vm.prank(settler);
-        swapContract.execute(swapId, matchedFromLog, ogSettled, phFromLog, false);
+        swapContract.execute(swapId, matchedFromLog, ogSettled, phFromLog, 0);
 
         // Post-lifecycle: swap hash deleted. Oracle hash remains (updated to the settled-state
         // hash, not zeroed — settle mutates settlementTimestamp and rehashes rather than deleting).
@@ -154,9 +153,10 @@ contract OpenSwapLogsAsPreimageTest is SlimTestBase {
         bytes32 witnessA = mockP2.lastWitness();
         bytes32 hashA = swapContract.swaps(swapIdA);
 
-        // Move block.timestamp forward — this changes the runtime overrides (absolute
-        // expiration and startFulfillFeeIncrease) WITHOUT changing any signed input.
+        // Move block.timestamp and block.number forward — this changes the runtime overrides
+        // (absolute expiration and startFulfillFeeIncrease) WITHOUT changing any signed input.
         vm.warp(block.timestamp + 3600);
+        vm.roll(block.number + 18000);
 
         // Propose B with identical user-signed inputs.
         vm.prank(swapper);

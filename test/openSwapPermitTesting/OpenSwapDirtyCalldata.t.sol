@@ -11,8 +11,8 @@ import {DeployPermit2} from "permit2/test/utils/DeployPermit2.sol";
 ///         → must revert). Bool: 0x00 (=false) vs 0x02 (=2).
 contract OpenSwapDirtyCalldataTest is SlimTestBase {
     bytes4 internal constant INVALID_SIGNATURE_LENGTH = bytes4(keccak256("InvalidSignatureLength()"));
-    uint256 internal constant PERMIT2_HEAD_OFFSET = 0x340;
-    uint256 internal constant PERMIT2_TAIL_OFFSET = 0x380;
+    uint256 internal constant PERMIT2_HEAD_OFFSET = 0x320;
+    uint256 internal constant PERMIT2_TAIL_OFFSET = 0x360;
     uint256 internal constant SIGNATURE_OFFSET_WORD = PERMIT2_TAIL_OFFSET + 0x40;
     uint256 internal constant SIGNATURE_LENGTH_WORD = PERMIT2_TAIL_OFFSET + 0x60;
     uint256 internal constant SIGNATURE_DATA_OFFSET = PERMIT2_TAIL_OFFSET + 0x80;
@@ -28,13 +28,12 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
 
         s.sellAmt = SELL_AMT;
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.settlerReward = op.settlerReward;
         s.maxGameTime = op.maxGameTime;
-        s.blocksPerSecond = op.blocksPerSecond;
         s.buyToken = address(buyToken);
         s.matcherGasComp = MATCHER_GAS_COMP;
         s.sellToken = address(sellToken);
@@ -108,7 +107,7 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
             openSwapV2.Permit2Params({nonce: 77, deadline: type(uint256).max, signature: signature});
         bytes memory data = abi.encodeCall(swapContract.propose, (s, m, permit2, MIN_OUT));
 
-        // Args layout: Permit2 tuple starts at 0x380; its nested signature offset is at +0x40.
+        // Args layout: Permit2 tuple starts at 0x360; its nested signature offset is at +0x40.
         _writeArgWord(data, SIGNATURE_OFFSET_WORD, bytes32(type(uint256).max));
 
         new DeployPermit2().deployPermit2();
@@ -280,32 +279,31 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     //   0x020  minFulfillLiquidity  uint128
     //   0x040  settlerReward        uint96
     //   0x060  maxGameTime          uint24
-    //   0x080  blocksPerSecond      uint16
-    //   0x0A0  buyToken             address
-    //   0x0C0  matcherGasComp       uint96
-    //   0x0E0  sellToken            address
-    //   0x100  swapper              address     (override; expected = 0)
-    //   0x120  executorGasComp      uint96
-    //   0x140  useInternalBalances  bool
-    //   0x160  expiration           uint48      (override; expected = offset)
-    //   0x180  priceTolerated       uint232     (inline SlippageParams)
-    //   0x1A0  toleranceRange       uint24
-    // MatcherPreimage at 0x1C0:
-    //   0x1C0  initialLiquidity     uint128
-    //   0x1E0  escalationHalt       uint128
-    //   0x200  settlementTime       uint48
-    //   0x220  disputeDelay         uint24
-    //   0x240  protocolFee          uint24
-    //   0x260  multiplier           uint16
-    //   0x280  startFulfillFeeIncrease uint48   (override; expected = 0)
-    //   0x2A0  maxFee               uint24
-    //   0x2C0  startingFee          uint24
-    //   0x2E0  roundLength          uint24
-    //   0x300  growthRate           uint16
-    //   0x320  maxRounds            uint16
+    //   0x080  buyToken             address
+    //   0x0A0  matcherGasComp       uint96
+    //   0x0C0  sellToken            address
+    //   0x0E0  swapper              address     (override; expected = 0)
+    //   0x100  executorGasComp      uint96
+    //   0x120  useInternalBalances  bool
+    //   0x140  expiration           uint48      (override; expected = offset)
+    //   0x160  priceTolerated       uint232     (inline SlippageParams)
+    //   0x180  toleranceRange       uint24
+    // MatcherPreimage at 0x1A0:
+    //   0x1A0  initialLiquidity     uint128
+    //   0x1C0  escalationHalt       uint128
+    //   0x1E0  settlementTime       uint48
+    //   0x200  disputeDelay         uint24
+    //   0x220  protocolFee          uint24
+    //   0x240  multiplier           uint16
+    //   0x260  startFulfillFeeIncrease uint48   (override; expected = 0)
+    //   0x280  maxFee               uint24
+    //   0x2A0  startingFee          uint24
+    //   0x2C0  roundLength          uint24
+    //   0x2E0  growthRate           uint16
+    //   0x300  maxRounds            uint16
     // Tail head:
-    //   0x340  Permit2Params offset (dynamic)
-    //   0x360  minOut               uint128
+    //   0x320  Permit2Params offset (dynamic)
+    //   0x340  minOut               uint128
 
     function testBoundary_SellAmt() public {
         _assertBoundary(0x000, 16, "sellAmt");
@@ -323,96 +321,92 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
         _assertBoundary(0x060, 3, "maxGameTime");
     }
 
-    function testBoundary_BlocksPerSecond() public {
-        _assertBoundary(0x080, 2, "blocksPerSecond");
-    }
-
     function testBoundary_BuyToken() public {
-        _assertBoundary(0x0A0, 20, "buyToken");
+        _assertBoundary(0x080, 20, "buyToken");
     }
 
     function testBoundary_MatcherGasComp() public {
-        _assertBoundary(0x0C0, 12, "matcherGasComp");
+        _assertBoundary(0x0A0, 12, "matcherGasComp");
     }
 
     function testBoundary_SellToken() public {
-        _assertBoundary(0x0E0, 20, "sellToken");
+        _assertBoundary(0x0C0, 20, "sellToken");
     }
 
     function testBoundary_Swapper() public {
-        _assertBoundary(0x100, 20, "swapper");
+        _assertBoundary(0x0E0, 20, "swapper");
     }
 
     function testBoundary_ExecutorGasComp() public {
-        _assertBoundary(0x120, 12, "executorGasComp");
+        _assertBoundary(0x100, 12, "executorGasComp");
     }
 
     function testBoundary_UseInternalBalances() public {
-        _assertBoolBoundary(0x140, "useInternalBalances");
+        _assertBoolBoundary(0x120, "useInternalBalances");
     }
 
     function testBoundary_Expiration() public {
-        _assertBoundary(0x160, 6, "expiration");
+        _assertBoundary(0x140, 6, "expiration");
     }
 
     function testBoundary_PriceTolerated() public {
-        _assertBoundary(0x180, 29, "priceTolerated");
+        _assertBoundary(0x160, 29, "priceTolerated");
     }
 
     function testBoundary_ToleranceRange() public {
-        _assertBoundary(0x1A0, 3, "toleranceRange");
+        _assertBoundary(0x180, 3, "toleranceRange");
     }
 
     function testBoundary_InitialLiquidity() public {
-        _assertBoundary(0x1C0, 16, "initialLiquidity");
+        _assertBoundary(0x1A0, 16, "initialLiquidity");
     }
 
     function testBoundary_EscalationHalt() public {
-        _assertBoundary(0x1E0, 16, "escalationHalt");
+        _assertBoundary(0x1C0, 16, "escalationHalt");
     }
 
     function testBoundary_SettlementTime() public {
-        _assertBoundary(0x200, 6, "settlementTime");
+        _assertBoundary(0x1E0, 6, "settlementTime");
     }
 
     function testBoundary_DisputeDelay() public {
-        _assertBoundary(0x220, 3, "disputeDelay");
+        _assertBoundary(0x200, 3, "disputeDelay");
     }
 
     function testBoundary_ProtocolFee() public {
-        _assertBoundary(0x240, 3, "protocolFee");
+        _assertBoundary(0x220, 3, "protocolFee");
     }
 
     function testBoundary_Multiplier() public {
-        _assertBoundary(0x260, 2, "multiplier");
+        _assertBoundary(0x240, 2, "multiplier");
     }
 
     function testBoundary_StartFulfillFeeIncrease() public {
-        _assertBoundary(0x280, 6, "startFulfillFeeIncrease");
+        _assertBoundary(0x260, 6, "startFulfillFeeIncrease");
     }
 
     function testBoundary_MaxFee() public {
-        _assertBoundary(0x2A0, 3, "maxFee");
+        _assertBoundary(0x280, 3, "maxFee");
     }
 
     function testBoundary_StartingFee() public {
-        _assertBoundary(0x2C0, 3, "startingFee");
+        _assertBoundary(0x2A0, 3, "startingFee");
     }
 
     function testBoundary_RoundLength() public {
-        _assertBoundary(0x2E0, 3, "roundLength");
+        _assertBoundary(0x2C0, 3, "roundLength");
     }
 
     function testBoundary_GrowthRate() public {
-        _assertBoundary(0x300, 2, "growthRate");
+        _assertBoundary(0x2E0, 2, "growthRate");
     }
 
     function testBoundary_MaxRounds() public {
-        _assertBoundary(0x320, 2, "maxRounds");
+        _assertBoundary(0x300, 2, "maxRounds");
     }
 
     function testBoundary_MinOut() public {
-        _assertBoundary(0x360, 16, "minOut");
+        _assertBoundary(0x340, 16, "minOut");
     }
 
     // ─── Comprehensive every-padding-byte fuzz ────────────────────────────────
@@ -426,12 +420,12 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     // dirty high bits before any business logic runs.
     //
     // Static padding coverage:
-    //   ProposedSwap (14 fields)            → 276 bytes
+    //   ProposedSwap (13 fields)            → 246 bytes
     //   MatcherPreimage (12 fields)         → 319 bytes
     //   minOut (uint128)                    → 16 bytes
-    //   Total                               → 611 byte positions
+    //   Total                               → 581 byte positions
     //
-    // This loop skips the dynamic Permit2Params region (0x340 offset + 0x380+ tail).
+    // This loop skips the dynamic Permit2Params region (0x320 offset + 0x360+ tail).
     // Its malformed-offset, length, truncation, lawful-repointing, and padding cases
     // are covered separately above against both the recorder and authentic Permit2.
     function testFuzzAllPaddingBytes_Propose_TypeDecodeRevert() public {
@@ -472,37 +466,36 @@ contract OpenSwapDirtyCalldataTest is SlimTestBase {
     }
 
     function _allProposePaddingByteOffsets() internal pure returns (uint256[] memory out) {
-        uint256[2][27] memory fields = [
+        uint256[2][26] memory fields = [
             // ProposedSwap at 0x000
             [uint256(0x000), uint256(16)], // sellAmt
             [uint256(0x020), uint256(16)], // minFulfillLiquidity
             [uint256(0x040), uint256(12)], // settlerReward
             [uint256(0x060), uint256(3)], // maxGameTime
-            [uint256(0x080), uint256(2)], // blocksPerSecond
-            [uint256(0x0A0), uint256(20)], // buyToken
-            [uint256(0x0C0), uint256(12)], // matcherGasComp
-            [uint256(0x0E0), uint256(20)], // sellToken
-            [uint256(0x100), uint256(20)], // swapper (override; expected 0)
-            [uint256(0x120), uint256(12)], // executorGasComp
-            [uint256(0x140), uint256(1)], // useInternalBalances
-            [uint256(0x160), uint256(6)], // expiration
-            [uint256(0x180), uint256(29)], // priceTolerated
-            [uint256(0x1A0), uint256(3)], // toleranceRange
-            // MatcherPreimage at 0x1C0
-            [uint256(0x1C0), uint256(16)], // initialLiquidity
-            [uint256(0x1E0), uint256(16)], // escalationHalt
-            [uint256(0x200), uint256(6)], // settlementTime
-            [uint256(0x220), uint256(3)], // disputeDelay
-            [uint256(0x240), uint256(3)], // protocolFee
-            [uint256(0x260), uint256(2)], // multiplier
-            [uint256(0x280), uint256(6)], // startFulfillFeeIncrease (override; expected 0)
-            [uint256(0x2A0), uint256(3)], // maxFee
-            [uint256(0x2C0), uint256(3)], // startingFee
-            [uint256(0x2E0), uint256(3)], // roundLength
-            [uint256(0x300), uint256(2)], // growthRate
-            [uint256(0x320), uint256(2)], // maxRounds
-            // minOut (top-level uint128) at 0x360
-            [uint256(0x360), uint256(16)]
+            [uint256(0x080), uint256(20)], // buyToken
+            [uint256(0x0A0), uint256(12)], // matcherGasComp
+            [uint256(0x0C0), uint256(20)], // sellToken
+            [uint256(0x0E0), uint256(20)], // swapper (override; expected 0)
+            [uint256(0x100), uint256(12)], // executorGasComp
+            [uint256(0x120), uint256(1)], // useInternalBalances
+            [uint256(0x140), uint256(6)], // expiration
+            [uint256(0x160), uint256(29)], // priceTolerated
+            [uint256(0x180), uint256(3)], // toleranceRange
+            // MatcherPreimage at 0x1A0
+            [uint256(0x1A0), uint256(16)], // initialLiquidity
+            [uint256(0x1C0), uint256(16)], // escalationHalt
+            [uint256(0x1E0), uint256(6)], // settlementTime
+            [uint256(0x200), uint256(3)], // disputeDelay
+            [uint256(0x220), uint256(3)], // protocolFee
+            [uint256(0x240), uint256(2)], // multiplier
+            [uint256(0x260), uint256(6)], // startFulfillFeeIncrease (override; expected 0)
+            [uint256(0x280), uint256(3)], // maxFee
+            [uint256(0x2A0), uint256(3)], // startingFee
+            [uint256(0x2C0), uint256(3)], // roundLength
+            [uint256(0x2E0), uint256(2)], // growthRate
+            [uint256(0x300), uint256(2)], // maxRounds
+            // minOut (top-level uint128) at 0x340
+            [uint256(0x340), uint256(16)]
         ];
 
         uint256 total = 0;

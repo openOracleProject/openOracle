@@ -24,8 +24,8 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
         // Past settlementTime but settle() not called — og.settlementTimestamp stays 0.
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         bytes32 oracleHashBefore = oracle.oracleGame(reportId);
         assertEq(oracleHashBefore, keccak256(abi.encode(og, ph)), "oracle still unsettled pre-execute");
@@ -33,7 +33,7 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         uint256 executorSettlerInternalBefore = _spendable(address(0x7001), address(0));
 
         vm.prank(address(0x7001));
-        swapContract.execute(swapId, sPost, og, ph, false);
+        swapContract.execute(swapId, sPost, og, ph, 0);
 
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap hash deleted post-execute");
         assertEq(swapContract.tempHolding(address(0x7001)), EXECUTOR_GAS_COMP, "executor gas comp queued");
@@ -43,9 +43,9 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
             executorSettlerInternalBefore + SETTLER_REWARD,
             "executor received settler reward internally"
         );
-        // Oracle state moved: settlementTimestamp written. The new hash must match a reconstruction with current ts.
+        // Oracle state moved: settlementTimestamp written. The new hash must match a reconstruction with the current block.
         IOpenOracle2.OracleGame memory settled = og;
-        settled.settlementTimestamp = uint48(block.timestamp);
+        settled.settlementTimestamp = uint48(block.number);
         assertEq(oracle.oracleGame(reportId), keccak256(abi.encode(settled, ph)), "oracle hash now reflects settle");
     }
 
@@ -60,8 +60,8 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         // settler claims the reward via direct settle()
         _settle(reportId, og, ph);
@@ -83,7 +83,7 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
     // 14) Zero settler reward end-to-end
     function testAutoSettle_ZeroSettlerReward() public {
         // Override oracle params: settlerReward = 0
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = false;
 
         SwapCompat.OracleParams memory op = _defaultOracleParams();
@@ -107,7 +107,6 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         s.minFulfillLiquidity = MIN_FULFILL_LIQUIDITY;
         s.expiration = expiration;
         s.maxGameTime = MAX_GAME_TIME;
-        s.blocksPerSecond = 500;
         s.settlerReward = 0;
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
         s.priceTolerated = slip.priceTolerated;
@@ -123,8 +122,8 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         m.disputeDelay = op.disputeDelay;
         m.protocolFee = op.protocolFee;
         m.multiplier = op.multiplier;
-        m.startFulfillFeeIncrease = proposeTs;
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        m.startFulfillFeeIncrease = proposeBn;
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         m.maxFee = ff.maxFee;
         m.startingFee = ff.startingFee;
         m.roundLength = ff.roundLength;
@@ -138,28 +137,28 @@ contract OpenSwapAutoSettleTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportBn);
 
         IOpenOracle2.OracleGame memory og = IOpenOracle2.OracleGame({
             currentAmount1: m.initialLiquidity, currentAmount2: 2000e18,
-            currentReporter: payable(matcher), reportTimestamp: reportTs,
-            settlementTimestamp: 0, token1: address(sellToken), lastReportOppoTime: reportBn,
+            currentReporter: payable(matcher), reportTimestamp: reportBn,
+            settlementTimestamp: 0, token1: address(sellToken), lastReportOppoTime: reportTs,
             settlementTime: m.settlementTime, escalationHalt: m.escalationHalt,
             protocolFeeRecipient: address(0), settlerReward: 0, token2: address(buyToken),
             numReports: 0, disputeDelay: m.disputeDelay, feePercentage: 0,
             multiplier: m.multiplier, callbackContract: address(0), callbackGasLimit: 0,
-            protocolFee: m.protocolFee, flags: 1
+            protocolFee: m.protocolFee, flags: 32
         });
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         address executor = address(0x7003);
         uint256 executorInternalBefore = _spendable(executor, address(0));
 
         vm.prank(executor);
-        swapContract.execute(swapId, sPost, og, ph, false);
+        swapContract.execute(swapId, sPost, og, ph, 0);
 
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap hash deleted");
         assertEq(swapContract.tempHolding(executor), EXECUTOR_GAS_COMP, "executor gas comp queued");

@@ -25,13 +25,17 @@ contract OpenSwapTempHoldingTest is SlimTestBase {
     }
 
     function testTempHolding_ExecutorCreditedOnBailout() public {
-        (uint256 swapId, openSwapV2.MatchedSwap memory sPost) = _matchToProduceMatcherCredit();
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
+        uint48 expiration;
+        uint256 swapId;
+        (swapId, expiration) = _propose();
+        (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
 
         address bailer = address(0x9001);
         vm.prank(bailer);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
         assertEq(swapContract.tempHolding(bailer), EXECUTOR_GAS_COMP, "bailer credited");
     }
 

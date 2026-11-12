@@ -7,6 +7,8 @@ import "../../src/swap/oracleFeeReceiver.sol";
 
 contract OpenSwapProtocolFeesTest is SlimTestBase {
     uint24 constant PROTO_FEE = 1000; // 0.01%
+    // openSwap games use FLAG_FEES_ONLY_AT_HALT, so fees accrue only once escalation reaches the halt.
+    bool internal haltAtInitialLiquidity;
 
     function setUp() public {
         _setUpAll();
@@ -20,14 +22,13 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     function _defaultOracleParams() internal view override returns (SwapCompat.OracleParams memory) {
         SwapCompat.OracleParams memory p = SwapCompat.OracleParams({
             initialLiquidity: INITIAL_LIQUIDITY,
-            escalationHalt: SELL_AMT * 2,
+            escalationHalt: haltAtInitialLiquidity ? INITIAL_LIQUIDITY : SELL_AMT * 2,
             settlerReward: SETTLER_REWARD,
             settlementTime: SETTLEMENT_TIME,
             maxGameTime: MAX_GAME_TIME,
             disputeDelay: DISPUTE_DELAY,
             protocolFee: PROTO_FEE,
-            multiplier: 110,
-            blocksPerSecond: 500
+            multiplier: 110
         });
         return p;
     }
@@ -65,7 +66,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
     function testProtocolFees_ZeroProtocolFeeCommitsNoReceiver() public {
         SwapCompat.OracleParams memory op = _defaultOracleParams();
         op.protocolFee = 0;
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         uint256 swapId = SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -82,7 +83,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, 2000e18, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportBn);
         assertEq(sPost.feeRecipient, address(0), "no receiver when protocolFee = 0");
         assertEq(swapContract.swaps(swapId), keccak256(abi.encode(sPost)), "zero-fee matched hash");
 
@@ -304,8 +305,8 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
         address feeReceiver = sPost.feeRecipient;
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -337,17 +338,21 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
 
     // ── Real dispute → fee receiver routing ────────────────────────────
 
-    /// @notice End-to-end: a real oracle.dispute() must credit protocolFee to feeReceiver's
-    ///         internal balance, and distribute() must split it 50/50 to swapper + matcher.
-    function testProtocolFees_RealDisputeRoutesToFeeReceiver() public {
-        (uint256 swapId, uint48 expiration) = _propose();
+    /// @dev Propose, match, and dispute once with token1 escalated to `newAmount1`.
+    function _proposeMatchDispute(uint128 newAmount1)
+        internal
+        returns (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver)
+    {
+        uint48 expiration;
+        (swapId, expiration) = _propose();
         (openSwapV2.ProposedSwap memory s, openSwapV2.MatcherPreimage memory m) =
             _buildSwapAndPreimage(swapId, expiration);
-        (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        uint128 reportId;
+        (reportId,, sPost) = _match(swapId, 2000e18, expiration);
         // OracleGame was committed with protocolFeeRecipient = clone address.
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReportWithFeeRecipient(s, m, 2000e18, sPost.feeRecipient);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
-        address feeReceiver = sPost.feeRecipient;
+        feeReceiver = sPost.feeRecipient;
 
         // Set up a disputer with internal sellToken balance (paying the escalation)
         address disputer = address(0xD15);
@@ -357,18 +362,35 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         oracle.deposit(address(sellToken), 100e18, disputer);
         vm.stopPrank();
 
-        // Warp past disputeDelay (default 5s)
-        vm.warp(block.timestamp + DISPUTE_DELAY + 1);
-        vm.roll(block.number + 1);
+        // Roll past disputeDelay (default 5 blocks)
+        vm.roll(block.number + DISPUTE_DELAY + 1);
+        vm.warp(block.timestamp + 2);
 
-        // Dispute: escalate token1 (sellToken) with multiplier=110 → newAmount1 = 1.1e18
-        uint128 newAmount1 = uint128((uint256(INITIAL_LIQUIDITY) * 110) / 100);
         uint128 newAmount2 = 2000e18; // unchanged → no token2 swap
         vm.prank(disputer);
         IOpenOracle2(address(oracle)).dispute(
             reportId, newAmount1, newAmount2, disputer,
             true, true, og, ph, IOpenOracle2.TimingBoundaries(0, 0, 0, 0)
         );
+    }
+
+    /// @notice Below escalationHalt a dispute charges no protocolFee (FLAG_FEES_ONLY_AT_HALT).
+    function testProtocolFees_DisputeBelowHaltChargesNoFee() public {
+        // Escalate token1 with multiplier=110 → newAmount1 = 1.1e18, below the 20e18 halt
+        uint128 newAmount1 = uint128((uint256(INITIAL_LIQUIDITY) * 110) / 100);
+        (,, address feeReceiver) = _proposeMatchDispute(newAmount1);
+
+        assertEq(_spendable(feeReceiver, address(sellToken)), 0, "no protocolFee below halt");
+        assertEq(_spendable(feeReceiver, address(buyToken)), 0, "no token2 protocolFee below halt");
+    }
+
+    /// @notice End-to-end: a real oracle.dispute() at escalationHalt must credit protocolFee to
+    ///         feeReceiver's internal balance, and distribute() must split it 50/50 to swapper + matcher.
+    function testProtocolFees_RealDisputeAtHaltRoutesToFeeReceiver() public {
+        haltAtInitialLiquidity = true;
+        // At the halt, the only valid escalation is oldAmount1 + 1.
+        (uint256 swapId, openSwapV2.MatchedSwap memory sPost, address feeReceiver) =
+            _proposeMatchDispute(INITIAL_LIQUIDITY + 1);
 
         // Verify protocolFee landed in feeReceiver
         uint256 expectedFee = (uint256(INITIAL_LIQUIDITY) * PROTO_FEE) / 1e7; // 1e18 * 1000 / 1e7 = 1e14
@@ -390,6 +412,121 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         );
         // feeReceiver drained to sentinel
         assertEq(_spendable(feeReceiver, address(sellToken)), 0, "feeReceiver drained");
+    }
+
+    function _matchedFeeGame()
+        internal
+        returns (
+            uint256 swapId,
+            openSwapV2.MatchedSwap memory sPost,
+            IOpenOracle2.OracleGame memory og,
+            IOpenOracle2.PreimageHelper memory ph
+        )
+    {
+        uint48 expiration;
+        (swapId, expiration) = _propose();
+        (,, sPost) = _match(swapId, 2000e18, expiration);
+        (og, ph) = _gameAtMatch(swapId, expiration, 2000e18, sPost);
+        _fundDisputer(gameDisputer, og.token1);
+        _fundDisputer(gameDisputer, og.token2);
+    }
+
+    /// @notice Escalating through real rounds: no protocolFee while the pre-dispute amount1 is below
+    ///         escalationHalt, including the dispute that lands on the halt. The first dispute from the
+    ///         halt charges it. Disputer debits match the oracle formula on both sides.
+    function testProtocolFees_HaltReachedThroughDisputes_FeeStartsAtHalt() public {
+        (
+            ,
+            openSwapV2.MatchedSwap memory sPost,
+            IOpenOracle2.OracleGame memory og,
+            IOpenOracle2.PreimageHelper memory ph
+        ) = _matchedFeeGame();
+        address feeReceiver = sPost.feeRecipient;
+        uint256 recvSell0 = oracle.tokenHolder(feeReceiver, address(sellToken));
+        uint256 recvBuy0 = oracle.tokenHolder(feeReceiver, address(buyToken));
+
+        // Below the halt (non-self dispute): disputer pays new1 + old1 in token1, no fee.
+        uint256 old1 = og.currentAmount1;
+        uint256 disputerSellBefore = _spendable(gameDisputer, address(sellToken));
+        og = _disputeAt(og, ph, uint256(og.reportTimestamp) + og.disputeDelay);
+        assertEq(
+            disputerSellBefore - _spendable(gameDisputer, address(sellToken)),
+            uint256(og.currentAmount1) + old1,
+            "disputer pays no fee below halt"
+        );
+
+        // Multiplier steps are capped at the halt, so amount1 lands on it exactly.
+        while (og.currentAmount1 < og.escalationHalt) {
+            og = _disputeAt(og, ph, uint256(og.reportTimestamp) + og.disputeDelay);
+        }
+        assertEq(og.currentAmount1, og.escalationHalt, "amount1 at halt");
+        assertEq(oracle.tokenHolder(feeReceiver, address(sellToken)), recvSell0, "no token1 fee before halt");
+        assertEq(oracle.tokenHolder(feeReceiver, address(buyToken)), recvBuy0, "no token2 fee before halt");
+
+        // From the halt (non-self dispute): protocolFee = oldAmount1 * protocolFee, paid by the disputer.
+        address haltDisputer = address(0x1006);
+        _fundDisputer(haltDisputer, og.token1);
+        _fundDisputer(haltDisputer, og.token2);
+        uint256 old1h = og.currentAmount1;
+        uint256 old2h = og.currentAmount2;
+        uint128 new1 = _nextAmount1(og);
+        uint128 new2 = uint128((old2h * new1) / old1h);
+        uint256 hdSellBefore = _spendable(haltDisputer, address(sellToken));
+        uint256 hdBuyBefore = _spendable(haltDisputer, address(buyToken));
+
+        og = _disputeWith(og, ph, uint256(og.reportTimestamp) + og.disputeDelay, haltDisputer, new1, new2);
+
+        uint256 expectedFee = (old1h * PROTO_FEE) / 1e7;
+        assertGt(expectedFee, 0, "fee is nonzero");
+        assertEq(oracle.tokenHolder(feeReceiver, address(sellToken)) - recvSell0, expectedFee, "token1 fee at halt");
+        assertEq(oracle.tokenHolder(feeReceiver, address(buyToken)), recvBuy0, "no token2 fee on token1 branch");
+        assertEq(
+            hdSellBefore - _spendable(haltDisputer, address(sellToken)),
+            uint256(new1) + old1h + expectedFee,
+            "disputer pays new1 + old1 + protocolFee"
+        );
+        assertEq(hdBuyBefore - _spendable(haltDisputer, address(buyToken)), uint256(new2) - old2h, "net token2");
+    }
+
+    /// @notice A dispute that swaps token2 charges protocolFee on oldAmount2, in token2, only from the
+    ///         halt. The halt check reads amount1 even on the token2 branch.
+    function testProtocolFees_Token2BranchAtHalt_FeeInToken2() public {
+        (
+            uint256 swapId,
+            openSwapV2.MatchedSwap memory sPost,
+            IOpenOracle2.OracleGame memory og,
+            IOpenOracle2.PreimageHelper memory ph
+        ) = _matchedFeeGame();
+        address feeReceiver = sPost.feeRecipient;
+        uint256 recvSell0 = oracle.tokenHolder(feeReceiver, address(sellToken));
+        uint256 recvBuy0 = oracle.tokenHolder(feeReceiver, address(buyToken));
+
+        // Below the halt: doubling amount2 makes the dispute swap token2. No fee.
+        uint128 new1 = _nextAmount1(og);
+        uint128 new2 = uint128((uint256(og.currentAmount2) * new1) / og.currentAmount1 * 2);
+        og = _disputeWith(og, ph, uint256(og.reportTimestamp) + og.disputeDelay, gameDisputer, new1, new2);
+        assertEq(oracle.tokenHolder(feeReceiver, address(buyToken)), recvBuy0, "no token2 fee below halt");
+
+        while (og.currentAmount1 < og.escalationHalt) {
+            og = _disputeAt(og, ph, uint256(og.reportTimestamp) + og.disputeDelay);
+        }
+        assertEq(oracle.tokenHolder(feeReceiver, address(sellToken)), recvSell0, "no token1 fee before halt");
+        assertEq(oracle.tokenHolder(feeReceiver, address(buyToken)), recvBuy0, "no token2 fee before halt");
+
+        // At the halt: token2-side dispute.
+        uint256 old2 = og.currentAmount2;
+        new1 = _nextAmount1(og);
+        new2 = uint128((old2 * new1) / og.currentAmount1 * 2);
+        og = _disputeWith(og, ph, uint256(og.reportTimestamp) + og.disputeDelay, gameDisputer, new1, new2);
+
+        uint256 expectedFee = (old2 * PROTO_FEE) / 1e7;
+        assertGt(expectedFee, 0, "fee is nonzero");
+        assertEq(oracle.tokenHolder(feeReceiver, address(buyToken)) - recvBuy0, expectedFee, "token2 fee at halt");
+        assertEq(oracle.tokenHolder(feeReceiver, address(sellToken)), recvSell0, "no token1 fee on token2 branch");
+
+        (, uint256 fees1, uint256 fees2) = _deployAndDistribute(swapId, sPost, address(0xCAFE));
+        assertEq(fees1, 0, "no token1 fee distributed");
+        assertEq(fees2, expectedFee, "token2 fee distributed");
     }
 
     // ── Internal-only ETH fee distribution (ETH-rejecter as matcher) ────
@@ -481,7 +618,7 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         uint96 egc,
         SwapCompat.SlippageParams memory slip
     ) internal returns (uint256 swapId) {
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         swapId = SwapCompat.proposeRaw(swapContract, uint256(mgc) + uint256(egc) + SETTLER_REWARD, 
             sellAmt, address(sellToken), 1, address(0), minFulfill,
@@ -504,7 +641,6 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         s.minFulfillLiquidity = minFulfill;
         s.expiration = uint48(block.timestamp + 1 hours);
         s.maxGameTime = MAX_GAME_TIME;
-        s.blocksPerSecond = 500;
         s.settlerReward = SETTLER_REWARD;
         s.priceTolerated = slip.priceTolerated;
         s.toleranceRange = slip.toleranceRange;
@@ -518,8 +654,8 @@ contract OpenSwapProtocolFeesTest is SlimTestBase {
         m.disputeDelay = op.disputeDelay;
         m.protocolFee = op.protocolFee;
         m.multiplier = op.multiplier;
-        m.startFulfillFeeIncrease = proposeTs;
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        m.startFulfillFeeIncrease = proposeBn;
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         m.maxFee = ff.maxFee;
         m.startingFee = ff.startingFee;
         m.roundLength = ff.roundLength;

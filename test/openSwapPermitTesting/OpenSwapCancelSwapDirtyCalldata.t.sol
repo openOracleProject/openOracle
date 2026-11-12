@@ -17,7 +17,7 @@ import {SwapCompat} from "./SwapCompat.sol";
 ///         padding.
 contract OpenSwapCancelSwapDirtyCalldataTest is SlimTestBase {
     uint256 internal constant PROPOSED_SWAP_OFFSET = 0x020;
-    uint256 internal constant MATCHER_PREIMAGE_OFFSET = 0x1E0;
+    uint256 internal constant MATCHER_PREIMAGE_OFFSET = 0x1C0;
 
     function setUp() public {
         _setUpAll();
@@ -89,36 +89,35 @@ contract OpenSwapCancelSwapDirtyCalldataTest is SlimTestBase {
     }
 
     function _allCancelPaddingByteOffsets() internal pure returns (uint256[] memory out) {
-        // cancelSwap calldata: swapId(uint256) · ProposedSwap(14) · MatcherPreimage(12).
-        uint256[2][26] memory fields = [
+        // cancelSwap calldata: swapId(uint256) · ProposedSwap(13) · MatcherPreimage(12).
+        uint256[2][25] memory fields = [
             // ProposedSwap at 0x020
             [uint256(0x020), uint256(16)], // sellAmt
             [uint256(0x040), uint256(16)], // minFulfillLiquidity
             [uint256(0x060), uint256(12)], // settlerReward
             [uint256(0x080), uint256(3)],  // maxGameTime
-            [uint256(0x0A0), uint256(2)],  // blocksPerSecond
-            [uint256(0x0C0), uint256(20)], // buyToken
-            [uint256(0x0E0), uint256(12)], // matcherGasComp
-            [uint256(0x100), uint256(20)], // sellToken
-            [uint256(0x120), uint256(20)], // swapper
-            [uint256(0x140), uint256(12)], // executorGasComp
-            [uint256(0x160), uint256(1)],  // useInternalBalances
-            [uint256(0x180), uint256(6)],  // expiration
-            [uint256(0x1A0), uint256(29)], // priceTolerated
-            [uint256(0x1C0), uint256(3)],  // toleranceRange
-            // MatcherPreimage at 0x1E0
-            [uint256(0x1E0), uint256(16)], // initialLiquidity
-            [uint256(0x200), uint256(16)], // escalationHalt
-            [uint256(0x220), uint256(6)],  // settlementTime
-            [uint256(0x240), uint256(3)],  // disputeDelay
-            [uint256(0x260), uint256(3)],  // protocolFee
-            [uint256(0x280), uint256(2)],  // multiplier
-            [uint256(0x2A0), uint256(6)],  // startFulfillFeeIncrease
-            [uint256(0x2C0), uint256(3)],  // maxFee
-            [uint256(0x2E0), uint256(3)],  // startingFee
-            [uint256(0x300), uint256(3)],  // roundLength
-            [uint256(0x320), uint256(2)],  // growthRate
-            [uint256(0x340), uint256(2)]   // maxRounds
+            [uint256(0x0A0), uint256(20)], // buyToken
+            [uint256(0x0C0), uint256(12)], // matcherGasComp
+            [uint256(0x0E0), uint256(20)], // sellToken
+            [uint256(0x100), uint256(20)], // swapper
+            [uint256(0x120), uint256(12)], // executorGasComp
+            [uint256(0x140), uint256(1)],  // useInternalBalances
+            [uint256(0x160), uint256(6)],  // expiration
+            [uint256(0x180), uint256(29)], // priceTolerated
+            [uint256(0x1A0), uint256(3)],  // toleranceRange
+            // MatcherPreimage at 0x1C0
+            [uint256(0x1C0), uint256(16)], // initialLiquidity
+            [uint256(0x1E0), uint256(16)], // escalationHalt
+            [uint256(0x200), uint256(6)],  // settlementTime
+            [uint256(0x220), uint256(3)],  // disputeDelay
+            [uint256(0x240), uint256(3)],  // protocolFee
+            [uint256(0x260), uint256(2)],  // multiplier
+            [uint256(0x280), uint256(6)],  // startFulfillFeeIncrease
+            [uint256(0x2A0), uint256(3)],  // maxFee
+            [uint256(0x2C0), uint256(3)],  // startingFee
+            [uint256(0x2E0), uint256(3)],  // roundLength
+            [uint256(0x300), uint256(2)],  // growthRate
+            [uint256(0x320), uint256(2)]   // maxRounds
         ];
 
         uint256 total = 0;

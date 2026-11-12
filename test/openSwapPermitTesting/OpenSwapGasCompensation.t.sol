@@ -17,8 +17,8 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
         (uint128 reportId,, openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, executor);
     }
@@ -26,14 +26,15 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     function _bailoutFlow(address bailer) internal {
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
         vm.prank(bailer);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
     }
 
     function testGasComp_ZeroIsValid() public {
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         uint256 swapId = SwapCompat.proposeRaw(swapContract, SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -44,7 +45,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     }
 
     function testGasComp_HighValueIsValid() public {
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         uint256 swapId = SwapCompat.proposeRaw(swapContract, 2 ether + SETTLER_REWARD, 
             SELL_AMT, address(sellToken), MIN_OUT, address(buyToken), MIN_FULFILL_LIQUIDITY,
@@ -75,11 +76,12 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
     function testGasComp_MatcherKeepsCompAfterBailout() public {
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
         uint256 matcherBefore = swapContract.tempHolding(matcher);
 
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
-        swapContract.bailOut(swapId, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
         assertEq(swapContract.tempHolding(matcher), matcherBefore, "matcher comp untouched");
     }
@@ -109,7 +111,7 @@ contract OpenSwapGasCompensationTest is SlimTestBase {
 
     function testGasComp_RevertsOnWrongMsgValue() public {
         // msg.value != mgc + egc + settler should revert
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         vm.prank(swapper);
         vm.expectRevert(Errors.InvalidMsgValue.selector);
         SwapCompat.proposeRaw(swapContract, MATCHER_GAS_COMP,  // missing executor + settler

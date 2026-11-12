@@ -12,7 +12,7 @@ contract OpenSwapMinOutTest is SlimTestBase {
 
     function _proposeWithMinOut(uint128 minOut) internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
@@ -48,8 +48,8 @@ contract OpenSwapMinOutTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         _settle(reportId, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));

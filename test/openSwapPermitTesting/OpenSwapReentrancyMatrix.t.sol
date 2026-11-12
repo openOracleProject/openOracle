@@ -70,7 +70,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
 
     function _proposeBuyEth() internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = false;
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
@@ -106,7 +106,6 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         s.minFulfillLiquidity = MIN_FULFILL_ETH;
         s.expiration          = expiration;
         s.maxGameTime         = MAX_GAME_TIME;
-        s.blocksPerSecond     = 500;
         s.settlerReward       = SETTLER_REWARD;
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
         s.priceTolerated      = slip.priceTolerated;
@@ -122,8 +121,8 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         m.disputeDelay            = op.disputeDelay;
         m.protocolFee             = op.protocolFee;
         m.multiplier              = op.multiplier;
-        m.startFulfillFeeIncrease = proposeTs;
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        m.startFulfillFeeIncrease = proposeBn;
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         m.maxFee      = ff.maxFee;
         m.startingFee = ff.startingFee;
         m.roundLength = ff.roundLength;
@@ -144,7 +143,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, AMOUNT2_BUY_ETH, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportBn);
         sPost.feeRecipient = address(0); // default protocolFee = 0
     }
 
@@ -152,7 +151,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
 
     function _proposeSellEth() internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         proposeUseInternal = false;
         // sellToken=ETH path: msg.value = sellAmt + matcherGasComp + executorGasComp + settlerReward
         uint256 ethToSend = SELL_TINY + MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
@@ -189,7 +188,6 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         s.minFulfillLiquidity = MIN_FULFILL_TOK;
         s.expiration          = expiration;
         s.maxGameTime         = MAX_GAME_TIME;
-        s.blocksPerSecond     = 500;
         s.settlerReward       = SETTLER_REWARD;
         SwapCompat.SlippageParams memory slip = _defaultSlippage();
         s.priceTolerated      = slip.priceTolerated;
@@ -205,8 +203,8 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         m.disputeDelay            = op.disputeDelay;
         m.protocolFee             = op.protocolFee;
         m.multiplier              = op.multiplier;
-        m.startFulfillFeeIncrease = proposeTs;
-        openSwapV2.FulfillFeeParams memory ff = _defaultFulfillFee();
+        m.startFulfillFeeIncrease = proposeBn;
+        SwapCompat.FulfillFeeParams memory ff = _defaultFulfillFee();
         m.maxFee      = ff.maxFee;
         m.startingFee = ff.startingFee;
         m.roundLength = ff.roundLength;
@@ -227,7 +225,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         vm.prank(matcher);
         swapContract.matchSwap(swapId, AMOUNT2_BUY_TOK, s, m, IOpenOracle2.TimingBoundaries(0, 0, 0, 0));
 
-        sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportTs);
+        sPost = _postMatchSwap(s, reportId, _calcFulfillFee(), reportBn);
         sPost.feeRecipient = address(0);
     }
 
@@ -259,17 +257,15 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s0, m0, AMOUNT2_BUY_ETH);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        // Advance time + blocks so settlement + impliedBlocksPerSecond pass.
-        // 500 / 1000 blocks per second = 0.5 -> 302 sec needs ~151 blocks for the bps check.
-        uint48 settledAt = uint48(block.timestamp) + SETTLEMENT_TIME + 1;
-        vm.warp(uint256(settledAt));
-        vm.roll(block.number + 151);
+        // Advance blocks past settlementTime (block-number timing).
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
 
         hook.arm(address(swapContract), reentryPayload);
         vm.recordLogs();
         vm.prank(settler);
         // Pre-settle OracleGame; execute settles internally, then completes success path.
-        swapContract.execute(swapId, sPost, og, ph, false);
+        swapContract.execute(swapId, sPost, og, ph, 0);
     }
 
     function testReentry_ExecuteOuter_CannotExecute() public {
@@ -277,7 +273,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         IOpenOracle2.OracleGame memory dummyOg;
         IOpenOracle2.PreimageHelper memory dummyPh;
         bytes memory payload = abi.encodeCall(
-            swapContract.execute, (0, dummyMatched, dummyOg, dummyPh, false)
+            swapContract.execute, (0, dummyMatched, dummyOg, dummyPh, uint8(0))
         );
         uint256 swapId = _executeOuter(payload);
 
@@ -302,7 +298,9 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
 
     function testReentry_ExecuteOuter_CannotBailOut() public {
         openSwapV2.MatchedSwap memory dummyMatched;
-        bytes memory payload = abi.encodeCall(swapContract.bailOut, (0, dummyMatched));
+        IOpenOracle2.OracleGame memory dummyOg;
+        IOpenOracle2.PreimageHelper memory dummyPh;
+        bytes memory payload = abi.encodeCall(swapContract.bailOut, (0, dummyMatched, dummyOg, dummyPh));
         uint256 swapId = _executeOuter(payload);
 
         assertEq(swapContract.swaps(swapId), bytes32(0), "outer execute deleted hash");
@@ -320,15 +318,19 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
     function _bailOutOuter(bytes memory reentryPayload) internal returns (uint256 swapId) {
         uint48 expiration;
         (swapId, expiration) = _proposeSellEth();
-        (, openSwapV2.MatchedSwap memory sPost) = _matchHookSellEth(swapId, expiration);
+        (uint128 reportId, openSwapV2.MatchedSwap memory sPost) = _matchHookSellEth(swapId, expiration);
+        (openSwapV2.ProposedSwap memory s0, openSwapV2.MatcherPreimage memory m0) =
+            _buildSwapSellEth(swapId, expiration);
+        IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s0, m0, AMOUNT2_BUY_TOK);
+        IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(reportId);
 
-        // Warp past maxGameTime so bailOut is eligible.
-        vm.warp(block.timestamp + uint256(MAX_GAME_TIME) + 1);
+        // Dispute past maxGameTime so bailOut is eligible.
+        og = _disputePastMaxGameTime(og, ph, sPost);
 
         hook.arm(address(swapContract), reentryPayload);
         vm.recordLogs();
         vm.prank(matcher);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
     }
 
     function testReentry_BailOutOuter_CannotExecute() public {
@@ -336,7 +338,7 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
         IOpenOracle2.OracleGame memory dummyOg;
         IOpenOracle2.PreimageHelper memory dummyPh;
         bytes memory payload = abi.encodeCall(
-            swapContract.execute, (0, dummyMatched, dummyOg, dummyPh, false)
+            swapContract.execute, (0, dummyMatched, dummyOg, dummyPh, uint8(0))
         );
         uint256 swapId = _bailOutOuter(payload);
 
@@ -360,7 +362,9 @@ contract OpenSwapReentrancyMatrixTest is SlimTestBase {
 
     function testReentry_BailOutOuter_CannotBailOut() public {
         openSwapV2.MatchedSwap memory dummyMatched;
-        bytes memory payload = abi.encodeCall(swapContract.bailOut, (0, dummyMatched));
+        IOpenOracle2.OracleGame memory dummyOg;
+        IOpenOracle2.PreimageHelper memory dummyPh;
+        bytes memory payload = abi.encodeCall(swapContract.bailOut, (0, dummyMatched, dummyOg, dummyPh));
         uint256 swapId = _bailOutOuter(payload);
 
         assertEq(swapContract.swaps(swapId), bytes32(0), "outer bailOut deleted hash");

@@ -53,9 +53,11 @@ contract OpenSwapStructPhaseTest is SlimTestBase {
     function testPhase_BailOutRevertsBeforeMatch() public {
         (uint256 swapId,) = _propose();
         openSwapV2.MatchedSwap memory empty;
+        IOpenOracle2.OracleGame memory og;
+        IOpenOracle2.PreimageHelper memory ph;
 
         vm.expectRevert(Errors.WrongHash.selector);
-        swapContract.bailOut(swapId, empty);
+        swapContract.bailOut(swapId, empty, og, ph);
     }
 
     /// @notice execute takes MatchedSwap — pre-match storage holds the ProposedSwap-shaped hash, so reverts.
@@ -66,6 +68,6 @@ contract OpenSwapStructPhaseTest is SlimTestBase {
         IOpenOracle2.PreimageHelper memory ph;
 
         vm.expectRevert(Errors.WrongHash.selector);
-        swapContract.execute(swapId, empty, og, ph, false);
+        swapContract.execute(swapId, empty, og, ph, 0);
     }
 }

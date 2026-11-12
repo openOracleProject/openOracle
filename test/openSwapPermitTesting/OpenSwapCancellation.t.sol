@@ -140,17 +140,18 @@ contract OpenSwapCancellationTest is SlimTestBase {
 
     function testBailOut_SuccessLatencyTimeout() public {
         uint256 swapperSellBefore = sellToken.balanceOf(swapper);
-        uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
 
-        // Warp past maxGameTime
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
+        // Disputes push settlement eligibility past start + maxGameTime
+        og = _disputePastMaxGameTime(og, ph, sPost);
+        uint256 matcherBuyInternalBefore = _spendable(matcher, address(buyToken));
 
         vm.prank(randomUser);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
         // Swap hash deleted on terminal transition
         assertEq(swapContract.swaps(swapId), bytes32(0), "swap hash deleted post-bailOut");
@@ -159,13 +160,10 @@ contract OpenSwapCancellationTest is SlimTestBase {
         assertEq(sellToken.balanceOf(swapper), swapperSellBefore, "swapper sellToken refunded");
 
         // Matcher refund of minFulfillLiquidity buyToken via internalTransferFrom (internal balance)
-        // Pre-match buyToken internal was matcherBuyInternalBefore. After match it's
-        // matcherBuyInternalBefore - amount2 - MIN_FULFILL_LIQUIDITY (amount2 sits in the oracle game).
-        // After bailOut refund, MIN_FULFILL_LIQUIDITY comes back.
         assertEq(
             _spendable(matcher, address(buyToken)),
-            matcherBuyInternalBefore - 2000e18,
-            "matcher buyToken: only amount2 still escrowed in oracle game"
+            matcherBuyInternalBefore + MIN_FULFILL_LIQUIDITY,
+            "matcher minFulfillLiquidity refunded"
         );
 
         // openSwap drained of both tokens
@@ -182,10 +180,12 @@ contract OpenSwapCancellationTest is SlimTestBase {
         // Pre-match storage holds keccak(ProposedSwap, Preimage); bailOut hashes MatchedSwap so
         // any MatchedSwap value (zero-init here) will hash-mismatch.
         openSwapV2.MatchedSwap memory s;
+        IOpenOracle2.OracleGame memory og;
+        IOpenOracle2.PreimageHelper memory ph;
 
         vm.prank(randomUser);
         vm.expectRevert(Errors.WrongHash.selector);
-        swapContract.bailOut(swapId, s);
+        swapContract.bailOut(swapId, s, og, ph);
     }
 
     function testBailOut_FailsIfCancelled() public {
@@ -199,48 +199,51 @@ contract OpenSwapCancellationTest is SlimTestBase {
         // Hash was deleted on cancel, so any bailOut input fails the hash check.
         s;
         openSwapV2.MatchedSwap memory dummy;
+        IOpenOracle2.OracleGame memory og;
+        IOpenOracle2.PreimageHelper memory ph;
         vm.prank(randomUser);
         vm.expectRevert(Errors.WrongHash.selector);
-        swapContract.bailOut(swapId, dummy);
+        swapContract.bailOut(swapId, dummy, og, ph);
     }
 
     function testBailOut_FailsIfFinished() public {
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
+        og = _disputePastMaxGameTime(og, ph, sPost);
 
-        vm.warp(block.timestamp + MAX_GAME_TIME + 1);
-        vm.roll(block.number + (MAX_GAME_TIME + 1) / 2);
-
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
         // Swap hash deleted on terminal transition; any subsequent bailOut fails the hash check.
         vm.expectRevert(Errors.WrongHash.selector);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
     }
 
     function testBailOut_NoOpIfLatencyNotReached() public {
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
 
-        // No time elapsed — bailOut should revert
+        // No disputes: eligibility is start + settlementTime, far inside maxGameTime
         vm.expectRevert(Errors.CantBailOutYet.selector);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
     }
 
     function testBailOut_ExactLatencyBoundary() public {
         (uint256 swapId, uint48 expiration) = _propose();
         (, , openSwapV2.MatchedSwap memory sPost) = _match(swapId, 2000e18, expiration);
-        uint256 matchTime = sPost.start;
-
-        // Exactly at matchTime + MAX_GAME_TIME — check is `> maxGameTime`, so this should revert
-        vm.warp(matchTime + MAX_GAME_TIME);
-        vm.roll(block.number + MAX_GAME_TIME / 2);
+        (IOpenOracle2.OracleGame memory og, IOpenOracle2.PreimageHelper memory ph) =
+            _gameAtMatch(swapId, expiration, 2000e18, sPost);
+        // Eligibility == start + maxGameTime: check is `> maxGameTime`, so bailOut reverts.
+        og = _disputeToMaxGameTimeBoundary(og, ph, sPost);
         vm.expectRevert(Errors.CantBailOutYet.selector);
-        swapContract.bailOut(swapId, sPost);
+        swapContract.bailOut(swapId, sPost, og, ph);
 
-        // 1 second past boundary — should succeed
-        vm.warp(matchTime + MAX_GAME_TIME + 1);
-        vm.roll(block.number + 1);
-        swapContract.bailOut(swapId, sPost);
+        // Next dispute pushes eligibility past the limit; bailOut succeeds.
+        og = _disputeAt(og, ph, uint256(og.reportTimestamp) + og.disputeDelay);
+        swapContract.bailOut(swapId, sPost, og, ph);
+        assertEq(swapContract.swaps(swapId), bytes32(0), "bailed out past boundary");
     }
 }

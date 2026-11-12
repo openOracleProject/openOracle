@@ -29,7 +29,7 @@ contract OpenSwapETHTest is SlimTestBase {
 
     function _proposeEthSell() internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = SELL_AMT + MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
@@ -62,7 +62,7 @@ contract OpenSwapETHTest is SlimTestBase {
 
     function _proposeTokenToEth() internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
 
         vm.prank(swapper);
@@ -139,12 +139,12 @@ contract OpenSwapETHTest is SlimTestBase {
             "matcher buyToken -amount2 -minFulfillLiquidity"
         );
 
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportBn);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, 2000e18);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(1);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(1, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
@@ -210,7 +210,7 @@ contract OpenSwapETHTest is SlimTestBase {
 
     function _proposeTokenToEthSmall(uint128 minFulfill) internal returns (uint256 swapId, uint48 expiration) {
         expiration = uint48(block.timestamp + 1 hours);
-        proposeTs = uint48(block.timestamp);
+        proposeBn = uint48(block.number);
         uint256 ethToSend = MATCHER_GAS_COMP + EXECUTOR_GAS_COMP + SETTLER_REWARD;
         // SlippageParams loose; minOut small
         vm.prank(swapper);
@@ -268,12 +268,12 @@ contract OpenSwapETHTest is SlimTestBase {
         assertEq(_spendable(address(swapContract), address(0)), minFulfill, "openSwap ETH internal = minFulfill");
 
         // Settle + execute
-        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportTs);
+        openSwapV2.MatchedSwap memory sPost = _postMatchSwap(s, 1, STARTING_FEE, reportBn);
         IOpenOracle2.OracleGame memory og = _buildOracleGameAtReport(s, m, amount2);
         IOpenOracle2.PreimageHelper memory ph = _buildPreimageHelper(1);
 
-        vm.warp(block.timestamp + SETTLEMENT_TIME + 1);
-        vm.roll(block.number + (SETTLEMENT_TIME + 1) / 2);
+        vm.roll(block.number + SETTLEMENT_TIME + 1);
+        vm.warp(block.timestamp + (SETTLEMENT_TIME + 1) / 5);
         _settle(1, og, ph);
         _execute(swapId, sPost, og, ph, address(0x99));
 
