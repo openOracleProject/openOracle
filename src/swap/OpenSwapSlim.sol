@@ -12,7 +12,7 @@ import {LibClone} from "solady/utils/LibClone.sol";
 /**
  * @title openSwap
  * @notice A user proposes a swap, someone matches it, and openOracle determines the execution price.
- *         The matcher earns a fee for their service.
+ *         The matcher earns a fee for their service and submits the initial openOracle report.
  *
  *         In openOracle, a price report is two limit orders, a buy and a sell, at the same price.
  *         The orders are locked until either the timer runs out or one is taken.
@@ -20,9 +20,10 @@ import {LibClone} from "solady/utils/LibClone.sol";
  *         When the timer runs out without a dispute, the price is settled. Any disputes reset the timer.
  *
  *         Supported token types: vanilla ERC20 and USDT-style tokens that omit a return value on transfer/transferFrom.
- *         Not supported: fee-on-transfer, rebasing, ERC777 / tokens with transfer hooks, or any token whose
- *         balance can change without a corresponding transfer event from this contract. Using unsupported tokens
- *         may cause loss of funds or incorrect fee accounting.
+ *         Not supported: fee-on-transfer, rebasing, ERC777 / tokens with transfer hooks, tokens whose
+ *         transfer/transferFrom returns anything other than nothing or an ABI-encoded bool, or any token whose
+ *         balance held by openOracle can change without a transfer to or from openOracle. Using unsupported
+ *         tokens may cause loss or lockup of funds, or incorrect fee accounting.
  * @author OpenOracle Team
  * @custom:version 0.2.0
  * @custom:documentation https://docs.openoracle.org/
@@ -39,13 +40,21 @@ contract openSwapV2 is ReentrancyGuard {
     mapping(uint256 => bytes32) public swaps;
     uint256 public nextSwapId = 1;
 
+    uint256 constant public MAX_SETTLEMENT_TIME = 60480; // 3.36 hours at 0.2 second blocks
+    uint256 constant public MIN_SETTLEMENT_TIME = 2; // >= 2 blocks always leaves at least 1 block to dispute
+    uint256 constant public MAX_MULTIPLIER = 200; // 2x multiplier maximum on oracle game
+    uint256 constant public MIN_GAME_TIME_MULTIPLE = 50; // maxGameTime must be at least 50× settlementTime.
+    uint256 constant public MAX_GAME_TIME = MAX_SETTLEMENT_TIME * MIN_GAME_TIME_MULTIPLE;
+    uint256 constant public MAX_FEE_ROUNDS = 250; // fulfillment fee can grow geometrically for up to 250 rounds
+    uint256 constant public MAX_EXPIRATION = 30 days; // swap expiration cannot be more than 30 days
+    uint256 constant public ETH_SEND_GAS = 50000; // cap on gas receiving account can spend in the payEth() transfer
+
     mapping(address => uint256) public tempHolding;
 
     struct MatchedSwap {
         uint128 sellAmt; // amount of sellToken the swapper is selling
         uint128 minFulfillLiquidity; // minimum amount of buyToken the matcher must put in the contract
-        uint24 maxGameTime; // if oracle game does not finalize this much time after match, both parties are eligible for refund
-        uint16 blocksPerSecond; // 500 = 2 seconds per block on Base
+        uint24 maxGameTime; // if oracle game does not become settleable within this many blocks after match, both parties are eligible for refund
         address buyToken; // address for token swapper wants
         address sellToken; // address for token swapper is selling
         address swapper; // msg.sender of swapper. Non-zero ⇔ swap exists.
@@ -53,7 +62,7 @@ contract openSwapV2 is ReentrancyGuard {
         bool useInternalBalances; // swapper's option to use internal oracle balances to fund the swap
         uint128 reportId; // oracle game reportId
         address matcher;
-        uint48 start; // timestamp at which order is matched
+        uint48 start; // block number at which order is matched
         uint24 fulfillmentFee; // 1000 = 0.01%, fee paid to matcher
         address feeRecipient; // contract holding protocol fees from oracle game
         uint232 priceTolerated;  // example: WETH (18 dec) / USDC (6 dec) at $4442.99/ETH → priceTolerated ≈ 1e18 * 1e30 / (4442.99 * 1e6) ≈ 2.25e38.
@@ -64,8 +73,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint128 sellAmt;
         uint128 minFulfillLiquidity; // minimum amount of buyToken the matcher must put in the contract
         uint96 settlerReward; // reward paid to openOracle settler. often 0 since execute() can also settle
-        uint24 maxGameTime;
-        uint16 blocksPerSecond;
+        uint24 maxGameTime; // in blocks
         address buyToken;
         uint96 matcherGasComp; // swapper pays matcher this amount of wei to call match
         address sellToken;
@@ -77,14 +85,6 @@ contract openSwapV2 is ReentrancyGuard {
         uint24 toleranceRange; // 100000 = 1%, max slippage against priceTolerated
     }
 
-    struct FulfillFeeParams {
-        uint24 maxFee; // 1000 = 0.01%, max fulfillment fee you can pay
-        uint24 startingFee; // 1000 = 0.01%, starting fee level
-        uint24 roundLength; // round length in seconds
-        uint16 growthRate; // 15000 = 1.5x per round
-        uint16 maxRounds; // max rounds of increase
-    }
-
     struct Permit2Params {
         uint256 nonce;
         uint256 deadline;
@@ -94,18 +94,18 @@ contract openSwapV2 is ReentrancyGuard {
     /// @dev Oracle game + fulfillment fee params supplied by the matcher at match time.
     ///      Hash-bound at propose; openSwap stores only the hash.
     struct MatcherPreimage {
-        uint128 initialLiquidity;
-        uint128 escalationHalt;
-        uint48 settlementTime;
-        uint24 disputeDelay;
-        uint24 protocolFee;
-        uint16 multiplier;
-        uint48 startFulfillFeeIncrease; // override; expected = 0; contract sets to block.timestamp before hashing
-        uint24 maxFee;
-        uint24 startingFee;
-        uint24 roundLength;
-        uint16 growthRate;
-        uint16 maxRounds;
+        uint128 initialLiquidity; // starting oracle game size in token1 terms
+        uint128 escalationHalt; // point after which disputes can continue but sizes no longer grow geometrically
+        uint48 settlementTime; // per-round oracle timer, in blocks
+        uint24 disputeDelay; // delay into per-round oracle timer after which disputes are allowed
+        uint24 protocolFee; // proportional cost to dispute in the oracle game, 1000 = 0.01%
+        uint16 multiplier; // amount oracle game escalates each round, 140 = 1.4x
+        uint48 startFulfillFeeIncrease; // override; expected = 0; contract sets to block.number before hashing
+        uint24 maxFee; // 1000 = 0.01%, max fulfillment fee you can pay
+        uint24 startingFee; // 1000 = 0.01%, starting fee level
+        uint24 roundLength; // round length in blocks
+        uint16 growthRate; // 15000 = 1.5x per round
+        uint16 maxRounds; // max rounds of increase
     }
 
     bytes32 private constant SWAP_CREATED_SIG =
@@ -121,7 +121,6 @@ contract openSwapV2 is ReentrancyGuard {
     event SwapExecuted(uint256 swapId);
     event SwapMatched(uint256 indexed swapId, bytes packed);
     event SlippageBailout(uint256 swapId);
-    event ImpliedBlocksPerSecondBailout(uint256 swapId);
     event MaxGameTimeBailout(uint256 swapId);
 
     /**
@@ -131,7 +130,7 @@ contract openSwapV2 is ReentrancyGuard {
      *      bailOut) must supply the exact ProposedSwap / MatcherPreimage / MatchedSwap that
      *      reconstructs the current swap hash; off-chain indexing is the caller's responsibility.
      * @param s ProposedSwap parameters; s.swapper is set to msg.sender and s.expiration is converted to an absolute timestamp by the contract
-     * @param m MatcherPreimage parameters; m.startFulfillFeeIncrease is set to block.timestamp by the contract
+     * @param m MatcherPreimage parameters; m.startFulfillFeeIncrease is set to block.number by the contract
      * @param permit2 Permit2 nonce / deadline / signature, used when sellToken is ERC20 and useInternalBalances is false
      * @param minOut Minimum buyToken amount the swapper accepts at settlement
      * @return swapId Sequence number assigned to the new swap
@@ -157,7 +156,7 @@ contract openSwapV2 is ReentrancyGuard {
 
         if (sellToken == buyToken) revert Errors.TokensCannotBeSame();
         if (sellAmt == 0 || minOut == 0 || s.minFulfillLiquidity == 0) revert Errors.ZeroAmount();
-        if (expiration == 0 || expiration > 30 days) revert Errors.InvalidExpiration();
+        if (expiration == 0 || expiration > MAX_EXPIRATION) revert Errors.InvalidExpiration();
         if (m.maxFee >= 1e7) revert Errors.InvalidFulfillFee();
 
         if (
@@ -166,22 +165,23 @@ contract openSwapV2 is ReentrancyGuard {
         ) revert Errors.InvalidSlippage();
 
         if (
-            m.settlementTime == 0 || m.initialLiquidity == 0 || s.blocksPerSecond == 0
+            m.settlementTime < MIN_SETTLEMENT_TIME || m.initialLiquidity == 0
                 || m.disputeDelay >= m.settlementTime || m.escalationHalt < m.initialLiquidity
-                || m.settlementTime > 4 * 60 * 60 || m.protocolFee >= 1e7 || s.maxGameTime < m.settlementTime * 20
-                || s.maxGameTime > 604800 || m.multiplier < 100
+                || m.settlementTime > MAX_SETTLEMENT_TIME || m.protocolFee >= 1e7
+                || s.maxGameTime < m.settlementTime * MIN_GAME_TIME_MULTIPLE
+                || s.maxGameTime > MAX_GAME_TIME || m.multiplier < 100 || m.multiplier > MAX_MULTIPLIER
         ) revert Errors.InvalidOracleParams();
 
         if (
-            m.maxFee == 0 || m.startingFee == 0 || m.growthRate < 10000 || m.maxRounds == 0 || m.maxRounds > 100
-                || m.roundLength == 0 || m.maxFee < m.startingFee || m.maxFee > 1e7
+            m.maxFee == 0 || m.startingFee == 0 || m.growthRate < 10000 || m.maxRounds == 0
+                || m.maxRounds > MAX_FEE_ROUNDS || m.roundLength == 0 || m.maxFee < m.startingFee
         ) revert Errors.InvalidFulfillFeeParams();
 
         if (s.swapper != address(0) || m.startFulfillFeeIncrease != 0) revert Errors.MustBeZero();
 
         uint256 upperPrice =
             Math.mulDiv(s.priceTolerated, uint256(1e7) + s.toleranceRange, 1e7);
-        uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice);
+        uint256 worstFulfillAmt = Math.mulDiv(sellAmt, 1e30, upperPrice + 1);
         worstFulfillAmt -= Math.mulDiv(worstFulfillAmt, m.maxFee, 1e7);
 
         if (minOut > worstFulfillAmt) revert Errors.MinOutInconsistent();
@@ -189,31 +189,31 @@ contract openSwapV2 is ReentrancyGuard {
         swapId = nextSwapId++;
 
         // Two hashes share one buffer. swapHash layout matches abi.encode(ProposedSwap, MatcherPreimage):
-        //   0x000..0x1C0 ProposedSwap (14 slots) · 0x1C0..0x340 MatcherPreimage (12 slots)
-        // permitIntent temporarily appends minOut at 0x340 and hashes 0x360 bytes.
-        // Overrides (slot N at N*0x20): 0x100 s.swapper←caller · 0x160 s.expiration←absolute · 0x280 m.startFulfillFeeIncrease←ts
-        // permitIntent skips the timestamp overrides so the user signs runtime-independent inputs.
+        //   0x000..0x1A0 ProposedSwap (13 slots) · 0x1A0..0x320 MatcherPreimage (12 slots)
+        // permitIntent temporarily appends minOut at 0x320 and hashes 0x340 bytes.
+        // Overrides (slot N at N*0x20): 0x0E0 s.swapper←caller · 0x140 s.expiration←absolute · 0x260 m.startFulfillFeeIncrease←block
+        // permitIntent skips the expiration and startFulfillFeeIncrease overrides so the user signs runtime-independent inputs.
         uint256 absoluteExpiration = uint256(block.timestamp) + uint256(s.expiration);
         bytes32 swapHash;
         bytes32 permitIntent;
         uint256 stagedMem;
         assembly ("memory-safe") {
             let mem := mload(0x40)
-            calldatacopy(mem, s, 0x1C0)
-            calldatacopy(add(mem, 0x1C0), m, 0x180)
-            mstore(add(mem, 0x100), caller()) // swapper override
+            calldatacopy(mem, s, 0x1A0)
+            calldatacopy(add(mem, 0x1A0), m, 0x180)
+            mstore(add(mem, 0xE0), caller()) // swapper override
 
             if needsPermit2 {
-                mstore(add(mem, 0x340), minOut)
-                permitIntent := keccak256(mem, 0x360)
+                mstore(add(mem, 0x320), minOut)
+                permitIntent := keccak256(mem, 0x340)
             }
 
             // swapHash with full overrides
-            mstore(add(mem, 0x160), absoluteExpiration) // expiration → absolute
-            mstore(add(mem, 0x280), timestamp()) // startFulfillFeeIncrease
-            swapHash := keccak256(mem, 0x340)
+            mstore(add(mem, 0x140), absoluteExpiration) // expiration → absolute
+            mstore(add(mem, 0x260), number()) // startFulfillFeeIncrease
+            swapHash := keccak256(mem, 0x320)
             stagedMem := mem
-            mstore(0x40, add(mem, 0x360))
+            mstore(0x40, add(mem, 0x340))
         }
 
         if (useInternalBalances) {
@@ -266,10 +266,10 @@ contract openSwapV2 is ReentrancyGuard {
 
         assembly ("memory-safe") {
             stagedMem := mload(0x40)
-            calldatacopy(stagedMem, _swap, 0x1c0)
-            calldatacopy(add(stagedMem, 0x1c0), preimage, 0x180)
-            passedHash := keccak256(stagedMem, 0x340)
-            mstore(0x40, add(stagedMem, 0x340))
+            calldatacopy(stagedMem, _swap, 0x1a0)
+            calldatacopy(add(stagedMem, 0x1a0), preimage, 0x180)
+            passedHash := keccak256(stagedMem, 0x320)
+            mstore(0x40, add(stagedMem, 0x320))
         }
 
         if (passedHash != swaps[swapId]) revert Errors.WrongHash();
@@ -279,7 +279,6 @@ contract openSwapV2 is ReentrancyGuard {
         s.sellAmt = _swap.sellAmt;
         s.minFulfillLiquidity = _swap.minFulfillLiquidity;
         s.maxGameTime = _swap.maxGameTime;
-        s.blocksPerSecond = _swap.blocksPerSecond;
         s.buyToken = _swap.buyToken;
         s.sellToken = _swap.sellToken;
         s.swapper = _swap.swapper;
@@ -310,10 +309,10 @@ contract openSwapV2 is ReentrancyGuard {
         );
 
         s.matcher = matcher;
-        s.start = uint48(block.timestamp);
+        s.start = uint48(block.number);
         s.fulfillmentFee = fulfillmentFee;
 
-        tempHolding[matcher] += matcherGasComp;
+        if (matcherGasComp > 0) tempHolding[matcher] += matcherGasComp;
 
         if (preimage.protocolFee > 0) {
             s.feeRecipient = _predictFeeReceiver(swapId, sellToken, buyToken, s.swapper, matcher);
@@ -325,7 +324,7 @@ contract openSwapV2 is ReentrancyGuard {
         bytes32 matchedHash;
         assembly ("memory-safe") {
             matchedMem := s
-            matchedHash := keccak256(matchedMem, 0x200)
+            matchedHash := keccak256(matchedMem, 0x1e0)
         }
         swaps[swapId] = matchedHash;
 
@@ -389,7 +388,7 @@ contract openSwapV2 is ReentrancyGuard {
         delete swaps[swapId];
 
         if (s.useInternalBalances) {
-            tempHolding[swapper] += swapperPiece + settlerReward;
+            if (swapperPiece + settlerReward > 0) tempHolding[swapper] += swapperPiece + settlerReward;
         }
         if (caller == msg.sender && callerPiece > 0) tempHolding[caller] += callerPiece;
 
@@ -431,7 +430,7 @@ contract openSwapV2 is ReentrancyGuard {
             callbackContract: address(0),
             callbackGasLimit: 0,
             protocolFee: o.protocolFee,
-            flags: 1
+            flags: 32 // fees only at halt. block number mode for oracle timer.
         });
 
         reportId = oracle.report{value: settlerReward}(params, true, true, timing);
@@ -441,24 +440,31 @@ contract openSwapV2 is ReentrancyGuard {
      * @notice Lets users bail out of a swapId.
      *            Anyone-can-call. Caller earns executor gas compensation.
      *            One bail out condition:
-     *                 maxGameTime has passed since oracle game started → swapper and matcher are refunded initial token deposits
+     *                 last report block + settlementTime − match block > maxGameTime  → swapper and matcher are refunded initial token deposits
      * @param swapId Unique identifier of swapping instance
      * @param _swap MatchedSwap committed at matchSwap
+     * @param oracleState Oracle game state matching the stored oracle hash
+     * @param oracleHelper Oracle preimage helper matching the stored oracle hash
      */
-    function bailOut(uint256 swapId, MatchedSwap calldata _swap) external nonReentrant {
+    function bailOut(uint256 swapId, MatchedSwap calldata _swap, IOpenOracle2.OracleGame calldata oracleState, IOpenOracle2.PreimageHelper calldata oracleHelper) external nonReentrant {
         bytes32 passedHash = keccak256(abi.encode(_swap));
         if (passedHash != swaps[swapId]) revert Errors.WrongHash();
 
         MatchedSwap memory s = _swap;
 
+        if (keccak256(abi.encode(oracleState, oracleHelper)) != oracle.oracleGame(s.reportId)) {
+            revert Errors.WrongOracleHash();
+        }
+
         if (s.matcher == address(0)) revert Errors.NotMatched();
         if (s.swapper == address(0)) revert Errors.NotActive();
 
-        bool isGameTooLong = block.timestamp - s.start > s.maxGameTime;
+        uint256 elapsed = oracleState.settlementTime + uint256(oracleState.reportTimestamp) - s.start;
+        bool isGameTooLong = elapsed > s.maxGameTime;
 
         if (isGameTooLong) {
             delete swaps[swapId];
-            tempHolding[msg.sender] += s.executorGasComp;
+            if (s.executorGasComp > 0) tempHolding[msg.sender] += s.executorGasComp;
             refund(
                 s.sellToken, s.sellAmt, s.swapper, s.buyToken, s.minFulfillLiquidity, s.matcher, s.useInternalBalances
             );
@@ -499,35 +505,39 @@ contract openSwapV2 is ReentrancyGuard {
     ///      `_to`'s `tempHolding` slot so the recipient can retrieve via `withdraw`.
     function payEth(address _to, uint256 _amount) internal {
         if (_amount == 0) return;
-        (bool ok,) = payable(_to).call{value: _amount, gas: 50000}("");
+        bool ok;
+        assembly ("memory-safe") {
+            ok := call(ETH_SEND_GAS, _to, _amount, 0, 0, 0, 0)
+        }
         if (!ok) tempHolding[_to] += _amount;
     }
 
     /**
      * @notice Settles the oracle report if not already settled, then delivers buyToken to
-     *         swapper and sellToken to matcher (or refunds on slippage/blocksPerSecond bailout).
+     *         swapper and sellToken to matcher (or refunds on slippage bailout / oracle game too long).
      * @param swapId Unique identifier of swapping instance
      * @param swapState MatchedSwap committed at matchSwap
      * @param oracleState Oracle game state matching the stored oracle hash
      * @param oracleHelper Oracle preimage helper matching the stored oracle hash
-     * @param looseTiming If true, accept oracleState that's off by one block from the stored hash
+     * @param settlementSearchDepth Number of candidate settlement blocks to try, beginning
+     *                              with the current block; zero disables stale-settlement recovery.
      */
     function execute(
         uint256 swapId,
         MatchedSwap calldata swapState,
         IOpenOracle2.OracleGame calldata oracleState,
         IOpenOracle2.PreimageHelper calldata oracleHelper,
-        bool looseTiming
+        uint8 settlementSearchDepth
     ) external {
         MatchedSwap memory s;
         bytes32 passedSwapHash;
 
         assembly ("memory-safe") {
             let mem := mload(0x40)
-            calldatacopy(mem, swapState, 0x200)
-            passedSwapHash := keccak256(mem, 0x200)
+            calldatacopy(mem, swapState, 0x1e0)
+            passedSwapHash := keccak256(mem, 0x1e0)
             s := mem
-            mstore(0x40, add(mem, 0x200))
+            mstore(0x40, add(mem, 0x1e0))
         }
 
         if (passedSwapHash != swaps[swapId]) revert Errors.WrongHash();
@@ -552,29 +562,26 @@ contract openSwapV2 is ReentrancyGuard {
         bool matches = oracleHash == passedHash;
         bool alreadySettled;
 
-        // loose hash if settle beat you in the same block
-        if (!matches && oracleState.settlementTimestamp == 0 && looseTiming) {
-            assembly ("memory-safe") {
-                mstore(add(oracleMem, 0x80), timestamp())
-                passedHash := keccak256(oracleMem, 0x300)
+        // Recover when settlement changed only settlementTimestamp after the caller built its preimage.
+        if (!matches && oracleState.settlementTimestamp == 0 && settlementSearchDepth != 0) {
+            uint256 currentBlock = block.number;
+            for (uint256 i; i < settlementSearchDepth; ++i) {
+                uint256 candidate = currentBlock - i;
+                assembly ("memory-safe") {
+                    mstore(add(oracleMem, 0x80), candidate) // OracleGame word 4 = settlementTimestamp
+                    passedHash := keccak256(oracleMem, 0x300)
+                }
+                if (passedHash == oracleHash) {
+                    matches = true;
+                    alreadySettled = true;
+                    break;
+                }
             }
-            matches = oracleHash == passedHash;
-            alreadySettled = true;
-        }
-
-        // loose hash for block boundaries
-        if (!matches && oracleState.settlementTimestamp > 2 && looseTiming) {
-            assembly ("memory-safe") {
-                mstore(add(oracleMem, 0x80), sub(timestamp(), 2))
-                passedHash := keccak256(oracleMem, 0x300)
-            }
-            matches = oracleHash == passedHash;
-            alreadySettled = true;
         }
 
         if (!matches) revert Errors.WrongOracleHash();
 
-        if (uint48(block.timestamp) < oracleState.reportTimestamp + oracleState.settlementTime) {
+        if (uint48(block.number) < oracleState.reportTimestamp + oracleState.settlementTime) {
             revert Errors.OracleSettlementNotEligible();
         }
 
@@ -582,7 +589,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint96 executorGasComp = s.executorGasComp;
         uint96 settlerReward = oracleState.settlerReward;
 
-        tempHolding[msg.sender] += executorGasComp;
+        if (executorGasComp > 0) tempHolding[msg.sender] += executorGasComp;
 
         if (oracleState.settlementTimestamp == 0 && !alreadySettled) {
             oracle.settle(reportId, oracleState, oracleHelper);
@@ -598,7 +605,6 @@ contract openSwapV2 is ReentrancyGuard {
         uint128 minFulfillLiquidity = s.minFulfillLiquidity;
         uint128 sellAmt = s.sellAmt;
         uint24 fulfillmentFee = s.fulfillmentFee;
-        uint16 blocksPerSecond = s.blocksPerSecond;
         uint128 oracleAmount1 = oracleState.currentAmount1;
         uint128 oracleAmount2 = oracleState.currentAmount2;
 
@@ -607,14 +613,13 @@ contract openSwapV2 is ReentrancyGuard {
         fulfillAmt -= Math.mulDiv(fulfillAmt, fulfillmentFee, 1e7);
 
         bool slippageOk = toleranceCheck(price, s.priceTolerated, s.toleranceRange);
-        bool blocksPerSecondOk =
-            impliedBlocksPerSecond(oracleState.reportTimestamp, oracleState.lastReportOppoTime, blocksPerSecond);
         bool slippageBailout = fulfillAmt > minFulfillLiquidity || !slippageOk;
-        bool maxGameTimePassed = block.timestamp > uint256(s.start) + s.maxGameTime;
-        bool shouldRefund = slippageBailout || !blocksPerSecondOk || maxGameTimePassed;
+        bool maxGameTimePassed =
+            oracleState.settlementTime + uint256(oracleState.reportTimestamp) - s.start > s.maxGameTime;
+
+        bool shouldRefund = slippageBailout || maxGameTimePassed;
 
         if (slippageBailout) emit SlippageBailout(swapId);
-        if (!blocksPerSecondOk) emit ImpliedBlocksPerSecondBailout(swapId);
         if (maxGameTimePassed) emit MaxGameTimeBailout(swapId);
 
         if (shouldRefund) {
@@ -622,12 +627,11 @@ contract openSwapV2 is ReentrancyGuard {
             emit SwapRefunded(swapId, swapper, matcher);
         } else {
             oracle.internalTransferFrom(address(this), matcher, sellToken, sellAmt);
+            oracle.internalTransferFrom(address(this), matcher, buyToken, uint128(minFulfillLiquidity - fulfillAmt));
             if (s.useInternalBalances) {
                 oracle.internalTransferFrom(address(this), swapper, buyToken, uint128(fulfillAmt));
-                oracle.internalTransferFrom(address(this), matcher, buyToken, uint128(minFulfillLiquidity - fulfillAmt));
             } else {
                 oracle.pushOrCredit(buyToken, swapper, uint128(fulfillAmt));
-                oracle.internalTransferFrom(address(this), matcher, buyToken, uint128(minFulfillLiquidity - fulfillAmt));
             }
             emit SwapExecuted(swapId);
         }
@@ -673,12 +677,12 @@ contract openSwapV2 is ReentrancyGuard {
         address matcher,
         bool useInternalBalances
     ) internal {
+        oracle.internalTransferFrom(address(this), matcher, buyToken, buyAmt);
         if (useInternalBalances) {
             oracle.internalTransferFrom(address(this), swapper, sellToken, sellAmt);
         } else {
             oracle.pushOrCredit(sellToken, swapper, sellAmt);
         }
-        oracle.internalTransferFrom(address(this), matcher, buyToken, buyAmt);
     }
 
     function calcFee(
@@ -689,7 +693,7 @@ contract openSwapV2 is ReentrancyGuard {
         uint256 startFulfillFeeIncrease,
         uint256 roundLength
     ) internal view returns (uint256) {
-        uint256 timeDelta = block.timestamp - startFulfillFeeIncrease;
+        uint256 timeDelta = block.number - startFulfillFeeIncrease;
 
         timeDelta = timeDelta / roundLength;
         if (timeDelta > maxRounds) {
@@ -723,25 +727,6 @@ contract openSwapV2 is ReentrancyGuard {
         return price >= lower && price <= upper;
     }
 
-    function impliedBlocksPerSecond(uint48 _time, uint48 _timeOppo, uint48 blocksPerSecond)
-        internal
-        view
-        returns (bool)
-    {
-        uint48 _timeChangeTrue = uint48(block.timestamp) - _time;
-        uint48 _timeChangeBlock = uint48(block.number) - _timeOppo;
-        uint48 expectedBlocks = _timeChangeTrue * blocksPerSecond;
-
-        if (
-            1000 * _timeChangeBlock > expectedBlocks + 2 * blocksPerSecond
-                || 1000 * _timeChangeBlock + 2 * blocksPerSecond < expectedBlocks
-        ) {
-            return false;
-        } else {
-            return true;
-        }
-    }
-
     /// @dev Predicts the swap's counterfactual fee receiver. The clone is deployed lazily by
     ///      `deployAndDistributeFeeReceiver`; distributing an empty receiver is a no-op.
     function _predictFeeReceiver(
@@ -757,67 +742,65 @@ contract openSwapV2 is ReentrancyGuard {
 
     /**
      * @dev Packs committed OpenSwap preimages in place for raw-log event emission.
-     *      kind == 1: input is abi.encode(ProposedSwap, MatcherPreimage), 0x340 bytes.
-     *                 output is 237 raw bytes.
-     *      kind == 2: input is abi.encode(MatchedSwap), 0x200 bytes.
-     *                 output is 207 raw bytes.
+     *      kind == 1: input is abi.encode(ProposedSwap, MatcherPreimage), 0x320 bytes.
+     *                 output is 235 raw bytes.
+     *      kind == 2: input is abi.encode(MatchedSwap), 0x1e0 bytes.
+     *                 output is 205 raw bytes.
      */
     function _packMem(uint256 mem, uint8 kind) internal pure returns (uint256 packedLen) {
         assembly ("memory-safe") {
             switch kind
             case 1 {
-                // ProposedSwap (14 slots -> 172 bytes)
+                // ProposedSwap (13 slots -> 170 bytes)
                 mstore(mem,             shl(128, mload(mem)))                 // sellAmt              (W=16)
                 mstore(add(mem,  16),   shl(128, mload(add(mem, 0x20))))      // minFulfillLiquidity  (W=16)
                 mstore(add(mem,  32),   shl(160, mload(add(mem, 0x40))))      // settlerReward        (W=12)
                 mstore(add(mem,  44),   shl(232, mload(add(mem, 0x60))))      // maxGameTime          (W=3)
-                mstore(add(mem,  47),   shl(240, mload(add(mem, 0x80))))      // blocksPerSecond      (W=2)
-                mstore(add(mem,  49),   shl( 96, mload(add(mem, 0xa0))))      // buyToken             (W=20)
-                mstore(add(mem,  69),   shl(160, mload(add(mem, 0xc0))))      // matcherGasComp       (W=12)
-                mstore(add(mem,  81),   shl( 96, mload(add(mem, 0xe0))))      // sellToken            (W=20)
-                mstore(add(mem, 101),   shl( 96, mload(add(mem, 0x100))))     // swapper              (W=20)
-                mstore(add(mem, 121),   shl(160, mload(add(mem, 0x120))))     // executorGasComp      (W=12)
-                mstore8(add(mem, 133),  byte(31, mload(add(mem, 0x140))))     // useInternalBalances  (W=1)
-                mstore(add(mem, 134),   shl(208, mload(add(mem, 0x160))))     // expiration           (W=6)
-                mstore(add(mem, 140),   shl( 24, mload(add(mem, 0x180))))     // priceTolerated       (W=29)
-                mstore(add(mem, 169),   shl(232, mload(add(mem, 0x1a0))))     // toleranceRange       (W=3)
+                mstore(add(mem,  47),   shl( 96, mload(add(mem, 0x80))))      // buyToken             (W=20)
+                mstore(add(mem,  67),   shl(160, mload(add(mem, 0xa0))))      // matcherGasComp       (W=12)
+                mstore(add(mem,  79),   shl( 96, mload(add(mem, 0xc0))))      // sellToken            (W=20)
+                mstore(add(mem,  99),   shl( 96, mload(add(mem, 0xe0))))      // swapper              (W=20)
+                mstore(add(mem, 119),   shl(160, mload(add(mem, 0x100))))     // executorGasComp      (W=12)
+                mstore8(add(mem, 131),  byte(31, mload(add(mem, 0x120))))     // useInternalBalances  (W=1)
+                mstore(add(mem, 132),   shl(208, mload(add(mem, 0x140))))     // expiration           (W=6)
+                mstore(add(mem, 138),   shl( 24, mload(add(mem, 0x160))))     // priceTolerated       (W=29)
+                mstore(add(mem, 167),   shl(232, mload(add(mem, 0x180))))     // toleranceRange       (W=3)
 
-                // MatcherPreimage starts at source 0x1c0 (12 slots -> 65 bytes)
-                mstore(add(mem, 172),   shl(128, mload(add(mem, 0x1c0))))     // initialLiquidity     (W=16)
-                mstore(add(mem, 188),   shl(128, mload(add(mem, 0x1e0))))     // escalationHalt       (W=16)
-                mstore(add(mem, 204),   shl(208, mload(add(mem, 0x200))))     // settlementTime       (W=6)
-                mstore(add(mem, 210),   shl(232, mload(add(mem, 0x220))))     // disputeDelay         (W=3)
-                mstore(add(mem, 213),   shl(232, mload(add(mem, 0x240))))     // protocolFee          (W=3)
-                mstore(add(mem, 216),   shl(240, mload(add(mem, 0x260))))     // multiplier           (W=2)
-                mstore(add(mem, 218),   shl(208, mload(add(mem, 0x280))))     // startFulfillFeeIncrease (W=6)
-                mstore(add(mem, 224),   shl(232, mload(add(mem, 0x2a0))))     // maxFee               (W=3)
-                mstore(add(mem, 227),   shl(232, mload(add(mem, 0x2c0))))     // startingFee          (W=3)
-                mstore(add(mem, 230),   shl(232, mload(add(mem, 0x2e0))))     // roundLength          (W=3)
-                mstore(add(mem, 233),   shl(240, mload(add(mem, 0x300))))     // growthRate           (W=2)
-                mstore(add(mem, 235),   shl(240, mload(add(mem, 0x320))))     // maxRounds            (W=2)
+                // MatcherPreimage starts at source 0x1a0 (12 slots -> 65 bytes)
+                mstore(add(mem, 170),   shl(128, mload(add(mem, 0x1a0))))     // initialLiquidity     (W=16)
+                mstore(add(mem, 186),   shl(128, mload(add(mem, 0x1c0))))     // escalationHalt       (W=16)
+                mstore(add(mem, 202),   shl(208, mload(add(mem, 0x1e0))))     // settlementTime       (W=6)
+                mstore(add(mem, 208),   shl(232, mload(add(mem, 0x200))))     // disputeDelay         (W=3)
+                mstore(add(mem, 211),   shl(232, mload(add(mem, 0x220))))     // protocolFee          (W=3)
+                mstore(add(mem, 214),   shl(240, mload(add(mem, 0x240))))     // multiplier           (W=2)
+                mstore(add(mem, 216),   shl(208, mload(add(mem, 0x260))))     // startFulfillFeeIncrease (W=6)
+                mstore(add(mem, 222),   shl(232, mload(add(mem, 0x280))))     // maxFee               (W=3)
+                mstore(add(mem, 225),   shl(232, mload(add(mem, 0x2a0))))     // startingFee          (W=3)
+                mstore(add(mem, 228),   shl(232, mload(add(mem, 0x2c0))))     // roundLength          (W=3)
+                mstore(add(mem, 231),   shl(240, mload(add(mem, 0x2e0))))     // growthRate           (W=2)
+                mstore(add(mem, 233),   shl(240, mload(add(mem, 0x300))))     // maxRounds            (W=2)
 
-                packedLen := 237
+                packedLen := 235
             }
             case 2 {
-                // MatchedSwap (16 slots -> 207 bytes)
+                // MatchedSwap (15 slots -> 205 bytes)
                 mstore(mem,             shl(128, mload(mem)))                 // sellAmt              (W=16)
                 mstore(add(mem,  16),   shl(128, mload(add(mem, 0x20))))      // minFulfillLiquidity  (W=16)
                 mstore(add(mem,  32),   shl(232, mload(add(mem, 0x40))))      // maxGameTime          (W=3)
-                mstore(add(mem,  35),   shl(240, mload(add(mem, 0x60))))      // blocksPerSecond      (W=2)
-                mstore(add(mem,  37),   shl( 96, mload(add(mem, 0x80))))      // buyToken             (W=20)
-                mstore(add(mem,  57),   shl( 96, mload(add(mem, 0xa0))))      // sellToken            (W=20)
-                mstore(add(mem,  77),   shl( 96, mload(add(mem, 0xc0))))      // swapper              (W=20)
-                mstore(add(mem,  97),   shl(160, mload(add(mem, 0xe0))))      // executorGasComp      (W=12)
-                mstore8(add(mem, 109),  byte(31, mload(add(mem, 0x100))))     // useInternalBalances  (W=1)
-                mstore(add(mem, 110),   shl(128, mload(add(mem, 0x120))))     // reportId             (W=16)
-                mstore(add(mem, 126),   shl( 96, mload(add(mem, 0x140))))     // matcher              (W=20)
-                mstore(add(mem, 146),   shl(208, mload(add(mem, 0x160))))     // start                (W=6)
-                mstore(add(mem, 152),   shl(232, mload(add(mem, 0x180))))     // fulfillmentFee       (W=3)
-                mstore(add(mem, 155),   shl( 96, mload(add(mem, 0x1a0))))     // feeRecipient         (W=20)
-                mstore(add(mem, 175),   shl( 24, mload(add(mem, 0x1c0))))     // priceTolerated       (W=29)
-                mstore(add(mem, 204),   shl(232, mload(add(mem, 0x1e0))))     // toleranceRange       (W=3)
+                mstore(add(mem,  35),   shl( 96, mload(add(mem, 0x60))))      // buyToken             (W=20)
+                mstore(add(mem,  55),   shl( 96, mload(add(mem, 0x80))))      // sellToken            (W=20)
+                mstore(add(mem,  75),   shl( 96, mload(add(mem, 0xa0))))      // swapper              (W=20)
+                mstore(add(mem,  95),   shl(160, mload(add(mem, 0xc0))))      // executorGasComp      (W=12)
+                mstore8(add(mem, 107),  byte(31, mload(add(mem, 0xe0))))      // useInternalBalances  (W=1)
+                mstore(add(mem, 108),   shl(128, mload(add(mem, 0x100))))     // reportId             (W=16)
+                mstore(add(mem, 124),   shl( 96, mload(add(mem, 0x120))))     // matcher              (W=20)
+                mstore(add(mem, 144),   shl(208, mload(add(mem, 0x140))))     // start                (W=6)
+                mstore(add(mem, 150),   shl(232, mload(add(mem, 0x160))))     // fulfillmentFee       (W=3)
+                mstore(add(mem, 153),   shl( 96, mload(add(mem, 0x180))))     // feeRecipient         (W=20)
+                mstore(add(mem, 173),   shl( 24, mload(add(mem, 0x1a0))))     // priceTolerated       (W=29)
+                mstore(add(mem, 202),   shl(232, mload(add(mem, 0x1c0))))     // toleranceRange       (W=3)
 
-                packedLen := 207
+                packedLen := 205
             }
         }
     }
